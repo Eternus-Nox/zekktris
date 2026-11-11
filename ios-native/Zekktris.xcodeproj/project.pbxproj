@@ -47,6 +47,7 @@
 		5AC3D41FB4CE1E5564AE373A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C6F2371BB09C7603E340AE1B /* Assets.xcassets */; };
 		5AEEE3EF7DCDDE65046CBB01 /* AppIntentVocabulary.plist in Resources */ = {isa = PBXBuildFile; fileRef = FAD3BA3800A7BBB4DD4F29F5 /* AppIntentVocabulary.plist */; };
 		5F41FABD554532C5B318DDCB /* MessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F5AACAE9FF771E91106E82E /* MessageViews.swift */; };
+		5FF31DD19CA88FE3DE078298 /* ZekkPet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C95927D758162F0BD86674C /* ZekkPet.swift */; };
 		61FF74D009D65D2054199944 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42797CA878D26DB332BEF804 /* Config.swift */; };
 		66811E7792C3A4A9EBA86603 /* SpaceGrotesk-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = F6D2DCE87AACD4BDB1B2308C /* SpaceGrotesk-Bold.ttf */; };
 		6C711B99A11473E325C45E6E /* WatchSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 002FCEE55B6853EFA7C8C882 /* WatchSync.swift */; };
@@ -242,6 +243,7 @@
 		0FA8F7066C8638882AAE23AC /* ZekktrisWatch.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ZekktrisWatch.entitlements; sourceTree = "<group>"; };
 		17409CC125FA64E8BD4AB3AA /* AuthViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthViews.swift; sourceTree = "<group>"; };
 		1B91C6A351E7D36AA6D65F4A /* NotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotificationService.entitlements; sourceTree = "<group>"; };
+		1C95927D758162F0BD86674C /* ZekkPet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZekkPet.swift; sourceTree = "<group>"; };
 		1E9D6FF0387EF512329B39D5 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		2232CBA6A56F9DFE142335BF /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		233EF9A75E0571B25B186F9F /* WatchPokeAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchPokeAPI.swift; sourceTree = "<group>"; };
@@ -445,6 +447,7 @@
 				BC1F393C4A0BBFFFEDDCA4AA /* VoiceSounds.swift */,
 				002FCEE55B6853EFA7C8C882 /* WatchSync.swift */,
 				4FC2ECC7C7A8019B6C7482EF /* WidgetShared.swift */,
+				1C95927D758162F0BD86674C /* ZekkPet.swift */,
 				2FE126AEC7DC839E13F12E94 /* Zekktris.entitlements */,
 				B171229A0C558CF65D219D70 /* ZekktrisApp.swift */,
 				DF766700F3A8966451E20908 /* AppIntentVocabulary.plist */,
@@ -948,6 +951,7 @@
 				7B46A372B1B4F4978FC7F546 /* VoiceSounds.swift in Sources */,
 				6C711B99A11473E325C45E6E /* WatchSync.swift in Sources */,
 				F082A7FF9275D75777E1D74D /* WidgetShared.swift in Sources */,
+				5FF31DD19CA88FE3DE078298 /* ZekkPet.swift in Sources */,
 				D0F37BFCBEE259ACED492D79 /* ZekktrisApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

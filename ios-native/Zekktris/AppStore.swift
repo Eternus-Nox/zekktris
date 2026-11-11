@@ -1328,6 +1328,9 @@ final class AppStore: ObservableObject {
         // window the reconnect is a fresh READY), which left the header
         // badge on the old value until the DM was re-entered.
         if let c = selectedChannel, c.isDM { Task { await refreshDmTimer(c.id) } }
+        // …and its Zekk Pet, for the same reason (and a clock re-read that
+        // slept through the suspension).
+        if let c = selectedChannel, c.type == "dm", zekkPetEnabled { Task { await loadDmPet(c.id) } }
         // Renew Siri's intent token when it's missing or within a week of
         // expiring (it then re-syncs on its own).
         ensureIntentToken()
@@ -1824,6 +1827,14 @@ final class AppStore: ObservableObject {
         dmTimers = [:]
         dmTimerRevision = [:]
         dmMaxTtlSeconds = nil
+        // Zekk Pets: this account's pets, dismissals and clock re-read; the
+        // next sign-in may be to a server without them.
+        petRefreshTask?.cancel()
+        petRefreshTask = nil
+        zekkPetEnabled = false
+        dmPets = [:]
+        dmPetRevision = [:]
+        dismissedPetBanners = []
         dms = []
         relationships = []
         dmNicknames = [:]
@@ -2146,6 +2157,10 @@ final class AppStore: ObservableObject {
         // The DM's disappearing-messages timer, so the header badge and the
         // settings row know it without opening the settings sheet.
         if channel.isDM { Task { await loadDmSettings(channel.id) } }
+        // The 1:1 DM's Zekk Pet (header pet, adopt banner). Clears the
+        // previous DM's clock re-read first.
+        schedulePetRefresh()
+        if channel.type == "dm", zekkPetEnabled { Task { await loadDmPet(channel.id) } }
     }
 
     /// THE presence resolver: one map, one answer, every surface.
@@ -6108,6 +6123,116 @@ final class AppStore: ObservableObject {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
         }
     }
+
+    // MARK: Zekk Pet
+
+    /// The server has Zekk Pets (READY features.zekk_pet). The app shows no
+    /// pet UI without it.
+    @Published private(set) var zekkPetEnabled = false
+    /// Each 1:1 DM's pet, by channel id; absent = not fetched yet. Fed by
+    /// loadDmPet (when a 1:1 DM opens, on reconnect / foreground and at the
+    /// clock boundaries the mood turns on), DM_PET_UPDATE and our own
+    /// invite / accept / decline / rename.
+    @Published private(set) var dmPets: [String: DmPetState] = [:]
+    /// Bumped on every dmPets write that isn't a fetch, so a fetch already in
+    /// flight keeps the newer pet (its eligibility and streak still apply).
+    private var dmPetRevision: [String: Int] = [:]
+    /// Adopt-banner dismissals for this session, "channelId:kind" — hiding
+    /// the adopt prompt doesn't also hide a later invite.
+    @Published private(set) var dismissedPetBanners: Set<String> = []
+    /// Re-reads the open DM's pet at the next 18:00 UTC / midnight UTC.
+    private var petRefreshTask: Task<Void, Never>?
+
+    /// The DM's pet state, only on a server with pets and only for 1:1 DMs.
+    func petState(for channel: Channel) -> DmPetState? {
+        guard zekkPetEnabled, channel.type == "dm" else { return nil }
+        return dmPets[channel.id]
+    }
+
+    func isPetBannerDismissed(_ channelId: String, _ kind: ZekkPet.BannerKind) -> Bool {
+        dismissedPetBanners.contains("\(channelId):\(kind.rawValue)")
+    }
+    func dismissPetBanner(_ channelId: String, _ kind: ZekkPet.BannerKind) {
+        dismissedPetBanners.insert("\(channelId):\(kind.rawValue)")
+    }
+
+    /// Fetch a 1:1 DM's pet. A failed fetch keeps what's known.
+    func loadDmPet(_ channelId: String) async {
+        guard zekkPetEnabled else { return }
+        let revision = dmPetRevision[channelId] ?? 0
+        guard let state = try? await api.getDmPet(channelId: channelId) else { return }
+        var next = state
+        // A DM_PET_UPDATE or our own change landed meanwhile: keep its pet.
+        if (dmPetRevision[channelId] ?? 0) != revision, let known = dmPets[channelId] {
+            next.pet = known.pet
+        }
+        if dmPets[channelId] != next { dmPets[channelId] = next }
+        schedulePetRefresh()
+    }
+
+    /// Record a DM's pet from an event or our own change (nil = gone).
+    private func setDmPet(_ channelId: String, _ pet: PetDTO?) {
+        dmPetRevision[channelId, default: 0] &+= 1
+        // Not fetched yet: whether the DM may adopt is unknown until
+        // loadDmPet answers, so assume not (no banner) rather than guess.
+        var state = dmPets[channelId]
+            ?? DmPetState(pet: nil, eligible: false, streak: 0, minStreak: ZekkPet.minStreak)
+        state.pet = pet
+        if dmPets[channelId] != state { dmPets[channelId] = state }
+        schedulePetRefresh()
+    }
+
+    enum PetChange {
+        case invite, accept, decline
+        case rename(String)
+    }
+
+    /// Invite / accept / decline (or cancel) / rename. Sets errorText on
+    /// failure and resyncs — a 409 or 404 means this view was behind (the
+    /// other person invited or accepted first, the invite expired…).
+    /// Returns whether the server took it.
+    @discardableResult
+    func changeDmPet(_ channelId: String, _ change: PetChange) async -> Bool {
+        do {
+            let pet: PetDTO?
+            switch change {
+            case .invite: pet = try await api.inviteDmPet(channelId: channelId)
+            case .accept: pet = try await api.acceptDmPet(channelId: channelId)
+            case .decline:
+                try await api.declineDmPet(channelId: channelId)
+                pet = nil
+            case .rename(let name): pet = try await api.renameDmPet(channelId: channelId, name: name)
+            }
+            setDmPet(channelId, pet)
+            // No pet any more: whether the DM may invite again (and its
+            // streak) only comes with a fetch.
+            if pet == nil { await loadDmPet(channelId) }
+            return true
+        } catch {
+            errorText = (error as? APIError)?.message ?? error.localizedDescription
+            Task { await loadDmPet(channelId) }
+            return false
+        }
+    }
+
+    /// Arm (or clear) the one sleeping re-read for the open 1:1 DM's pet: the
+    /// mood turns on the clock alone at 18:00 UTC and at midnight UTC, and no
+    /// event says so. A suspended app's sleep is caught up by the foreground
+    /// refresh instead.
+    private func schedulePetRefresh() {
+        petRefreshTask?.cancel()
+        petRefreshTask = nil
+        guard let c = selectedChannel, c.type == "dm", let pet = dmPets[c.id]?.pet,
+              let at = ZekkPet.nextRefreshAt(pet, now: serverNowDate()) else { return }
+        let delay = max(1, at.timeIntervalSince(serverNowDate()))
+        let channelId = c.id
+        petRefreshTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.selectedChannel?.id == channelId else { return }
+            await self.loadDmPet(channelId)
+        }
+    }
+
     func closeDM(_ channel: Channel) async {
         do {
             try await api.closeDM(channelId: channel.id)
@@ -6720,6 +6845,16 @@ final class AppStore: ObservableObject {
                let chosen = u["chosenStatus"] as? String {
                 noteSelfStatus(chosen: chosen, effective: nil)
             }
+            // Zekk Pets come with READY's features. The open 1:1 DM's pet:
+            // fetched now on the first READY (a DM opened before it arrived
+            // skipped the fetch) and re-read after a reconnect (a
+            // DM_PET_UPDATE sent while the socket was down is never replayed).
+            let features = jsonDict(data)?["features"] as? [String: Any]
+            let petsOn = features?["zekk_pet"] as? Bool == true
+            if zekkPetEnabled != petsOn { zekkPetEnabled = petsOn }
+            if petsOn, let c = selectedChannel, c.type == "dm" {
+                Task { await loadDmPet(c.id) }
+            }
             if didInitialReady {
                 // A READY after the first one means we reconnected following a
                 // drop. Re-sync state, since dispatch events were missed while
@@ -6800,8 +6935,14 @@ final class AppStore: ObservableObject {
             if isTimerNotice, let seconds = message.metadata?.timerSeconds {
                 setDmTimer(message.channelId, seconds)
             }
+            // A Zekk Pet notice is quiet too (no buzz, no push). The server's
+            // daily check posts its asleep / ran-away notices under user A,
+            // who did nothing — so only a notice WE caused moves our read
+            // marker below; any other must not hide unread messages.
+            let isPetNotice = ZekkPet.isNotice(message)
+            let petNoticeByOther = isPetNotice && message.metadata?.actorId != currentUserId
             // A user's message supersedes their typing indicator (web parity).
-            if let author = message.authorId ?? message.author?.id {
+            if let author = message.authorId ?? message.author?.id, !petNoticeByOther {
                 typing.removeValue(forKey: author)
                 // Our OWN message must never light an unread dot for us —
                 // advance our local read marker immediately (the message we
@@ -6840,8 +6981,8 @@ final class AppStore: ObservableObject {
             // that channel isn't muted; the watch buzzes for incoming DMs while
             // its app is reachable (mirrors the poke relay below). The
             // disappearing-timer notice is quiet, as in Signal (the server
-            // doesn't push it either).
-            if let a = message.authorId ?? message.author?.id, a != currentUserId, !isTimerNotice {
+            // doesn't push it either), and so is a Zekk Pet notice.
+            if let a = message.authorId ?? message.author?.id, a != currentUserId, !isTimerNotice, !isPetNotice {
                 if message.channelId == selectedChannel?.id,
                    channelLevel(message.channelId, guildId: selectedChannel?.guildId) != "nothing" {
                     Haptics.incomingMessage()
@@ -6873,6 +7014,26 @@ final class AppStore: ObservableObject {
                let streak = d["streak"] as? Int {
                 if let i = dms.firstIndex(where: { $0.id == cid }) { dms[i].streak = streak }
                 if selectedChannel?.id == cid { selectedChannel?.streak = streak }
+                // A DM without a pet may just have become able to adopt one
+                // (or the banner's day count moved); DM_PET_UPDATE doesn't
+                // cover that, so re-read a DM we've already loaded.
+                if zekkPetEnabled, let known = dmPets[cid], known.pet == nil {
+                    Task { await loadDmPet(cid) }
+                }
+            }
+        case "DM_PET_UPDATE":
+            // A 1:1 DM's Zekk Pet changed (either person, the server's daily
+            // check, another of our devices). Payload is camelCase like
+            // DM_SETTINGS_UPDATE: { channelId, pet } — null = gone (declined,
+            // cancelled, expired, ran away), when whether the DM may adopt
+            // again only comes with a fetch.
+            if let payload = try? JSONDecoder().decode(DmPetUpdatePayload.self, from: data) {
+                let loaded = dmPets[payload.channelId] != nil
+                setDmPet(payload.channelId, payload.pet)
+                if payload.pet == nil, loaded { Task { await loadDmPet(payload.channelId) } }
+            } else if let d = jsonDict(data), let cid = d["channelId"] as? String, dmPets[cid] != nil {
+                // A pet this build can't read: fetch it instead.
+                Task { await loadDmPet(cid) }
             }
         case "POKE":
             // Ephemeral nudge — no message, no history. Payload snake_case:

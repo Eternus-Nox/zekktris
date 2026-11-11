@@ -319,6 +319,15 @@ struct MessageMetadata: Codable, Hashable {
     /// who changed it. A NEW key on purpose: reusing an existing one with a
     /// different JSON type would fail the whole page decode on older builds.
     var timerSeconds: Int?
+    /// kind == "pet" (type "system_pet"): what happened to the DM's Zekk Pet
+    /// (invited | adopted | hatched | evolved | asleep | awake | ran_away |
+    /// renamed), its name and stage at the time, and who caused it (nil for
+    /// the server's daily check: asleep, ran_away). Plain strings under NEW
+    /// keys, so an event or stage this build doesn't know can't fail a page.
+    var event: String?
+    var petName: String?
+    var stage: String?
+    var actorId: String?
 }
 
 /// Poke/nudge variants — emoji + verb. Mirror of the server POKE_VARIANTS
@@ -743,6 +752,498 @@ struct DmSettings: Codable {
     /// The longest timer the server accepts (2419200 = 4 weeks; the shortest
     /// is 1 s). Absent (nil) on older servers, which accept only 10...86400.
     var maxTtlSeconds: Int?
+}
+
+// MARK: - Zekk Pet
+
+/// An invite waiting for the other person, a pet being raised, or one that
+/// fell asleep after a missed day. A value this build doesn't know (a newer
+/// server) reads as `.active`, so the pet still shows.
+enum PetStatus: String, Decodable, Hashable {
+    case invited, active, asleep
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PetStatus(rawValue: raw) ?? .active
+    }
+}
+
+/// The pet's growth stages, in order.
+enum PetStage: String, Decodable, Hashable, CaseIterable {
+    case egg, baby, kid, teen, adult, legendary
+
+    /// Unknown values decode to `.egg` here; PetDTO works the stage out from
+    /// the level instead.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PetStage(rawValue: raw) ?? .egg
+    }
+
+    var label: String {
+        switch self {
+        case .egg: return "Egg"
+        case .baby: return "Baby"
+        case .kid: return "Kid"
+        case .teen: return "Teen"
+        case .adult: return "Adult"
+        case .legendary: return "Legendary"
+        }
+    }
+
+    /// The first level of the stage.
+    var minLevel: Int {
+        switch self {
+        case .egg: return 0
+        case .baby: return 1
+        case .kid: return 5
+        case .teen: return 10
+        case .adult: return 15
+        case .legendary: return 25
+        }
+    }
+}
+
+/// The mood word (the pet's adjective), worked out by the server when it
+/// answers. Unknown values decode to `.happy`.
+enum PetMood: String, Decodable, Hashable, CaseIterable {
+    case thriving, happy, lonely, hungry, grumpy, asleep
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PetMood(rawValue: raw) ?? .happy
+    }
+
+    var label: String {
+        switch self {
+        case .thriving: return "Thriving"
+        case .happy: return "Happy"
+        case .lonely: return "Lonely"
+        case .hungry: return "Hungry"
+        case .grumpy: return "Grumpy"
+        case .asleep: return "Asleep"
+        }
+    }
+
+    /// The line under the mood word. Asleep's has a `{day}` slot for the
+    /// weekday of `wakeBy` (ZekkPet.moodLine fills it).
+    var line: String {
+        switch self {
+        case .thriving: return "Every task done today. It's glowing!"
+        case .happy: return "Fed for today. Keep chatting to earn more points."
+        case .lonely: return "Only one of you has said hi today."
+        case .hungry: return "Say hi to each other to feed it."
+        case .grumpy: return "Your streak ends at midnight UTC. Say hi to each other!"
+        case .asleep: return "Your streak broke. Both say hi by {day} to wake it up, or it runs away."
+        }
+    }
+}
+
+/// One of today's care tasks. `key` stays a raw string (both_hi | chatty |
+/// voice | photo | poke) so a task this build doesn't know still decodes and
+/// is simply not listed.
+struct PetTask: Decodable, Hashable {
+    var key: String
+    /// Completed in the current UTC day.
+    var done: Bool
+    /// Points the task awards (once per day).
+    var points: Int
+    /// `chatty` only: each person's message count today, capped at `goal`.
+    var progress: PetTaskProgress?
+
+    private enum CodingKeys: String, CodingKey { case key, done, points, progress }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = (try? c.decode(String.self, forKey: .key)) ?? ""
+        done = (try? c.decode(Bool.self, forKey: .done)) ?? false
+        points = (try? c.decode(Int.self, forKey: .points)) ?? 0
+        progress = try? c.decode(PetTaskProgress.self, forKey: .progress)
+    }
+}
+
+struct PetTaskProgress: Decodable, Hashable {
+    struct Count: Decodable, Hashable {
+        var userId: String
+        var count: Int
+    }
+    var a: Count?
+    var b: Count?
+    var goal: Int
+
+    private enum CodingKeys: String, CodingKey { case a, b, goal }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        a = try? c.decode(Count.self, forKey: .a)
+        b = try? c.decode(Count.self, forKey: .b)
+        goal = (try? c.decode(Int.self, forKey: .goal)) ?? ZekkPet.chattyGoal
+    }
+}
+
+/// The Zekk Pet of a 1:1 DM (camelCase, packages/client PetDTO). The server
+/// is authoritative: the app shows these values and never computes points,
+/// level, status or mood itself. An `invited` pet is an egg with level 0 and
+/// no tasks. Decoding is defensive — only `channelId` is required — so a
+/// newer server's values never cost the DM its pet.
+struct PetDTO: Decodable, Hashable {
+    var channelId: String
+    var status: PetStatus
+    /// Who sent the adoption invite.
+    var invitedBy: String?
+    var name: String
+    var level: Int
+    var stage: PetStage
+    /// Total points earned.
+    var points: Int
+    /// Total points at which the current level started.
+    var levelFloor: Int
+    /// Total points at which the next level starts.
+    var nextLevelAt: Int
+    var mood: PetMood
+    var tasks: [PetTask]
+    /// Both people messaged today (UTC), i.e. the pet was fed.
+    var fedToday: Bool
+    /// Last UTC day (YYYY-MM-DD) the pet was fed.
+    var lastFedDay: String?
+    /// Asleep only: the last UTC day (YYYY-MM-DD) on which feeding still
+    /// wakes it; after that day it runs away.
+    var wakeBy: String?
+    var adoptedAt: String?
+    /// The server's current UTC day (YYYY-MM-DD).
+    var today: String
+    /// ISO time the current UTC day ends (the next midnight UTC).
+    var dayEndsAt: String
+
+    private enum CodingKeys: String, CodingKey {
+        case channelId, status, invitedBy, name, level, stage, points, levelFloor, nextLevelAt
+        case mood, tasks, fedToday, lastFedDay, wakeBy, adoptedAt, today, dayEndsAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        channelId = try c.decode(String.self, forKey: .channelId)
+        status = (try? c.decode(PetStatus.self, forKey: .status)) ?? .active
+        invitedBy = try? c.decode(String.self, forKey: .invitedBy)
+        let rawName = (try? c.decode(String.self, forKey: .name)) ?? ""
+        name = rawName.isEmpty ? ZekkPet.defaultName : rawName
+        level = max(0, (try? c.decode(Int.self, forKey: .level)) ?? 0)
+        // An unknown stage (a newer server's) follows from the level.
+        let rawStage = (try? c.decode(String.self, forKey: .stage)) ?? ""
+        stage = PetStage(rawValue: rawStage) ?? ZekkPet.stage(forLevel: level)
+        points = max(0, (try? c.decode(Int.self, forKey: .points)) ?? 0)
+        levelFloor = (try? c.decode(Int.self, forKey: .levelFloor)) ?? ZekkPet.levelFloor(level)
+        nextLevelAt = (try? c.decode(Int.self, forKey: .nextLevelAt)) ?? ZekkPet.levelFloor(level + 1)
+        let rawMood = (try? c.decode(String.self, forKey: .mood)) ?? ""
+        mood = PetMood(rawValue: rawMood) ?? (status == .asleep ? .asleep : .happy)
+        tasks = (try? c.decode([PetTask].self, forKey: .tasks)) ?? []
+        fedToday = (try? c.decode(Bool.self, forKey: .fedToday)) ?? false
+        lastFedDay = try? c.decode(String.self, forKey: .lastFedDay)
+        wakeBy = try? c.decode(String.self, forKey: .wakeBy)
+        adoptedAt = try? c.decode(String.self, forKey: .adoptedAt)
+        today = (try? c.decode(String.self, forKey: .today)) ?? ""
+        dayEndsAt = (try? c.decode(String.self, forKey: .dayEndsAt)) ?? ""
+    }
+}
+
+/// GET /users/@me/channels/:id/pet.
+struct DmPetState: Decodable, Hashable {
+    /// nil = no pet and no open invite.
+    var pet: PetDTO?
+    /// The streak is alive and at least `minStreak` days, so either person
+    /// may invite (only meaningful while `pet` is nil).
+    var eligible: Bool
+    var streak: Int
+    var minStreak: Int
+
+    init(pet: PetDTO?, eligible: Bool, streak: Int, minStreak: Int) {
+        self.pet = pet
+        self.eligible = eligible
+        self.streak = streak
+        self.minStreak = minStreak
+    }
+
+    private enum CodingKeys: String, CodingKey { case pet, eligible, streak, minStreak }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // A pet that's there but unreadable fails the fetch (the known state
+        // stays) rather than reading as "no pet" and offering an adoption.
+        pet = try c.decodeIfPresent(PetDTO.self, forKey: .pet)
+        eligible = (try? c.decode(Bool.self, forKey: .eligible)) ?? false
+        streak = (try? c.decode(Int.self, forKey: .streak)) ?? 0
+        minStreak = (try? c.decode(Int.self, forKey: .minStreak)) ?? ZekkPet.minStreak
+    }
+}
+
+/// `{ pet }` from invite / accept / decline / rename (decline: null).
+struct PetWrap: Decodable { let pet: PetDTO? }
+
+/// DM_PET_UPDATE (camelCase like DM_SETTINGS_UPDATE). `pet` nil = no pet any
+/// more (invite declined / cancelled / expired, or the pet ran away).
+struct DmPetUpdatePayload: Decodable {
+    let channelId: String
+    let pet: PetDTO?
+}
+
+/// Zekk Pet — the shared pet two people raise in a 1:1 DM by keeping their
+/// streak going. The numbers and words the app shows, pure Foundation. A
+/// mirror of packages/shared/src/pets.ts, the web's lib/zekkPet.ts and the
+/// server's notice text (apps/api/src/services/pets.ts) word for word; keep
+/// them in sync. The server decides everything; nothing here is a rule the
+/// app enforces except the rename check (the server repeats it).
+enum ZekkPet {
+    /// Streak days a 1:1 DM needs (while the streak is alive) to adopt.
+    static let minStreak = 3
+    /// Longest pet name in code points, after trimming and collapsing.
+    static let nameMaxLength = 24
+    static let defaultName = "Zekk"
+    /// Messages each person sends in a UTC day for the `chatty` task.
+    static let chattyGoal = 10
+
+    /// One daily task: `bit` is its bit in the server's tasks_done mask.
+    struct CareTask {
+        let key: String
+        let bit: Int
+        let points: Int
+        let label: String
+    }
+
+    /// The daily tasks in display order.
+    static let careTasks: [CareTask] = [
+        CareTask(key: "both_hi", bit: 1, points: 10, label: "Both say hi"),
+        CareTask(key: "chatty", bit: 2, points: 10, label: "10 messages each"),
+        CareTask(key: "voice", bit: 4, points: 5, label: "Send a voice message"),
+        CareTask(key: "photo", bit: 8, points: 5, label: "Send a photo"),
+        CareTask(key: "poke", bit: 16, points: 5, label: "Poke each other"),
+    ]
+
+    /// Total points needed to reach `level` from an egg:
+    /// T(L) = 25·L + 5·L·(L−1)/2 (T(1)=25, T(5)=175, T(10)=475, T(25)=2125).
+    static func levelFloor(_ level: Int) -> Int {
+        guard level > 0 else { return 0 }
+        return 25 * level + 5 * level * (level - 1) / 2
+    }
+
+    static func stage(forLevel level: Int) -> PetStage {
+        PetStage.allCases.last(where: { level >= $0.minLevel }) ?? .egg
+    }
+
+    // MARK: Name
+
+    /// JavaScript's `\s` (the shared rule's regex), scalar by scalar.
+    private static func isJSWhitespace(_ s: Unicode.Scalar) -> Bool {
+        switch s.value {
+        case 0x09...0x0D, 0x20, 0xA0, 0x1680, 0x2000...0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// normalizePetName: trim, collapse runs of whitespace to one space. nil
+    /// when the result is empty, longer than `nameMaxLength` code points, or
+    /// holds a control character (U+0000–001F, U+007F–009F).
+    static func normalizeName(_ raw: String) -> String? {
+        var out = String.UnicodeScalarView()
+        var pendingSpace = false
+        for s in raw.unicodeScalars {
+            if isJSWhitespace(s) {
+                pendingSpace = !out.isEmpty
+                continue
+            }
+            if pendingSpace { out.append(" ") }
+            pendingSpace = false
+            out.append(s)
+        }
+        guard !out.isEmpty, out.count <= nameMaxLength else { return nil }
+        if out.contains(where: { $0.value <= 0x1F || (0x7F...0x9F).contains($0.value) }) { return nil }
+        return String(out)
+    }
+
+    // MARK: Days (UTC)
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(secondsFromGMT: 0)
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    /// Midnight UTC of a "YYYY-MM-DD" day; nil for anything else.
+    static func utcDay(_ day: String?) -> Date? {
+        guard let day, day.count == 10 else { return nil }
+        return dayFormatter.date(from: day)
+    }
+
+    /// "Friday" for "2026-11-13": the weekday of a UTC day (pets live on UTC
+    /// days, so the viewer's own time zone mustn't shift it).
+    static func utcWeekday(_ day: String?) -> String? {
+        guard let date = utcDay(day) else { return nil }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0) ?? .current
+        let names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+        let weekday = cal.component(.weekday, from: date)
+        return (1...7).contains(weekday) ? names[weekday - 1] : nil
+    }
+
+    // MARK: The pet card
+
+    /// The mood line; asleep's names the weekday it can still be woken
+    /// (`wakeBy`, else last fed day + 3 — the same rule — if it's missing).
+    static func moodLine(_ pet: PetDTO) -> String {
+        guard pet.mood == .asleep else { return pet.mood.line }
+        var day = utcWeekday(pet.wakeBy)
+        if day == nil, let fed = utcDay(pet.lastFedDay) {
+            day = utcWeekday(dayFormatter.string(from: fed.addingTimeInterval(3 * 86_400)))
+        }
+        return pet.mood.line.replacingOccurrences(of: "{day}", with: day ?? "tomorrow")
+    }
+
+    /// "Level 3 · Baby".
+    static func levelLine(_ pet: PetDTO) -> String {
+        "Level \(pet.level) · \(pet.stage.label)"
+    }
+
+    /// Points earned in this level, what the level takes, and their ratio
+    /// (0–1; the egg cracks from 0.8). "{have}/{need} to level {L+1}".
+    static func levelProgress(_ pet: PetDTO) -> (have: Int, need: Int, fraction: Double, label: String) {
+        let need = max(0, pet.nextLevelAt - pet.levelFloor)
+        let have = min(max(0, pet.points - pet.levelFloor), need)
+        let fraction = need > 0 ? Double(have) / Double(need) : 0
+        return (have, need, fraction, "\(have)/\(need) to level \(pet.level + 1)")
+    }
+
+    /// One row of "Today's care".
+    struct CareRow: Identifiable, Hashable {
+        let key: String
+        let label: String
+        let points: Int
+        let done: Bool
+        /// `chatty` only: "{me}/10 · {them}/10".
+        let progress: String?
+        var id: String { key }
+    }
+
+    /// The checklist in display order. A task the DTO doesn't list (an
+    /// invited pet has none) reads as not done.
+    static func careRows(_ pet: PetDTO, selfId: String?) -> [CareRow] {
+        careTasks.map { t in
+            let task = pet.tasks.first(where: { $0.key == t.key })
+            var progress: String?
+            if t.key == "chatty", let p = task?.progress {
+                let mineIsA = p.a != nil && p.a?.userId == selfId
+                let mineIsB = !mineIsA && p.b != nil && p.b?.userId == selfId
+                let mine = mineIsA ? p.a : (mineIsB ? p.b : nil)
+                let theirs = mineIsA ? p.b : (mineIsB ? p.a : (p.a ?? p.b))
+                progress = "\(min(mine?.count ?? 0, p.goal))/\(p.goal) · \(min(theirs?.count ?? 0, p.goal))/\(p.goal)"
+            }
+            return CareRow(key: t.key, label: t.label, points: task?.points ?? t.points,
+                           done: task?.done == true, progress: progress)
+        }
+    }
+
+    /// When the open DM should re-read its pet even if no event comes: two
+    /// of the mood's rules turn on the clock alone — 18:00 UTC (a pet fed
+    /// yesterday turns grumpy) and the end of the UTC day (today's tasks
+    /// reset). The next of those after `now`, a few seconds past it.
+    static func nextRefreshAt(_ pet: PetDTO, now: Date) -> Date? {
+        var candidates: [Date] = []
+        if let today = utcDay(pet.today) { candidates.append(today.addingTimeInterval(18 * 3_600)) }
+        if let end = messageDate(pet.dayEndsAt) { candidates.append(end) }
+        return candidates.filter { $0 > now }.min()?.addingTimeInterval(5)
+    }
+
+    // MARK: The adopt banner
+
+    enum BannerKind: String {
+        /// No pet, and the DM may adopt: [Adopt].
+        case adopt
+        /// Our invite is waiting: [Cancel].
+        case waiting
+        /// Their invite to us: [Accept] [Not now].
+        case invited
+    }
+
+    struct Banner: Equatable {
+        let kind: BannerKind
+        let text: String
+    }
+
+    /// The slim bar under the DM header; nil when the state isn't loaded, the
+    /// DM can't adopt, or the pet has hatched already.
+    static func banner(_ state: DmPetState?, selfId: String?, peerName: String) -> Banner? {
+        guard let state, let selfId else { return nil }
+        guard let pet = state.pet else {
+            guard state.eligible else { return nil }
+            return Banner(kind: .adopt, text: "🥚 \(state.streak)-day streak! Adopt a Zekk Pet with \(peerName).")
+        }
+        guard pet.status == .invited else { return nil }
+        return pet.invitedBy == selfId
+            ? Banner(kind: .waiting, text: "Waiting for \(peerName) to accept your Zekk Pet.")
+            : Banner(kind: .invited, text: "\(peerName) wants to raise a Zekk Pet with you.")
+    }
+
+    // MARK: The in-chat notice
+
+    /// A Zekk Pet notice row: type "system_pet", or (defensively) any row
+    /// carrying the "pet" metadata.
+    static func isNotice(_ m: Message) -> Bool {
+        m.type == "system_pet" || m.metadata?.kind == "pet"
+    }
+
+    /// "a Kid", "an Adult".
+    private static func withArticle(_ word: String) -> String {
+        let first = word.lowercased().first
+        return (first.map { "aeiou".contains($0) } ?? false) ? "an \(word)" : "a \(word)"
+    }
+
+    /// The notice line, built from its metadata: "You" for the viewer, the
+    /// other person's (nicknamed) name otherwise; `peerName` is the other
+    /// person in the DM (the adoption names both). nil for an event this
+    /// build doesn't know, or an actor event without its actor: show the
+    /// row's fallback content then.
+    static func noticeText(event: String, petName: String, stage: String?,
+                           actorIsSelf: Bool, actorName: String?, peerName: String) -> String? {
+        let who = actorIsSelf ? "You" : actorName
+        switch event {
+        case "invited":
+            guard let who else { return nil }
+            return "\(who) \(actorIsSelf ? "want" : "wants") to raise a Zekk Pet together. 🥚"
+        case "adopted":
+            // The viewer is always one of the two, so they read first.
+            let other = actorIsSelf ? peerName : (actorName ?? peerName)
+            return "You and \(other) adopted a Zekk Pet! 🥚"
+        case "hatched":
+            return "\(petName) hatched! 🐣"
+        case "evolved":
+            guard let s = PetStage(rawValue: stage ?? "") else { return nil }
+            return "\(petName) grew into \(withArticle(s.label))!"
+        case "asleep":
+            return "\(petName) fell asleep. 😴 Say hi to each other within 2 days to wake it up."
+        case "awake":
+            return "\(petName) woke up! 🎉"
+        case "ran_away":
+            return "\(petName) ran away. Keep a \(minStreak)-day streak to adopt a new one."
+        case "renamed":
+            guard let who else { return nil }
+            return "\(who) renamed the pet to \(petName)."
+        default:
+            return nil
+        }
+    }
+
+    /// The small pet beside a notice: the stage it reached, asleep for the
+    /// asleep notice, lonely when it ran away, happy otherwise.
+    static func noticeArt(event: String?, stage: String?) -> (stage: PetStage, mood: PetMood) {
+        let s = PetStage(rawValue: stage ?? "") ?? .egg
+        switch event ?? "" {
+        case "asleep": return (s, .asleep)
+        case "ran_away": return (s, .lonely)
+        default: return (s, .happy)
+        }
+    }
 }
 
 struct StorageItem: Codable, Identifiable {

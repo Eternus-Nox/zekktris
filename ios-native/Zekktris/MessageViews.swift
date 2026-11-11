@@ -469,6 +469,8 @@ struct MessageListView: View {
     @State private var composerFocused = false
     @State private var showEnableSheet = false
     @State private var showDmSettings = false
+    /// The Zekk Pet card (1:1 DMs; the header pet opens it).
+    @State private var showPetCard = false
     @State private var showPokePopover = false
     @State private var pokeHistory: [PokeHistoryEntry] = []
     @State private var pokeHistoryLoading = false
@@ -637,6 +639,9 @@ struct MessageListView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let banner = petBanner {
+                ZekkPetBanner(channelId: channel.id, banner: banner)
+            }
 
             if isLocked {
                 // The live copy: it has the salt and verifier to unlock with,
@@ -1065,6 +1070,18 @@ struct MessageListView: View {
         .sheet(isPresented: $showDmSettings) {
             DmSettingsSheet(channel: channel)
         }
+        .sheet(isPresented: $showPetCard) {
+            ZekkPetCardSheet(channel: channel)
+        }
+    }
+
+    /// The Zekk Pet bar under a 1:1 DM's header (adopt / waiting / invited),
+    /// unless dismissed for this session.
+    private var petBanner: ZekkPet.Banner? {
+        guard let banner = ZekkPet.banner(store.petState(for: channel), selfId: store.currentUserId,
+                                          peerName: store.dmDisplayTitle(channel)),
+              !store.isPetBannerDismissed(channel.id, banner.kind) else { return nil }
+        return banner
     }
 
     // MARK: Open landing
@@ -1535,10 +1552,11 @@ struct MessageListView: View {
         where (m.authorId ?? m.author?.id) == selfId
             && m.sendState == nil
             && m.metadata?.kind != "streak_warning"
-            && !DisappearingTimer.isNotice(m) {
-            // ^ the streak-expiry and disappearing-timer notices are authored
-            //   by a participant but are system-style rows — neither may
-            //   become the read-receipt anchor.
+            && !DisappearingTimer.isNotice(m)
+            && !ZekkPet.isNotice(m) {
+            // ^ the streak-expiry, disappearing-timer and Zekk Pet notices are
+            //   authored by a participant but are system-style rows — none
+            //   may become the read-receipt anchor.
             latest = m
             if m.viewedAt != nil { lastRead = m }
         }
@@ -1594,7 +1612,9 @@ struct MessageListView: View {
             repliedDisplay: replied.map { masked(store.display(for: $0, in: channel)) },
             localEmbeds: store.localEmbeds(for: message.id) ?? [],
             isSaved: store.isSaved(message.id),
-            noticeText: DisappearingTimer.isNotice(message) ? disappearingNoticeText(message) : nil,
+            noticeText: DisappearingTimer.isNotice(message) ? disappearingNoticeText(message)
+                : (ZekkPet.isNotice(message) ? petNoticeText(message) : nil),
+            petThemeId: ZekkPet.isNotice(message) ? store.themeId : nil,
             emojiCatalogVersion: store.emojiCatalogVersion,
             mentionContextVersion: store.mentionContextVersion,
             e2eeUnlockVersion: store.e2eeUnlockVersion
@@ -1627,6 +1647,38 @@ struct MessageListView: View {
         return m.text.isEmpty
             ? DisappearingTimer.noticeText(timerSeconds: seconds, isSelf: false, name: "Someone")
             : m.text
+    }
+
+    /// A Zekk Pet notice's line, from its metadata: "You" when the viewer
+    /// caused it ("You and Sam adopted a Zekk Pet! 🥚"), the other person's
+    /// nickname or name otherwise. Resolved here (nicknames are store state)
+    /// so it's part of the row's Equatable snapshot. Without the metadata, or
+    /// for an event this build doesn't know, the server's readable
+    /// third-person content is shown as-is.
+    private func petNoticeText(_ m: Message) -> String {
+        guard let meta = m.metadata, meta.kind == "pet", let event = meta.event else { return m.text }
+        let me = store.currentUserId
+        // The other person in the DM (recipients never include the viewer).
+        let peer = channel.recipients?.first(where: { $0.id != me })
+        let peerName = store.dmNickname(peer?.id) ?? peer?.name ?? "them"
+        let actorIsSelf = me != nil && meta.actorId == me
+        let actorName: String?
+        if let actorId = meta.actorId, !actorIsSelf {
+            if actorId == peer?.id {
+                actorName = peerName
+            } else if let nick = store.dmNickname(actorId) {
+                actorName = nick
+            } else if let author = m.author, author.id == actorId {
+                actorName = author.name
+            } else {
+                actorName = "Someone"
+            }
+        } else {
+            actorName = nil
+        }
+        return ZekkPet.noticeText(event: event, petName: meta.petName ?? ZekkPet.defaultName,
+                                  stage: meta.stage, actorIsSelf: actorIsSelf,
+                                  actorName: actorName, peerName: peerName) ?? m.text
     }
 
     /// Encrypted DM with no key on this device → show the unlock panel.
@@ -1724,6 +1776,11 @@ struct MessageListView: View {
                 if let streak = (store.dms.first(where: { $0.id == channel.id })?.streak ?? channel.streak),
                    streak > 0 {
                     StreakChip(days: streak)
+                }
+                // The DM's Zekk Pet beside the streak (an egg while the invite
+                // is open, asleep after a broken streak). Opens the pet card.
+                if let pet = store.petState(for: channel)?.pet {
+                    ZekkPetHeaderButton(pet: pet, themeId: store.themeId) { showPetCard = true }
                 }
             } else {
                 Image(systemName: "number")
@@ -2565,7 +2622,7 @@ struct MessageListView: View {
     /// and a same-author run can't be "continued" across one.
     private func isNoticeRow(_ m: Message) -> Bool {
         m.metadata?.kind == "streak_warning" || m.metadata?.kind == "poke" || m.type == "system_call"
-            || DisappearingTimer.isNotice(m)
+            || DisappearingTimer.isNotice(m) || ZekkPet.isNotice(m)
     }
 
     /// Header and divider flags for every row, in ONE forward pass over the
@@ -2760,9 +2817,14 @@ struct MessageRowData: Equatable {
     var localEmbeds: [MessageEmbed]
     /// Save/Unsave menu label state.
     var isSaved: Bool
-    /// The disappearing-timer notice's resolved line ("You set …" / "<name>
-    /// set …"); nil for every other row.
+    /// The resolved line of a disappearing-timer notice ("You set …" /
+    /// "<name> set …") or a Zekk Pet notice ("You and Sam adopted …"); nil
+    /// for every other row.
     var noticeText: String?
+    /// A Zekk Pet notice's glyph colours: the viewer's theme id, so a theme
+    /// switch redraws it (this row is Equatable, so it can't read the static
+    /// Theme.current); nil for every other row.
+    var petThemeId: String?
     var emojiCatalogVersion: Int
     var mentionContextVersion: Int
     var e2eeUnlockVersion: Int
@@ -2816,6 +2878,9 @@ struct MessageRow: View, Equatable {
             // Disappearing-timer change: a quiet centered notice with no
             // context menu (nothing to edit, react to or reply to).
             disappearingNoticeRow
+        } else if ZekkPet.isNotice(message) {
+            // Zekk Pet news: the same quiet notice, with a small pet glyph.
+            petNoticeRow
         } else if message.type == "system_call" {
             systemRow
         } else {
@@ -2899,6 +2964,28 @@ struct MessageRow: View, Equatable {
             Image(systemName: "timer")
                 .font(.system(size: 11))
                 .foregroundColor(Theme.ink3)
+            Text(data.noticeText ?? message.text)
+                .font(.zkSans(12))
+                .foregroundColor(Theme.ink2)
+                .multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, gutter)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Something happened to the DM's Zekk Pet — a centered notice with a
+    /// small pet glyph in the viewer's theme ("You and Sam adopted a Zekk
+    /// Pet! 🥚", "Zekk grew into a Kid!"). The line is resolved in rowData
+    /// from the notice's metadata; the content is the server's fallback.
+    private var petNoticeRow: some View {
+        let art = ZekkPet.noticeArt(event: message.metadata?.event, stage: message.metadata?.stage)
+        return HStack(spacing: 6) {
+            Spacer(minLength: 0)
+            ZekkPetArt(stage: art.stage, mood: art.mood, themeId: data.petThemeId ?? "default", animated: false)
+                .frame(width: 16, height: 16)
+                .accessibilityHidden(true)
             Text(data.noticeText ?? message.text)
                 .font(.zkSans(12))
                 .foregroundColor(Theme.ink2)

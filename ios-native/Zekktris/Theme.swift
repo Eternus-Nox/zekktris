@@ -47,14 +47,20 @@ struct ThemePalette {
         "amethyst": Accents(a1: 0xA855F7, a2: 0xF5B942, a3: 0xD8A7FF, soft: 0x8B3FD6),
     ]
 
-    /// Resolve a theme id like "sunset-oled" into a concrete palette.
-    static func palette(for id: String) -> ThemePalette {
-        let oled = (id == "oled") || id.hasSuffix("-oled")
+    /// The accent trio of a theme id like "sunset-oled" (an OLED theme has
+    /// the same accents as its navy twin).
+    static func accents(for id: String) -> Accents {
         let schemeKey: String = {
             if id == "oled" || id == "default" { return "default" }
             return id.replacingOccurrences(of: "-oled", with: "")
         }()
-        let acc = accentSchemes[schemeKey] ?? accentSchemes["default"]!
+        return accentSchemes[schemeKey] ?? accentSchemes["default"]!
+    }
+
+    /// Resolve a theme id like "sunset-oled" into a concrete palette.
+    static func palette(for id: String) -> ThemePalette {
+        let oled = (id == "oled") || id.hasSuffix("-oled")
+        let acc = accents(for: id)
         if oled {
             // Web OLED ladder: --c-bg-0..3 + --c-line (opaque, like
             // Tailwind's `border-line`).
@@ -75,6 +81,39 @@ struct ThemePalette {
             line: Color(hex: 0x2A3450), lineSoft: Theme.zkLineSoft,
             accent: Color(hex: acc.a1), accentSoft: Color(hex: acc.soft),
             accent2: Color(hex: acc.a2), accent3: Color(hex: acc.a3))
+    }
+}
+
+/// The Zekk Pet's colours in a theme, as 0xRRGGBB (ZekkPet.swift draws with
+/// them): body = the theme accent, belly = the accent mixed 55% toward white,
+/// outline = 60% toward black, accent (antenna balls, stars) = the theme's
+/// second colour. A per-channel sRGB lerp rounded half up, in integers —
+/// what the web's color-mix computes. Each person sees the pet in THEIR
+/// theme, so it's built from a theme id (store.themeId), never from the
+/// static Theme.current, which goes stale inside Equatable rows.
+struct ZekkPetPalette: Equatable {
+    let body: UInt32
+    let belly: UInt32
+    let outline: UInt32
+    let accent: UInt32
+
+    static func forTheme(_ themeId: String) -> ZekkPetPalette {
+        let acc = ThemePalette.accents(for: themeId)
+        return ZekkPetPalette(body: acc.a1,
+                              belly: mix(acc.a1, toward: 0xFF, percent: 55),
+                              outline: mix(acc.a1, toward: 0x00, percent: 60),
+                              accent: acc.a2)
+    }
+
+    /// `percent`% of the way from `rgb` toward `target` (0 or 255), per
+    /// channel: (x·(100−p) + target·p + 50) / 100.
+    static func mix(_ rgb: UInt32, toward target: UInt32, percent: UInt32) -> UInt32 {
+        var out: UInt32 = 0
+        for shift in [UInt32(16), 8, 0] {
+            let x = (rgb >> shift) & 0xFF
+            out |= ((x * (100 - percent) + target * percent + 50) / 100) << shift
+        }
+        return out
     }
 }
 

@@ -1799,6 +1799,33 @@ extension APIClient {
         try await sendVoid("DELETE", "/users/@me/channels/\(channelId)")
     }
 
+    // ── Zekk Pet (1:1 DMs; servers with READY features.zekk_pet) ──────────────
+    /// The DM's pet (nil when none) and whether either person may invite.
+    func getDmPet(channelId: String) async throws -> DmPetState {
+        try await send("GET", "/users/@me/channels/\(channelId)/pet")
+    }
+    /// Invite the other person to adopt a pet. 409 when the DM isn't eligible
+    /// (streak under 3 days or broken) or a pet / invite already exists.
+    func inviteDmPet(channelId: String) async throws -> PetDTO? {
+        let wrap: PetWrap = try await send("POST", "/users/@me/channels/\(channelId)/pet/invite")
+        return wrap.pet
+    }
+    /// Accept the other person's invite; the egg appears. Invitee only.
+    func acceptDmPet(channelId: String) async throws -> PetDTO? {
+        let wrap: PetWrap = try await send("POST", "/users/@me/channels/\(channelId)/pet/accept")
+        return wrap.pet
+    }
+    /// Decline the invite (invitee) or cancel it (inviter).
+    func declineDmPet(channelId: String) async throws {
+        try await sendVoid("POST", "/users/@me/channels/\(channelId)/pet/decline")
+    }
+    /// Rename the pet (1–24 characters after trimming). Posts a notice.
+    func renameDmPet(channelId: String, name: String) async throws -> PetDTO? {
+        let data = try JSONSerialization.data(withJSONObject: ["name": name])
+        let wrap: PetWrap = try await send("PATCH", "/users/@me/channels/\(channelId)/pet", bodyData: data)
+        return wrap.pet
+    }
+
     func patchGuild(guildId: String, patch: [String: Any]) async throws -> Guild {
         let data = try JSONSerialization.data(withJSONObject: patch)
         let wrap: GuildWrap = try await send("PATCH", "/guilds/\(guildId)", bodyData: data)
