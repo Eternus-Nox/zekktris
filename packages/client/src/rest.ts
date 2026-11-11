@@ -12,6 +12,8 @@
 
 import type {
   AchievementsResponse,
+  DmPetState,
+  PetDTO,
   Attachment,
   AuthSession,
   QuickLoginCode,
@@ -2679,6 +2681,34 @@ export class RestClient {
       `/users/@me/channels/${channelId}/settings`,
       { ttlSecondsAfterRead },
     );
+  }
+
+  // ── Zekk Pet (1:1 DMs; servers with READY features.zekk_pet) ──────────
+
+  /** The DM's pet (null when none) and whether either person may invite. */
+  getDmPet(channelId: string): Promise<DmPetState> {
+    return this.request('GET', `/users/@me/channels/${channelId}/pet`);
+  }
+
+  /** Invite the other person to adopt a pet. 409 when the DM isn't eligible
+   *  (streak under 3 days or broken) or a pet / invite already exists. */
+  inviteDmPet(channelId: string): Promise<{ pet: PetDTO }> {
+    return this.request('POST', `/users/@me/channels/${channelId}/pet/invite`);
+  }
+
+  /** Accept the other person's invite; the egg appears. Invitee only. */
+  acceptDmPet(channelId: string): Promise<{ pet: PetDTO }> {
+    return this.request('POST', `/users/@me/channels/${channelId}/pet/accept`);
+  }
+
+  /** Decline the invite (invitee) or cancel it (inviter). */
+  declineDmPet(channelId: string): Promise<{ pet: null }> {
+    return this.request('POST', `/users/@me/channels/${channelId}/pet/decline`);
+  }
+
+  /** Rename the pet (1–24 characters after trimming). Posts a notice. */
+  renameDmPet(channelId: string, name: string): Promise<{ pet: PetDTO }> {
+    return this.request('PATCH', `/users/@me/channels/${channelId}/pet`, { name });
   }
 
   /**

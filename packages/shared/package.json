@@ -10,7 +10,8 @@
     "./permissions": "./src/permissions.ts",
     "./events": "./src/events.ts",
     "./snowflake": "./src/snowflake.ts",
-    "./constants": "./src/constants.ts"
+    "./constants": "./src/constants.ts",
+    "./pets": "./src/pets.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -13,6 +13,8 @@
  * add them here without coupling to the server's full DTO surface.
  */
 
+import type { PetMood, PetStage, PetStatus, PetTaskKey } from '@zekktris/shared/pets';
+
 export interface PublicUser {
   id: string;
   username: string;
@@ -490,7 +492,32 @@ export type MessageMetadata =
       timerSeconds: number;
       /** Who changed it (stringified BigInt). */
       initiatorId: string;
+    }
+  | {
+      /** Something happened to the DM's Zekk Pet. The row is type
+       *  'system_pet'; its `content` is a readable third-person fallback for
+       *  clients that don't know the type, and new clients build "You…" /
+       *  "<name>…" from this metadata instead. */
+      kind: 'pet';
+      event: PetNoticeEvent;
+      /** The pet's name at the time of the notice. */
+      petName: string;
+      stage: PetStage;
+      /** Who caused it (stringified BigInt); null for events the server's
+       *  daily check caused (asleep, ran_away). */
+      actorId: string | null;
     };
+
+/** What a 'system_pet' notice reports. */
+export type PetNoticeEvent =
+  | 'invited'
+  | 'adopted'
+  | 'hatched'
+  | 'evolved'
+  | 'asleep'
+  | 'awake'
+  | 'ran_away'
+  | 'renamed';
 
 export interface Message {
   id: string;
@@ -596,6 +623,75 @@ export interface MessageExpiryPayload {
 export interface DmSettingsUpdatePayload {
   channelId: string;
   ttlSecondsAfterRead: number | null;
+}
+
+/** One of today's care tasks on a Zekk Pet. */
+export interface PetTask {
+  key: PetTaskKey;
+  /** Completed in the current UTC day. */
+  done: boolean;
+  /** Points the task awards (once per day). */
+  points: number;
+  /** `chatty` only: each person's message count today, capped at `goal`. */
+  progress?: {
+    a?: { userId: string; count: number };
+    b?: { userId: string; count: number };
+    goal: number;
+  };
+}
+
+/**
+ * The Zekk Pet of a 1:1 DM (camelCase). Server-authoritative: clients show
+ * these values and never compute points, level, status or mood themselves.
+ * An `invited` pet is an egg with level 0 and no tasks.
+ */
+export interface PetDTO {
+  channelId: string;
+  status: PetStatus;
+  /** Who sent the adoption invite (stringified BigInt). */
+  invitedBy: string | null;
+  name: string;
+  /** 0–359; the hue of the pet's colours, fixed per DM. */
+  hue: number;
+  level: number;
+  stage: PetStage;
+  /** Total points earned. */
+  points: number;
+  /** Total points at which the current level started. */
+  levelFloor: number;
+  /** Total points at which the next level starts. */
+  nextLevelAt: number;
+  mood: PetMood;
+  tasks: PetTask[];
+  /** Both people messaged today (UTC), i.e. the pet was fed. */
+  fedToday: boolean;
+  /** Last UTC day (YYYY-MM-DD) the pet was fed. */
+  lastFedDay: string | null;
+  /** Asleep only: the last UTC day (YYYY-MM-DD) on which feeding still wakes
+   *  it; after that day it runs away. */
+  wakeBy: string | null;
+  adoptedAt: string | null;
+  /** The server's current UTC day (YYYY-MM-DD). */
+  today: string;
+  /** ISO time the current UTC day ends (the next midnight UTC). */
+  dayEndsAt: string;
+}
+
+/** GET /users/@me/channels/:id/pet. */
+export interface DmPetState {
+  pet: PetDTO | null;
+  /** The streak is alive and at least `minStreak` days, so either person may
+   *  invite (only meaningful while `pet` is null). */
+  eligible: boolean;
+  streak: number;
+  minStreak: number;
+}
+
+/** DM_PET_UPDATE payload (camelCase). `pet` null = no pet any more (invite
+ *  declined / cancelled / expired, or the pet ran away). */
+export interface DmPetUpdatePayload {
+  channelId: string;
+  pet: PetDTO | null;
 }
 
 export interface GuildMember {
@@ -931,6 +1027,7 @@ export type {
   PresenceActivity,
   ReadyFeatures,
 } from '@zekktris/shared/events';
+export type { PetMood, PetStage, PetStatus, PetTaskKey } from '@zekktris/shared/pets';
 export { GatewayOp, GatewayEvent } from '@zekktris/shared/events';
 
 // ── Webhooks ─────────────────────────────────────────────────────────────

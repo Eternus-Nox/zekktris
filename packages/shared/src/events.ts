@@ -142,6 +142,12 @@ export const GatewayEvent = {
   // the next DM-list fetch / app relaunch.
   DM_STREAK_UPDATE: 'DM_STREAK_UPDATE',
 
+  // Zekk Pet of a 1:1 DM changed (invited, adopted, fed, points/level/mood,
+  // renamed, asleep/awake, ran away / declined → null). Payload:
+  // { channelId, pet: PetDTO | null } (camelCase like DM_SETTINGS_UPDATE).
+  // Sent to both recipients so the header pet and the pet card update live.
+  DM_PET_UPDATE: 'DM_PET_UPDATE',
+
   // A new achievement was just unlocked by the current user. Sent ONLY to that
   // user's own connections (user audience) so the app can pop a celebratory
   // in-app toast/banner in real time. Payload: { id, name, description, marker }.
@@ -365,4 +371,7 @@ export interface ReadyFeatures {
    *  `chosenStatus` reads 'online') and `effectiveStatus` (what others see,
    *  until the first self PRESENCE_UPDATE frame). */
   presence_activity?: true;
+  /** The server has Zekk Pets (GET/POST /users/@me/channels/:id/pet…,
+   *  DM_PET_UPDATE, 'system_pet' notices). Clients hide the pet UI without it. */
+  zekk_pet?: true;
 }
