@@ -33,7 +33,7 @@ describe.runIf(dbReady)('migration 0133 (disappearing messages)', () => {
       readFileSync(new URL('../../../packages/db/migrations/meta/_journal.json', import.meta.url), 'utf8'),
     ) as { entries: Array<{ idx: number; when: number; tag: string; breakpoints: boolean }> };
     const at = journal.entries.findIndex((e) => e.tag === '0133_disappearing_messages');
-    expect(at).toBe(journal.entries.length - 1);
+    expect(at).toBeGreaterThan(0);
     const prev = journal.entries[at - 1]!;
     const entry = journal.entries[at]!;
     expect(prev.tag).toBe('0132_voice_moved_from');

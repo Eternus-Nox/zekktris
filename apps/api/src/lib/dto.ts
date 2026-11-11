@@ -960,8 +960,9 @@ export interface MessageDTO {
   expiresAt?: string | null;
   /**
    * Structured metadata payload for special message types. NULL for
-   * ordinary messages. Currently only `system_call` populates this,
-   * with `{ kind: 'call', missed, durationMs, initiatorId }`.
+   * ordinary messages. `system_call` carries `{ kind: 'call', missed,
+   * durationMs, initiatorId }`; the other kinds (streak warning, poke,
+   * disappearing timer, Zekk Pet) are listed on MessageMetadataJson.
    */
   metadata: MessageMetadataJson | null;
   createdAt: string;

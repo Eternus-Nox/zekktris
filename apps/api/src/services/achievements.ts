@@ -49,7 +49,7 @@
  * own alt) is usually the one a threshold invites.
  */
 
-import { and, count, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, count, eq, isNull, notInArray, sql } from 'drizzle-orm';
 import { db, schema } from '../db';
 
 export interface Achievement {
@@ -248,8 +248,10 @@ export async function achievementsForUser(userId: bigint): Promise<Achievement[]
         eq(schema.messages.authorId, userId),
         isNull(schema.messages.deletedAt),
         // The disappearing-timer notice is authored by whoever changed the
-        // setting; toggling it must not farm Chatterbox / Night Owl.
-        ne(schema.messages.type, 'system_disappearing'),
+        // setting, and Zekk Pet notices by whoever caused them (or user A for
+        // the sweep's): toggling, renaming or re-inviting must not farm
+        // Chatterbox / Night Owl.
+        notInArray(schema.messages.type, ['system_disappearing', 'system_pet']),
       ),
     );
   const totalMsgs = num(msgCounts?.total);

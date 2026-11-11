@@ -201,7 +201,7 @@ describe.runIf(dbReady)('multi-device presence (integration)', () => {
     const u = await createUser();
     const dev = await connect(u, { active: true });
     const ready = dev.ready()!.d!;
-    expect(ready.features).toEqual({ presence_activity: true });
+    expect(ready.features).toEqual({ presence_activity: true, zekk_pet: true });
     expect(ready.user).toMatchObject({
       chosenStatus: 'online',
       // Older native builds read the self user's `status` as their pick.

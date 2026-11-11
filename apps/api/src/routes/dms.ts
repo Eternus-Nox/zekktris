@@ -4,6 +4,7 @@
  * Mounted at /api/v1/users/@me/channels. Two endpoints:
  *   POST /     create-or-fetch a DM with another user (idempotent)
  *   GET  /     list my DM channels
+ * plus per-DM settings, the Zekk Pet (/:channelId/pet…) and E2EE below.
  *
  * Sending messages in a DM uses the regular /channels/:channelId/messages
  * route — it transparently handles DM channels via dm_recipients membership.
@@ -28,6 +29,8 @@ import { assertNotInstanceMuted } from '../services/instanceMutes';
 import { isBlockedEitherWay } from '../services/relationships';
 import { RateLimiter } from '../lib/rateLimit';
 import { DISAPPEARING_MAX_SECONDS, DISAPPEARING_MIN_SECONDS } from '../lib/disappearing';
+import * as pets from '../services/pets';
+import { normalizePetName } from '@zekktris/shared/pets';
 
 export const dmsRouter = new Hono();
 dmsRouter.use('*', requireAuth);
@@ -354,6 +357,134 @@ dmsRouter.patch(
       ttlSecondsAfterRead,
     });
     return c.json({ ttlSecondsAfterRead });
+  },
+);
+
+// ── Zekk Pet ──────────────────────────────────────────────────────────────
+//
+// The shared pet of a 1:1 DM (services/pets.ts has the rules). Either
+// recipient reads it; the writes that post a notice (invite, accept, rename)
+// face the same gates as the disappearing-timer PATCH above. Group DMs have
+// no pet.
+
+// Each invite and rename posts a notice into the DM: throttle them per user,
+// like the timer change. Fail-open on Redis.
+const petInviteLimiter = new RateLimiter(10, 60 * 60_000, 'dm-pet-invite');
+const petRenameLimiter = new RateLimiter(10, 60 * 60_000, 'dm-pet-rename');
+
+/** The caller's 1:1 DM: 404 for a non-recipient, 400 for a group DM. */
+async function petDm(channelId: bigint, userId: bigint): Promise<Channel> {
+  await dms.ensureRecipient(channelId, userId);
+  const channel = await channelsSvc.getChannel(channelId);
+  if (!channel) throw errors.notFound('Channel');
+  if (channel.type !== 'dm') {
+    throw errors.badRequest('Zekk Pets are only available in 1:1 direct messages');
+  }
+  return channel;
+}
+
+/** The send route's gates for a write that posts a notice, in its order and
+ *  error style (as the timer PATCH applies them): instance mute, then a block
+ *  either way (notFound, so the direction doesn't leak) and the supervision
+ *  DM policy. Returns the other recipient (null if they closed the DM). */
+async function assertPetWriteAllowed(channelId: bigint, userId: bigint): Promise<bigint | null> {
+  await assertNotInstanceMuted(userId);
+  const other = await dms.getOtherRecipient(channelId, userId);
+  if (other !== null) {
+    if (await isBlockedEitherWay(userId, other)) throw errors.notFound('Channel');
+    if (await supervision.dmBlockedBySupervision(userId, other)) {
+      throw new AppError(
+        'FORBIDDEN',
+        'Direct messages are restricted — connect a guardian to continue',
+        { supervisionRestricted: 'dm' },
+      );
+    }
+  }
+  return other;
+}
+
+/** GET — `{ pet, eligible, streak, minStreak }`. */
+dmsRouter.get(
+  '/:channelId/pet',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+    await petDm(channelId, userId);
+    return c.json(await pets.getPetState(channelId));
+  },
+);
+
+/** POST /invite — ask the other person to adopt a pet together. 409 when the
+    streak isn't alive and 3+ days, or a pet / invite already exists. */
+dmsRouter.post(
+  '/:channelId/pet/invite',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+    await petDm(channelId, userId);
+    const other = await assertPetWriteAllowed(channelId, userId);
+    if (other === null) throw errors.conflict('The other person has left this conversation');
+    const rl = await petInviteLimiter.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+    const pet = await pets.invitePet({ channelId, inviterId: userId, otherId: other });
+    return c.json({ pet });
+  },
+);
+
+/** POST /accept — the invitee accepts; the egg appears. */
+dmsRouter.post(
+  '/:channelId/pet/accept',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+    await petDm(channelId, userId);
+    await assertPetWriteAllowed(channelId, userId);
+    const pet = await pets.acceptPet({ channelId, userId });
+    return c.json({ pet });
+  },
+);
+
+/** POST /decline — the invitee declines, or the inviter cancels. Posts
+    nothing, so no send gates: either side can always withdraw. */
+dmsRouter.post(
+  '/:channelId/pet/decline',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+    await petDm(channelId, userId);
+    await pets.declinePet({ channelId, userId });
+    return c.json({ pet: null });
+  },
+);
+
+/** PATCH — rename: `{ name }`, 1–24 characters once trimmed and collapsed.
+    The current name again is a no-op (no notice, no event, not counted). */
+dmsRouter.patch(
+  '/:channelId/pet',
+  validate('param', z.object({ channelId: snowflakeSchema })),
+  validate('json', z.object({ name: z.string().max(200) })),
+  async (c) => {
+    const userId = requireUserId(c);
+    const channelId = BigInt(c.req.valid('param').channelId);
+    await petDm(channelId, userId);
+    const name = normalizePetName(c.req.valid('json').name);
+    if (name === null) {
+      throw errors.badRequest('Pet names are 1 to 24 characters, with no control characters');
+    }
+    const current = await pets.getPet(channelId);
+    if (!current || current.status === 'invited') {
+      throw errors.conflict('There is no Zekk Pet to rename');
+    }
+    if (current.name === name) return c.json({ pet: current });
+    await assertPetWriteAllowed(channelId, userId);
+    const rl = await petRenameLimiter.consume(userId.toString());
+    if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
+    const { pet } = await pets.renamePet({ channelId, userId, name });
+    return c.json({ pet });
   },
 );
 

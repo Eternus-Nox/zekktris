@@ -28,6 +28,7 @@ import * as voice from '../services/voice';
 import { db, schema } from '../db';
 import { and, eq } from 'drizzle-orm';
 import { toChannel, leftVoiceStateDTO } from '../lib/dto';
+import type { PetDTO } from '../services/pets';
 
 /** Shared empty set for "no viewable channels in this guild" lookups. */
 const EMPTY_CHANNEL_SET: ReadonlySet<bigint> = new Set();
@@ -717,6 +718,22 @@ export function dmStreakUpdate(args: {
     kind: 'users',
     userIds: args.recipientIds,
   });
+}
+
+/** A 1:1 DM's Zekk Pet changed (or is gone: `pet` null) — push the new DTO to
+ *  both recipients so the header pet and the pet card update live. camelCase
+ *  like DM_SETTINGS_UPDATE. */
+export function dmPetUpdate(args: {
+  channelId: bigint;
+  recipientIds: bigint[];
+  pet: PetDTO | null;
+}): void {
+  if (args.recipientIds.length === 0) return;
+  publish(
+    GatewayEvent.DM_PET_UPDATE,
+    { channelId: args.channelId.toString(), pet: args.pet },
+    { kind: 'users', userIds: args.recipientIds },
+  );
 }
 
 /** A user just unlocked a new achievement — push it to their own connections

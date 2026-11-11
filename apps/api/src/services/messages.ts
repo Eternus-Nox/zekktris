@@ -598,10 +598,11 @@ export async function createSystemMessage(input: {
   // 'default' is allowed so an automated notice (e.g. the DM streak-expiry
   // warning) can ride a normal-type row + a metadata marker the clients render
   // specially — avoiding a message_type enum migration.
-  type: 'system_join' | 'system_call' | 'system_disappearing' | 'default';
+  type: 'system_join' | 'system_call' | 'system_disappearing' | 'system_pet' | 'default';
   mentionedUserIds: bigint[];
-  /** Structured metadata for system messages that need it. Currently
-   *  used by system_call to carry { missed, durationMs, initiatorId }.
+  /** Structured metadata for system messages that need it: system_call
+   *  carries { missed, durationMs, initiatorId }, system_pet { kind: 'pet',
+   *  event, petName, stage, actorId }, and so on (MessageMetadataJson).
    *  Stored as-is in the JSONB metadata column. */
   metadata?: import('@zekktris/db').MessageMetadataJson | null;
   /** Make the row the channel's newest message (last_message_id) and advance

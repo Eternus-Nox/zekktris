@@ -25,4 +25,5 @@ export type {
   AuditLogEntry,
   MessageEmbedJson,
   MessageMetadataJson,
+  PetNoticeEvent,
 } from './schema/index';

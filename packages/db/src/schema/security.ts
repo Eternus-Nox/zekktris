@@ -1,7 +1,9 @@
-import { pgTable, bigint, text, boolean, integer, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, bigint, text, boolean, integer, smallint, timestamp, index } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { PetStatus } from '@zekktris/shared/pets';
 import { users } from './users';
 import { guilds } from './guilds';
+import { channels } from './channels';
 
 /**
  * Instance security log + word-ban list (Admin → Security).
@@ -123,6 +125,55 @@ export const dmStreaks = pgTable(
     warnSweep: index('dm_streaks_warn_sweep_idx')
       .on(t.lastCountedDay)
       .where(sql`${t.streak} > 0`),
+  }),
+);
+
+/**
+ * Zekk Pets — the shared virtual pet of a 1:1 DM, raised by keeping its
+ * messaging streak going (rules: @zekktris/shared/pets and
+ * apps/api/src/services/pets.ts). At most one per DM, so keyed by the
+ * channel; the pair is sorted like dm_streaks (userAId < userBId). Declined,
+ * cancelled and expired invites and pets that ran away are deleted.
+ * Migration 0134.
+ */
+export const dmPets = pgTable(
+  'dm_pets',
+  {
+    channelId: bigint('channel_id', { mode: 'bigint' })
+      .primaryKey()
+      .references(() => channels.id, { onDelete: 'cascade' }),
+    userAId: bigint('user_a_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    userBId: bigint('user_b_id', { mode: 'bigint' })
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** CHECK'd in SQL to these three. */
+    status: text('status').notNull().$type<PetStatus>(),
+    invitedBy: bigint('invited_by', { mode: 'bigint' }),
+    name: text('name').notNull().default('Zekk'),
+    /** 0–359, fixed per DM (petHueForChannel). */
+    hue: smallint('hue').notNull(),
+    points: integer('points').notNull().default(0),
+    level: integer('level').notNull().default(0),
+    adoptedAt: timestamp('adopted_at', { withTimezone: true }),
+    /** Last UTC day (YYYY-MM-DD) both people messaged. */
+    lastFedDay: text('last_fed_day'),
+    /** UTC day the three counters below belong to; any other value reads as
+     *  "nothing done yet today". */
+    taskDay: text('task_day'),
+    /** Each side's messages on taskDay, capped at the chatty goal. */
+    countA: integer('count_a').notNull().default(0),
+    countB: integer('count_b').notNull().default(0),
+    /** taskDay's completed tasks, a mask of PET_TASKS bits. */
+    tasksDone: integer('tasks_done').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // The sweep: active pets fed before yesterday, pets fed 4+ days ago, and
+    // invites (status prefix).
+    sweep: index('dm_pets_sweep_idx').on(t.status, t.lastFedDay),
   }),
 );
 

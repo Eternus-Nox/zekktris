@@ -119,7 +119,7 @@ export async function createMessage(
     authorId?: bigint;
     createdAt?: Date;
     content?: string;
-    type?: 'default' | 'reply' | 'system_join' | 'system_call' | 'system_disappearing';
+    type?: 'default' | 'reply' | 'system_join' | 'system_call' | 'system_disappearing' | 'system_pet';
     expireAfterSeconds?: number | null;
     viewedAt?: Date | null;
     expiresAt?: Date | null;

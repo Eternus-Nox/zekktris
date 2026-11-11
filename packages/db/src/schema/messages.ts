@@ -14,6 +14,7 @@ import { relations, sql } from 'drizzle-orm';
 import { users } from './users';
 import { channels } from './channels';
 import { roles } from './guilds';
+import type { PetStage } from '@zekktris/shared/pets';
 import { messageTypeEnum } from './enums';
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -167,6 +168,7 @@ export const messages = pgTable(
      *     caller's user id stringified (BigInts don't survive JSON).
      *   - system_disappearing: { kind: 'disappearing_timer',
      *                            timerSeconds, initiatorId }
+     *   - system_pet: { kind: 'pet', event, petName, stage, actorId }
      *
      * Future system messages should reuse this column rather than
      * adding new typed columns — keeps the schema narrow and the
@@ -543,7 +545,34 @@ export type MessageMetadataJson =
       timerSeconds: number;
       /** Who changed it (stringified BigInt). */
       initiatorId: string;
+    }
+  | {
+      /** Something happened to the DM's Zekk Pet. The row is type
+       *  'system_pet'; its `content` is a readable third-person fallback for
+       *  clients that don't know the type ("Zekk hatched! 🐣"), and new
+       *  clients build "You…" / "<name>…" from this instead. Keep IN SYNC
+       *  with the client `MessageMetadata`. */
+      kind: 'pet';
+      event: PetNoticeEvent;
+      /** The pet's name at the time of the notice. */
+      petName: string;
+      stage: PetStage;
+      /** Who caused it (stringified BigInt); null for events the server's
+       *  sweep causes (asleep, ran_away). */
+      actorId: string | null;
     };
+
+/** What a 'system_pet' notice reports. Keep IN SYNC with the client
+ *  `PetNoticeEvent`. */
+export type PetNoticeEvent =
+  | 'invited'
+  | 'adopted'
+  | 'hatched'
+  | 'evolved'
+  | 'asleep'
+  | 'awake'
+  | 'ran_away'
+  | 'renamed';
 
 /** Poke/nudge variants. Keep IN SYNC with the client `MessageMetadata`,
  *  the web POKE_VARIANTS table, and the iOS `PokeVariant` enum. */

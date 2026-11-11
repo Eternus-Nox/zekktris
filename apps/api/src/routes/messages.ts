@@ -333,6 +333,17 @@ messagesRouter.post(
       // History + tally are best-effort — the live poke already fired.
     }
 
+    // Zekk Pet care: a poke completes the day's `poke` task. Fire-and-forget;
+    // a throttled poke (429 above) never gets here.
+    void import('../services/pets')
+      .then((pets) => pets.recordActivity({ channelId, authorId: userId, kind: 'poke' }))
+      .catch((err) =>
+        log.warn('pet activity failed', {
+          channelId: channelId.toString(),
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+
     // Push the OTHER party (best-effort, mute-aware). The live POKE event
     // already reaches a connected client; this covers a closed app. A muted DM
     // ('nothing') is skipped, same as a normal message.
@@ -1525,6 +1536,14 @@ messagesRouter.post(
     // Messaging streaks: count the day once both 1:1 participants have
     // messaged (timestamps only — E2EE content is never read).
     if (ctx.isDM && ctx.channel.type === 'dm') {
+      // Zekk Pet care: this send, plus a voice message / photo when it carried
+      // one. An encrypted image is opaque to us (octet-stream) but arrives
+      // with its encrypted thumbnail, which only images get.
+      const petActivity: import('../services/pets').PetActivity[] = ['message'];
+      if (payload.voiceMessage && saved.length > 0) petActivity.push('voice');
+      if (saved.some((s, i) => /^image\//i.test(s.contentType ?? '') || !!thumbFiles[i])) {
+        petActivity.push('photo');
+      }
       void (async () => {
         try {
           const recipients = await dms.listAllRecipients(channelId);
@@ -1544,6 +1563,16 @@ messagesRouter.post(
           }
         } catch {
           // Streaks are decorative; never fail a send over them.
+        }
+        try {
+          const pets = await import('../services/pets');
+          await pets.recordActivity({ channelId, authorId: userId, kind: petActivity });
+        } catch (err) {
+          // Never fail (or slow) a send over the pet.
+          log.warn('pet activity failed', {
+            channelId: channelId.toString(),
+            err: err instanceof Error ? err.message : String(err),
+          });
         }
       })();
     }
@@ -2162,6 +2191,12 @@ messagesRouter.delete(
     // rows keep today's rule (a caller may delete their own call record).
     if (existing.type === 'system_disappearing') {
       throw errors.forbidden("The disappearing-messages notice can't be deleted");
+    }
+    // A Zekk Pet notice is about the pair's pet, not its author's words, and
+    // the sweep's ones ("fell asleep", "ran away") are only nominally user A's
+    // (the author FK): one person mustn't remove it for both.
+    if (existing.type === 'system_pet') {
+      throw errors.forbidden("Zekk Pet notices can't be deleted");
     }
 
     const isOwn = existing.authorId === userId;

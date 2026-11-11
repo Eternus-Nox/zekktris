@@ -23,6 +23,7 @@ import { sweepInactiveAccounts } from './services/inactivitySweep';
 import { purgeExpiredSessions } from './auth/sessions';
 import { sweepExpiredDmMessages } from './services/dms';
 import { sweepStreakWarnings } from './services/streaks';
+import { sweepPets } from './services/pets';
 import { pruneDeadInvites } from './services/invites';
 import { sweepParentLinksByAge } from './services/supervisionAgeSweep';
 import { refreshDiscoverableMemberCounts } from './services/discovery';
@@ -209,6 +210,22 @@ async function main(): Promise<void> {
   } else {
     log.info('streak-warning sweep disabled (STREAK_WARN_ENABLED=false)');
   }
+
+  // ── Zekk Pet sweep ──────────────────────────────────────────────────────
+  // Every 10 min: lapsed adoption invites go, pets that missed a whole UTC day
+  // fall asleep, pets still asleep two days later run away, and after
+  // midnight / 18:00 UTC each pet whose mood or tasks changed with the clock
+  // gets a fresh DM_PET_UPDATE. Each row is re-checked under its per-DM lock,
+  // so overlapping ticks can't double-post. Cheap when idle: three probes of
+  // the small dm_pets_sweep_idx. Error-isolated like the other sweeps.
+  const petSweepTimer = leaderInterval(() => {
+    void sweepPets()
+      .then((r) => {
+        if (r.expired + r.asleep + r.ranAway > 0) log.info('pet sweep', r);
+      })
+      .catch((err) => log.error('pet sweep failed', { err }));
+  }, 10 * 60_000);
+  log.info('pet sweep scheduled', { intervalMinutes: 10 });
 
   // ── Image compression sweep timer ──────────────────────────────────────
   // Re-encodes image attachments older than COMPRESS_AFTER_DAYS at a
@@ -707,6 +724,7 @@ async function main(): Promise<void> {
     clearInterval(sessionPurgeTimer);
     clearInterval(dmSweepTimer);
     if (streakWarnTimer) clearInterval(streakWarnTimer);
+    clearInterval(petSweepTimer);
     if (compressTimer) clearInterval(compressTimer);
     if (invitePruneTimer) clearInterval(invitePruneTimer);
     if (parentLinkAgeTimer) clearInterval(parentLinkAgeTimer);

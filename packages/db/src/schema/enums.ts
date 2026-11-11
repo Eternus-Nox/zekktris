@@ -69,6 +69,9 @@ export const messageTypeEnum = pgEnum('message_type', [
   // Disappearing-messages timer changed (migration 0133). Its metadata is
   // { kind: 'disappearing_timer', timerSeconds, initiatorId }.
   'system_disappearing',
+  // Something happened to the DM's Zekk Pet (migration 0134). Its metadata is
+  // { kind: 'pet', event, petName, stage, actorId }.
+  'system_pet',
 ]);
 
 export const auditTargetEnum = pgEnum('audit_target', [
