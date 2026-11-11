@@ -1029,6 +1029,26 @@ export type {
 } from '@zekktris/shared/events';
 export type { PetMood, PetStage, PetStatus, PetTaskKey } from '@zekktris/shared/pets';
 export { GatewayOp, GatewayEvent } from '@zekktris/shared/events';
+// The Zekk Pet rules and strings, so the web client shows exactly the
+// server's numbers and words without depending on @zekktris/shared itself.
+export {
+  PET_ALL_TASKS_MASK,
+  PET_CHATTY_GOAL,
+  PET_DEFAULT_NAME,
+  PET_INVITE_TTL_DAYS,
+  PET_MIN_STREAK,
+  PET_MOODS,
+  PET_NAME_MAX_LENGTH,
+  PET_STAGES,
+  PET_TASKS,
+  normalizePetName,
+  petHueForChannel,
+  petLevelFloor,
+  petLevelForPoints,
+  petPointsForNextLevel,
+  petStageForLevel,
+  petStageLabel,
+} from '@zekktris/shared/pets';
 
 // ── Webhooks ─────────────────────────────────────────────────────────────
 
