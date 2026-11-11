@@ -8,7 +8,15 @@
       DM keys live in localStorage, so injected script must not run).
         script-src 'self'   only the bundled /assets/*.js — no inline, no eval
         style-src 'self'    only the bundled stylesheet (React style props go
-                            through the CSSOM, which CSP doesn't restrict)
+                            through the CSSOM, which CSP doesn't restrict),
+                            plus ONE hash: the title-bar <style> that desktop
+                            builds up to 1.0.6 inject from their preload. It
+                            is the exact text those shipped apps add (all of
+                            them carry the same preload); without it their
+                            frameless window loses its title bar and can't be
+                            dragged. Newer builds use webFrame.insertCSS and
+                            don't need it — drop the hash once no desktop
+                            install is older than 1.0.7.
         img-src             same-origin /cdn, data: (theme icon), blob:
                             (upload previews, decrypted E2EE media), and any
                             http(s) host: webhook persona avatars and event
@@ -37,7 +45,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https: http:; media-src 'self' blob:; font-src 'self'; connect-src 'self' https: wss: http: ws:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'sha256-MlFKpr6524sz+sSsHNk22mMsCZc2K0zvHZEzVz9DZsM='; img-src 'self' data: blob: https: http:; media-src 'self' blob:; font-src 'self'; connect-src 'self' https: wss: http: ws:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
     />
 
     <!--
