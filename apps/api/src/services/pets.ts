@@ -27,7 +27,8 @@
  * advisory lock (the recordDmMessage pattern), so the two people's first
  * messages of the day, an accept racing a decline, or the sweep racing a feed
  * can't each act on a stale row. Notices ('system_pet') are inserted in that
- * same transaction; the gateway events go out after it commits.
+ * same transaction; the gateway events go out after it commits, with nothing
+ * awaited in between (announce), so they leave in commit order.
  */
 
 import { and, eq, gt, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
@@ -476,13 +477,21 @@ async function unreadMessageBelow(input: {
  * marker goes back to their devices (a CHANNEL_ACK, after the echo). This
  * covers the timed message the call-record pattern
  * (notifyHeldReadMarkerIfWaiting) looks for, and any other unread one.
+ *
+ * Call it straight after the commit, with `recipientIds` read inside the
+ * locked transaction: nothing is awaited between the commit and the
+ * DM_PET_UPDATE, so a DM's events leave in commit order. Clients take the
+ * latest one as the truth and no later event need come (a capped chatty
+ * count, a rename); were the lookup made here, a writer waiting for a pool
+ * connection could have the next writer, which only takes the lock as this
+ * one commits, publish first and leave the clients on the older pet.
  */
 async function announce(
   channelId: bigint,
+  recipientIds: bigint[],
   notices: schema.Message[],
   pet: PetDTO | null | undefined,
 ): Promise<void> {
-  const recipientIds = await listAllRecipients(channelId);
   if (pet !== undefined) dispatch.dmPetUpdate({ channelId, recipientIds, pet });
   if (notices.length === 0) return;
   try {
@@ -606,10 +615,10 @@ export async function invitePet(input: {
       })
       .returning();
     const notice = await insertNotice(tx, { pet: row!, event: 'invited', actorId: input.inviterId });
-    return { row: row!, notice };
+    return { row: row!, notice, recipientIds: await listAllRecipients(input.channelId, tx) };
   });
   const pet = petDTO(out.row, now);
-  await announce(input.channelId, [out.notice], pet);
+  await announce(input.channelId, out.recipientIds, [out.notice], pet);
   return pet;
 }
 
@@ -669,25 +678,25 @@ export async function acceptPet(input: { channelId: bigint; userId: bigint }): P
       actorId: input.userId,
       otherId: row.invitedBy ?? (input.userId === row.userAId ? row.userBId : row.userAId),
     });
-    return { row: saved!, notice };
+    return { row: saved!, notice, recipientIds: await listAllRecipients(input.channelId, tx) };
   });
   const pet = petDTO(out.row, now);
-  await announce(input.channelId, [out.notice], pet);
+  await announce(input.channelId, out.recipientIds, [out.notice], pet);
   return pet;
 }
 
 /** Decline (invitee) or cancel (inviter) an open invite. No notice. A no-op
  *  when there's nothing to decline; 409 once the pet is adopted. */
 export async function declinePet(input: { channelId: bigint; userId: bigint }): Promise<void> {
-  const removed = await db.transaction(async (tx) => {
+  const recipientIds = await db.transaction(async (tx) => {
     await lockPet(tx, input.channelId);
     const row = await loadRow(tx, input.channelId);
-    if (!row) return false;
+    if (!row) return null;
     if (row.status !== 'invited') throw errors.conflict('Only an open invite can be declined');
     await tx.delete(schema.dmPets).where(eq(schema.dmPets.channelId, input.channelId));
-    return true;
+    return listAllRecipients(input.channelId, tx);
   });
-  if (removed) await announce(input.channelId, [], null);
+  if (recipientIds) await announce(input.channelId, recipientIds, [], null);
 }
 
 /**
@@ -699,16 +708,16 @@ export async function declinePet(input: { channelId: bigint; userId: bigint }): 
  * pet could never be fed or adopted again.
  */
 export async function dropPet(channelId: bigint): Promise<boolean> {
-  const removed = await db.transaction(async (tx) => {
+  const recipientIds = await db.transaction(async (tx) => {
     await lockPet(tx, channelId);
     const gone = await tx
       .delete(schema.dmPets)
       .where(eq(schema.dmPets.channelId, channelId))
       .returning({ channelId: schema.dmPets.channelId });
-    return gone.length > 0;
+    return gone.length > 0 ? listAllRecipients(channelId, tx) : null;
   });
-  if (removed) await announce(channelId, [], null);
-  return removed;
+  if (recipientIds) await announce(channelId, recipientIds, [], null);
+  return recipientIds !== null;
 }
 
 /**
@@ -750,18 +759,23 @@ export async function renamePet(input: {
     await lockPet(tx, input.channelId);
     const row = await loadRow(tx, input.channelId);
     if (!row || row.status === 'invited') throw errors.conflict('There is no Zekk Pet to rename');
-    if (row.name === name) return { row, notice: null, oldName: row.name };
+    if (row.name === name) return { row, notice: null, oldName: row.name, recipientIds: [] };
     const [saved] = await tx
       .update(schema.dmPets)
       .set({ name, updatedAt: now })
       .where(eq(schema.dmPets.channelId, input.channelId))
       .returning();
     const notice = await insertNotice(tx, { pet: saved!, event: 'renamed', actorId: input.userId });
-    return { row: saved!, notice, oldName: row.name };
+    return {
+      row: saved!,
+      notice,
+      oldName: row.name,
+      recipientIds: await listAllRecipients(input.channelId, tx),
+    };
   });
   const pet = petDTO(out.row, now);
   if (!out.notice) return { pet, changed: false };
-  await announce(input.channelId, [out.notice], pet);
+  await announce(input.channelId, out.recipientIds, [out.notice], pet);
   // Parental controls: the name is free text that reaches the DM (this notice
   // and every later one repeats it), so it gets the send path's watch-word
   // scan, flagged against the 'renamed' notice. Only the new name is scanned
@@ -855,14 +869,16 @@ export async function recordActivity(args: {
     for (const event of events) {
       notices.push(await insertNotice(tx, { pet: saved!, event, actorId: args.authorId }));
     }
-    return { before: row, after: saved!, notices };
+    const pet = petDTO(saved!, now);
+    const visible = !sameDTO(petDTO(row, now), pet);
+    if (!visible && notices.length === 0) return null;
+    return {
+      pet: visible ? pet : undefined,
+      notices,
+      recipientIds: await listAllRecipients(args.channelId, tx),
+    };
   });
-  if (!out) return;
-  const pet = petDTO(out.after, now);
-  const visible = !sameDTO(petDTO(out.before, now), pet);
-  if (visible || out.notices.length > 0) {
-    await announce(args.channelId, out.notices, visible ? pet : undefined);
-  }
+  if (out) await announce(args.channelId, out.recipientIds, out.notices, out.pet);
 }
 
 // ── Sweep ───────────────────────────────────────────────────────────────────
@@ -922,12 +938,13 @@ export async function sweepPets(): Promise<{
         const done = await db.transaction(async (tx) => {
           await lockPet(tx, channelId);
           const row = await loadRow(tx, channelId);
-          return row ? step(tx, row) : null;
+          const stepped = row ? await step(tx, row) : null;
+          return stepped && { ...stepped, recipientIds: await listAllRecipients(channelId, tx) };
         });
         if (!done) continue;
         touched.add(channelId.toString());
         out[counted]++;
-        await announce(channelId, done.notice ? [done.notice] : [], done.pet);
+        await announce(channelId, done.recipientIds, done.notice ? [done.notice] : [], done.pet);
       } catch (err) {
         log.warn?.('pet sweep step failed', {
           channelId: channelId.toString(),

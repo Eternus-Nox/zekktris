@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, afterAll, vi } from 'vitest';
 import { Hono } from 'hono';
 import type { WebSocket } from 'ws';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -31,6 +31,22 @@ import {
 } from '@zekktris/shared/pets';
 import { createUser, createDmChannel, addRelationship, cleanupAll, createMessage } from './seed';
 import { probeDb, closeDb } from './db-available';
+
+// A test can stall the next recipient lookup (the one a pet write's events
+// are addressed with) until it lets go: `stallNext` runs first, once.
+const recipients = vi.hoisted(() => ({ stallNext: null as null | (() => Promise<void>) }));
+vi.mock('../src/services/dms', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../src/services/dms')>();
+  return {
+    ...real,
+    listAllRecipients: async (...args: Parameters<typeof real.listAllRecipients>) => {
+      const stall = recipients.stallNext;
+      recipients.stallNext = null;
+      if (stall) await stall();
+      return real.listAllRecipients(...args);
+    },
+  };
+});
 
 const dbReady = await probeDb();
 if (!dbReady) {
@@ -634,6 +650,44 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
       countB: 2,
       tasks: 1,
     });
+  });
+
+  it('DM_PET_UPDATEs leave in commit order: a slow recipient lookup never leaves an older pet last', async () => {
+    const p = await adopted();
+    // Fed today, and both on 9 of the 10 chatty messages.
+    await setRow(p.dm, { taskDay: D0, countA: 9, countB: 9, tasksDone: 1, lastFedDay: D0, points: 10, level: 0 });
+    const aSent = connect(p.a, [p.dm]);
+    // A's 10th message stalls in the lookup its event is addressed with, as
+    // it would waiting for a connection from a busy pool…
+    let stalled!: () => void;
+    const isStalled = new Promise<void>((r) => (stalled = r));
+    let letGo!: () => void;
+    const gate = new Promise<void>((r) => (letGo = r));
+    recipients.stallNext = async () => {
+      stalled();
+      await gate;
+    };
+    const first = msg(p.dm, p.lo);
+    await isStalled;
+    // …while B's 10th, which completes chatty, runs: it must not get its
+    // event out first (it waits for the pet's lock instead).
+    let secondDone = false;
+    const second = msg(p.dm, p.hi).finally(() => {
+      secondDone = true;
+    });
+    await waitFor(async () => secondDone || (await backendWaitingOn('%pg_advisory_xact_lock%')));
+    letGo();
+    await Promise.all([first, second]);
+
+    const cur = await petOf(p.a, p.dm);
+    expect(cur.points).toBe(20);
+    expect(taskDone(cur).chatty).toBe(true);
+    const chatty = (pet: PetDTO) => pet.tasks.find((t) => t.key === 'chatty')!.progress!;
+    expect(petFrames(aSent).map((f) => [f.pet!.points, chatty(f.pet!).a!.count, chatty(f.pet!).b!.count])).toEqual([
+      [10, 10, 9],
+      [20, 10, 10],
+    ]);
+    expect(petFrames(aSent).at(-1)!.pet).toEqual(cur);
   });
 
   it('levels and stages follow the shared curve; only stage changes post a notice', async () => {

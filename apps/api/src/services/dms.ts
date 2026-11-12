@@ -352,8 +352,10 @@ export async function listDmPeers(userId: bigint): Promise<bigint[]> {
   return r.map((row) => row.peer);
 }
 
-export async function listAllRecipients(channelId: bigint): Promise<bigint[]> {
-  const r = await db
+/** Every recipient of a DM. `exec`: a transaction to read it in (default the
+ *  pool). */
+export async function listAllRecipients(channelId: bigint, exec: DbHandle = db): Promise<bigint[]> {
+  const r = await exec
     .select({ userId: schema.dmRecipients.userId })
     .from(schema.dmRecipients)
     .where(eq(schema.dmRecipients.channelId, channelId));
