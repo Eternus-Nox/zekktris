@@ -99,6 +99,21 @@ export function barHoldsFocus(
   return acting && (!active || active === doc.body || !active.isConnected);
 }
 
+/** Where focus goes back to in the bar: the button for `action` (its
+    data-action — the one the viewer pressed, so retrying a failed "Not now"
+    with Enter doesn't land on Accept), else the first button left (Not now
+    once Accept hid, or the ✕ when nothing else is). */
+export function barButton(
+  bar: Pick<HTMLElement, 'querySelector'> | null,
+  action: DmPetChange['kind'] | null,
+): HTMLElement | null {
+  if (!bar) return null;
+  return (
+    (action ? bar.querySelector<HTMLElement>(`[data-action="${action}"]`) : null) ??
+    bar.querySelector<HTMLElement>('button')
+  );
+}
+
 // ── Actions ──────────────────────────────────────────────────────────────
 
 const FAILED: Record<DmPetChange['kind'], string> = {
@@ -153,31 +168,49 @@ const SECONDARY =
     (no notice for either person); the inviter can invite again later.
     Without `canAct` (a block, a mute, supervision, or the other person left)
     Adopt and Accept hide: they would only fail. So does Accept on a
-    `locked` invite (the streak is under the minimum: PetBanner.locked). */
+    `locked` invite (the streak is under the minimum: PetBanner.locked).
+    Each button names its change in data-action (barButton). */
 export function PetInviteActions({
   kind,
   busy,
   onRun,
   canAct = true,
   locked = false,
+  buttonRef,
 }: {
   kind: PetBannerKind;
   busy: DmPetChange['kind'] | null;
   onRun: (change: DmPetChange) => void;
   canAct?: boolean;
   locked?: boolean;
+  /** Set on every button: React calls it with null just before it removes one. */
+  buttonRef?: (el: HTMLButtonElement | null) => void;
 }) {
   if (kind === 'adopt') {
     if (!canAct) return null;
     return (
-      <button type="button" className={PRIMARY} disabled={busy !== null} onClick={() => onRun({ kind: 'invite' })}>
+      <button
+        ref={buttonRef}
+        type="button"
+        data-action="invite"
+        className={PRIMARY}
+        disabled={busy !== null}
+        onClick={() => onRun({ kind: 'invite' })}
+      >
         {busy === 'invite' ? 'Inviting…' : 'Adopt'}
       </button>
     );
   }
   if (kind === 'waiting') {
     return (
-      <button type="button" className={SECONDARY} disabled={busy !== null} onClick={() => onRun({ kind: 'decline' })}>
+      <button
+        ref={buttonRef}
+        type="button"
+        data-action="decline"
+        className={SECONDARY}
+        disabled={busy !== null}
+        onClick={() => onRun({ kind: 'decline' })}
+      >
         {busy === 'decline' ? 'Cancelling…' : 'Cancel'}
       </button>
     );
@@ -185,11 +218,25 @@ export function PetInviteActions({
   return (
     <>
       {canAct && !locked && (
-        <button type="button" className={PRIMARY} disabled={busy !== null} onClick={() => onRun({ kind: 'accept' })}>
+        <button
+          ref={buttonRef}
+          type="button"
+          data-action="accept"
+          className={PRIMARY}
+          disabled={busy !== null}
+          onClick={() => onRun({ kind: 'accept' })}
+        >
           {busy === 'accept' ? 'Accepting…' : 'Accept'}
         </button>
       )}
-      <button type="button" className={SECONDARY} disabled={busy !== null} onClick={() => onRun({ kind: 'decline' })}>
+      <button
+        ref={buttonRef}
+        type="button"
+        data-action="decline"
+        className={SECONDARY}
+        disabled={busy !== null}
+        onClick={() => onRun({ kind: 'decline' })}
+      >
         Not now
       </button>
     </>
@@ -232,12 +279,28 @@ export function PetAdoptBanner({
     [],
   );
   // A failed action keeps the bar, but its buttons were disabled while it
-  // ran, which can drop focus.
+  // ran, which can drop focus: it goes back to the button that was pressed.
   const wasBusy = useRef(busy);
   useEffect(() => {
-    if (wasBusy.current && !busy) refocusIfDropped(barRef.current?.querySelector('button') ?? null);
+    const ran = wasBusy.current;
     wasBusy.current = busy;
+    if (ran && !busy) refocusIfDropped(barButton(barRef.current, ran));
   }, [busy]);
+  // Accept / Adopt hide while the bar stays (the invite locked, canAct went
+  // off), and a bar of another kind swaps its buttons: a button going with
+  // focus on it drops focus to <body>. React lets go of a button's ref just
+  // before removing it, while focus is still there, so note it then and move
+  // focus to the first button left once the commit is done. Focus that was
+  // already elsewhere (or nowhere) is left alone.
+  const droppedFocus = useRef(false);
+  const watchButton = useCallback((el: HTMLButtonElement | null) => {
+    if (!el && barHoldsFocus(barRef.current, false)) droppedFocus.current = true;
+  }, []);
+  useLayoutEffect(() => {
+    if (!droppedFocus.current) return;
+    droppedFocus.current = false;
+    refocusIfDropped(barButton(barRef.current, null));
+  });
 
   if (hidden) return null;
   return (
@@ -254,6 +317,7 @@ export function PetAdoptBanner({
         canAct={canAct}
         locked={banner.locked}
         onRun={(c) => void run(c)}
+        buttonRef={watchButton}
       />
       <button
         type="button"

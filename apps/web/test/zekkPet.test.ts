@@ -33,7 +33,7 @@ import {
   petTaskRows,
   utcWeekday,
 } from '../src/lib/zekkPet';
-import { PetInviteActions, barHoldsFocus, refocusIfDropped } from '../src/app/ZekkPet';
+import { PetInviteActions, barButton, barHoldsFocus, refocusIfDropped } from '../src/app/ZekkPet';
 import { restoreFocus } from '../src/app/ZekkPetModal';
 import {
   clearPetBannerDismissals,
@@ -323,9 +323,112 @@ describe('adopt bar', () => {
     );
     expect(src).toContain('ref={barRef}');
     expect(src).toMatch(/const hadFocus = barHoldsFocus\(barRef\.current, false\);\s*dismissPetBanner\(key\);\s*if \(hadFocus\) returnFocus\?\.\(\);/);
-    expect(src).toContain("if (wasBusy.current && !busy) refocusIfDropped(barRef.current?.querySelector('button') ?? null);");
+    expect(src).toContain('if (ran && !busy) refocusIfDropped(barButton(barRef.current, ran));');
     const view = readFileSync(new URL('../src/app/MessageView.tsx', import.meta.url), 'utf8');
     expect(view).toMatch(/<PetAdoptBanner[^>]*returnFocus=\{focusDmSettingsToggle\}/);
+  });
+
+  it('keeps focus on the button that was pressed, or on what is left of the bar', () => {
+    // A stand-in for the bar: PetInviteActions' real buttons in order (with
+    // their data-action), then the ✕, focusable against a fake document.
+    type Btn = { text: string; action: string | null; isConnected: boolean; focus: () => void };
+    const body = { isConnected: true } as unknown as HTMLElement;
+    let active: unknown = body;
+    const doc = () => ({ activeElement: active as Element, body: body as HTMLBodyElement });
+    const bar = (props: { kind: 'adopt' | 'waiting' | 'invited'; canAct?: boolean; locked?: boolean }) => {
+      const html =
+        renderToStaticMarkup(createElement(PetInviteActions, { busy: null, onRun: () => {}, ...props })) +
+        '<button type="button" aria-label="Dismiss"></button>';
+      const buttons = [...html.matchAll(/<button([^>]*)>([^<]*)<\/button>/g)].map(([, attrs, text]) => {
+        const b: Btn = {
+          text: text || '✕',
+          action: /data-action="(\w+)"/.exec(attrs)?.[1] ?? null,
+          isConnected: true,
+          focus: () => {
+            active = b;
+          },
+        };
+        return b;
+      });
+      const el = {
+        buttons,
+        contains: (n: Node | null) => buttons.includes(n as unknown as Btn),
+        querySelector: (sel: string) => {
+          const m = /^\[data-action="(\w+)"\]$/.exec(sel);
+          return (m ? buttons.find((b) => b.action === m[1]) : sel === 'button' ? buttons[0] : undefined) ?? null;
+        },
+      };
+      return el as typeof el & HTMLElement;
+    };
+    const text = () => (active === body ? '<body>' : (active as Btn).text);
+    const press = (b: Btn) => {
+      active = b;
+    };
+
+    // Their invite: Accept comes first, so "the first button" was Accept.
+    const invited = bar({ kind: 'invited' });
+    expect(invited.buttons.map((b) => [b.text, b.action])).toEqual([
+      ['Accept', 'accept'],
+      ['Not now', 'decline'],
+      ['✕', null],
+    ]);
+    // Not now pressed with Enter; its disabled button dropped focus while the
+    // request ran, and the decline failed (offline, a 5xx). Enter again to
+    // retry must hit Not now again — not Accept, which can't be undone.
+    press(invited.buttons[1]);
+    active = body;
+    refocusIfDropped(barButton(invited, 'decline'), doc());
+    expect(text()).toBe('Not now');
+    // The same for a failed Accept, Adopt or Cancel.
+    active = body;
+    refocusIfDropped(barButton(invited, 'accept'), doc());
+    expect(text()).toBe('Accept');
+    active = body;
+    refocusIfDropped(barButton(bar({ kind: 'adopt' }), 'invite'), doc());
+    expect(text()).toBe('Adopt');
+    active = body;
+    refocusIfDropped(barButton(bar({ kind: 'waiting' }), 'decline'), doc());
+    expect(text()).toBe('Cancel');
+
+    // The failed Accept (409: the streak broke just before the 00:00:05
+    // refetch) put focus back on Accept, then the resync locks the invite
+    // and Accept goes. React lets go of its ref before removing it, with
+    // focus still on it: the bar notes that, and after the commit focus goes
+    // to what is left (Not now), not <body>.
+    const accept = invited.buttons[0];
+    press(accept);
+    let dropped = barHoldsFocus(invited, false, doc());
+    expect(dropped).toBe(true);
+    accept.isConnected = false;
+    active = body;
+    const locked = bar({ kind: 'invited', locked: true });
+    if (dropped) refocusIfDropped(barButton(locked, null), doc());
+    expect(text()).toBe('Not now');
+    // Adopt hiding (canAct went off) leaves only the ✕.
+    const adopt = bar({ kind: 'adopt' });
+    press(adopt.buttons[0]);
+    dropped = barHoldsFocus(adopt, false, doc());
+    active = body;
+    if (dropped) refocusIfDropped(barButton(bar({ kind: 'adopt', canAct: false }), null), doc());
+    expect(text()).toBe('✕');
+    // Focus that was already elsewhere (the viewer clicked into the message
+    // list) isn't pulled into the bar when Accept hides.
+    active = body;
+    expect(barHoldsFocus(bar({ kind: 'invited' }), false, doc())).toBe(false);
+    expect(text()).toBe('<body>');
+    // Nothing to go back to once the bar is gone.
+    expect(barButton(null, 'decline')).toBeNull();
+
+    // Wired up: every action button carries its data-action and the bar's
+    // ref; a detached button that had focus is noted, and a layout effect
+    // moves focus to the first button left.
+    const src = readFileSync(new URL('../src/app/ZekkPet.tsx', import.meta.url), 'utf8');
+    expect(src.match(/ref=\{buttonRef\}\s*type="button"\s*data-action="(invite|accept|decline)"/g)).toHaveLength(4);
+    expect(src).toContain('buttonRef={watchButton}');
+    expect(src).toContain('if (!el && barHoldsFocus(barRef.current, false)) droppedFocus.current = true;');
+    expect(src).toMatch(
+      /useLayoutEffect\(\(\) => \{\s*if \(!droppedFocus\.current\) return;\s*droppedFocus\.current = false;\s*refocusIfDropped\(barButton\(barRef\.current, null\)\);\s*\}\);/,
+    );
   });
 
   it('forgets dismissed bars when the signed-in account changes', () => {
