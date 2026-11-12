@@ -471,6 +471,8 @@ struct MessageListView: View {
     @State private var showDmSettings = false
     /// The Zekk Pet card (1:1 DMs; the header pet opens it).
     @State private var showPetCard = false
+    /// The header is narrower than `narrowHeaderWidth` (see headerShowsSearch).
+    @State private var narrowHeader = false
     @State private var showPokePopover = false
     @State private var pokeHistory: [PokeHistoryEntry] = []
     @State private var pokeHistoryLoading = false
@@ -818,9 +820,16 @@ struct MessageListView: View {
                         let appended = new.count > old.count && new.lastId != old.lastId
                         // A long session's live appends grow the eager part.
                         if appended { boundEagerPart() }
+                        // A Zekk Pet notice is its actor's, not its author's
+                        // (web: appendScrollKind): the server's daily check
+                        // posts 'asleep' / 'ran_away' under user A with no
+                        // actor, which must not pull A down from history.
+                        let tailOwner: String? = store.messages.last.flatMap {
+                            ZekkPet.isNotice($0) ? $0.metadata?.actorId : ($0.authorId ?? $0.author?.id)
+                        }
                         let ownSend = appended
-                            && store.messages.last?.authorId != nil
-                            && store.messages.last?.authorId == store.currentUserId
+                            && tailOwner != nil
+                            && tailOwner == store.currentUserId
                         // 2. The user's own send always lands on what they just
                         //    sent, and it ENDS a divider landing — they've engaged
                         //    with the bottom of the conversation.
@@ -1654,9 +1663,13 @@ struct MessageListView: View {
     /// nickname or name otherwise. Resolved here (nicknames are store state)
     /// so it's part of the row's Equatable snapshot. Without the metadata, or
     /// for an event this build doesn't know, the server's readable
-    /// third-person content is shown as-is.
+    /// third-person content is shown as-is. Either person can rename the pet,
+    /// so its name (and that content, which carries it) goes through the
+    /// swear-word mask like a message body when the viewer's guardian has it on.
     private func petNoticeText(_ m: Message) -> String {
-        guard let meta = m.metadata, meta.kind == "pet", let event = meta.event else { return m.text }
+        let maskProfane = store.family?.restrictions?.filterProfanity == true
+        let fallback = maskProfane ? ProfanityFilter.mask(m.text) : m.text
+        guard let meta = m.metadata, meta.kind == "pet", let event = meta.event else { return fallback }
         let me = store.currentUserId
         // The other person in the DM (recipients never include the viewer).
         let peer = channel.recipients?.first(where: { $0.id != me })
@@ -1676,9 +1689,10 @@ struct MessageListView: View {
         } else {
             actorName = nil
         }
-        return ZekkPet.noticeText(event: event, petName: meta.petName ?? ZekkPet.defaultName,
+        let petName = ZekkPet.displayName(meta.petName ?? ZekkPet.defaultName, maskProfane: maskProfane)
+        return ZekkPet.noticeText(event: event, petName: petName,
                                   stage: meta.stage, actorIsSelf: actorIsSelf,
-                                  actorName: actorName, peerName: peerName) ?? m.text
+                                  actorName: actorName, peerName: peerName) ?? fallback
     }
 
     /// Encrypted DM with no key on this device → show the unlock panel.
@@ -1695,6 +1709,22 @@ struct MessageListView: View {
     private let bottomAnchor = "bottom-anchor"
 
     // MARK: Header
+
+    /// Below this header width (every iPhone up to the 393 pt ones) a 1:1
+    /// DM's pet chip takes the search icon's place.
+    private static let narrowHeaderWidth: CGFloat = 400
+
+    /// The 1:1 DM's Zekk Pet, for the chip beside the streak.
+    private var headerPet: PetDTO? {
+        channel.isDM ? store.petState(for: channel)?.pet : nil
+    }
+
+    /// Search (none in an E2EE channel) leaves a narrow header that shows the
+    /// pet chip, so the DM's name keeps the room it had before the chip.
+    /// It's in the DM's settings as well.
+    private var headerShowsSearch: Bool {
+        !channel.isE2EE && !(narrowHeader && headerPet != nil)
+    }
 
     private var header: some View {
         HStack(spacing: 8) {
@@ -1773,14 +1803,22 @@ struct MessageListView: View {
                         .foregroundColor(Theme.ink1)
                         .lineLimit(1)
                 }
-                if let streak = (store.dms.first(where: { $0.id == channel.id })?.streak ?? channel.streak),
-                   streak > 0 {
-                    StreakChip(days: streak)
-                }
-                // The DM's Zekk Pet beside the streak (an egg while the invite
-                // is open, asleep after a broken streak). Opens the pet card.
-                if let pet = store.petState(for: channel)?.pet {
-                    ZekkPetHeaderButton(pet: pet, themeId: store.themeId) { showPetCard = true }
+                let streak = (store.dms.first(where: { $0.id == channel.id })?.streak ?? channel.streak) ?? 0
+                let pet = headerPet
+                // The streak and the DM's Zekk Pet read as one group, 4 pt
+                // apart (the title is the only thing here that shrinks).
+                if streak > 0 || pet != nil {
+                    HStack(spacing: 4) {
+                        if streak > 0 { StreakChip(days: streak) }
+                        // An egg while the invite is open, asleep after a
+                        // broken streak. Opens the pet card.
+                        if let pet {
+                            ZekkPetHeaderButton(pet: pet, themeId: store.themeId,
+                                                maskProfane: store.family?.restrictions?.filterProfanity == true) {
+                                showPetCard = true
+                            }
+                        }
+                    }
                 }
             } else {
                 Image(systemName: "number")
@@ -1793,9 +1831,11 @@ struct MessageListView: View {
                     .lineLimit(1)
             }
 
-            Spacer()
+            // No minimum: the HStack's own spacing keeps the gap, and a
+            // crowded header gives those 8 pt to the title instead.
+            Spacer(minLength: 0)
 
-            if !channel.isE2EE {
+            if headerShowsSearch {
                 Button { showSearch = true } label: {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 15))
@@ -1875,6 +1915,13 @@ struct MessageListView: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 48)
+        // The header's own width (the screen's, or the detail pane's on a
+        // wide layout); nothing inside changes it.
+        .onGeometryChange(for: CGFloat.self) { @Sendable geo in
+            geo.size.width.rounded()
+        } action: { width in
+            narrowHeader = width < Self.narrowHeaderWidth
+        }
         .background(Theme.bg2.opacity(0.85))
         .overlay(Rectangle().fill(Theme.lineSoft).frame(height: 1), alignment: .bottom)
         .sheet(isPresented: $showSearch) {
@@ -7042,6 +7089,7 @@ struct DmSettingsSheet: View {
     @State private var showEnableE2EE = false
     @State private var confirmDisableE2EE = false
     @State private var showDisappearing = false
+    @State private var showSearch = false
 
     /// Live channel state (E2EE flips arrive via CHANNEL_UPDATE).
     private var liveChannel: Channel {
@@ -7052,9 +7100,33 @@ struct DmSettingsSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    // Order (top→bottom): Shared media, Notifications, Read
-                    // receipts, Disappearing messages, End-to-end encryption,
-                    // Close DM.
+                    // Order (top→bottom): Search, Shared media, Notifications,
+                    // Read receipts, Disappearing messages, End-to-end
+                    // encryption, Close DM.
+                    // Search is also in the header, except where a narrow
+                    // header gives its place to the pet chip. None in E2EE.
+                    if !liveChannel.isE2EE {
+                        Text("SEARCH")
+                            .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                        Button { showSearch = true } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "magnifyingglass")
+                                    .font(.system(size: 13)).foregroundColor(Theme.accent)
+                                Text("Search messages")
+                                    .font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold)).foregroundColor(Theme.ink3)
+                            }
+                            .padding(12)
+                            .background(Theme.bg2).clipShape(RoundedRectangle(cornerRadius: 12))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        Divider().overlay(Theme.line)
+                    }
+
                     Text("SHARED MEDIA")
                         .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
                     NavigationLink {
@@ -7156,6 +7228,9 @@ struct DmSettingsSheet: View {
             }
             .sheet(isPresented: $showDisappearing) {
                 DisappearingMessagesView(channel: liveChannel)
+            }
+            .sheet(isPresented: $showSearch) {
+                SearchSheet(channel: liveChannel)
             }
             .confirmationDialog(
                 "Turn off encryption?",

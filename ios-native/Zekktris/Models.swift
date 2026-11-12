@@ -1173,15 +1173,45 @@ enum ZekkPet {
         }
     }
 
+    /// Slack after a boundary, so the re-read lands on the far side of it.
+    static let refreshSlack: TimeInterval = 5
+
     /// When the open DM should re-read its pet even if no event comes: two
     /// of the mood's rules turn on the clock alone — 18:00 UTC (a pet fed
     /// yesterday turns grumpy) and the end of the UTC day (today's tasks
-    /// reset). The next of those after `now`, a few seconds past it.
+    /// reset). The next of those, a few seconds past it. A boundary counts
+    /// until its slack is over too, so a re-arm inside those seconds (any
+    /// pet update) returns the same time instead of skipping to the next.
     static func nextRefreshAt(_ pet: PetDTO, now: Date) -> Date? {
         var candidates: [Date] = []
         if let today = utcDay(pet.today) { candidates.append(today.addingTimeInterval(18 * 3_600)) }
         if let end = messageDate(pet.dayEndsAt) { candidates.append(end) }
-        return candidates.filter { $0 > now }.min()?.addingTimeInterval(5)
+        return candidates
+            .filter { $0.addingTimeInterval(refreshSlack) > now }
+            .min()?.addingTimeInterval(refreshSlack)
+    }
+
+    /// The next midnight UTC after `now`, a few seconds past it: when a
+    /// streak can break with no event. Like nextRefreshAt, a midnight counts
+    /// until its slack is over.
+    static func nextUtcMidnightRefreshAt(now: Date) -> Date {
+        let day: TimeInterval = 86_400
+        let start = ((now.timeIntervalSince1970 - refreshSlack) / day).rounded(.down) * day
+        return Date(timeIntervalSince1970: start + day + refreshSlack)
+    }
+
+    /// When the open DM should re-read its pet state with no event: the
+    /// pet's clock boundaries (nextRefreshAt), and the next midnight UTC
+    /// while the bar offers Adopt or Accept, which need a live streak that
+    /// can break then (bannerNeedsStreak). The earlier of those; nil when
+    /// neither applies.
+    static func refreshAt(_ state: DmPetState, selfId: String?, now: Date) -> Date? {
+        var times: [Date] = []
+        if let pet = state.pet, let at = nextRefreshAt(pet, now: now) { times.append(at) }
+        if bannerNeedsStreak(banner(state, selfId: selfId, peerName: "")) {
+            times.append(nextUtcMidnightRefreshAt(now: now))
+        }
+        return times.min()
     }
 
     // MARK: The adopt banner
@@ -1198,6 +1228,10 @@ enum ZekkPet {
     struct Banner: Equatable {
         let kind: BannerKind
         let text: String
+        /// `.invited` only: the streak broke or is under minStreak, so
+        /// accepting would only fail. Accept hides until the streak is back
+        /// (Not now stays).
+        var locked: Bool = false
     }
 
     /// The slim bar under the DM header; nil when the state isn't loaded, the
@@ -1209,9 +1243,27 @@ enum ZekkPet {
             return Banner(kind: .adopt, text: "🥚 \(state.streak)-day streak! Adopt a Zekk Pet with \(peerName).")
         }
         guard pet.status == .invited else { return nil }
-        return pet.invitedBy == selfId
-            ? Banner(kind: .waiting, text: "Waiting for \(peerName) to accept your Zekk Pet.")
-            : Banner(kind: .invited, text: "\(peerName) wants to raise a Zekk Pet with you.")
+        if pet.invitedBy == selfId {
+            return Banner(kind: .waiting, text: "Waiting for \(peerName) to accept your Zekk Pet.")
+        }
+        let text = "\(peerName) wants to raise a Zekk Pet with you."
+        // The invite outlives a broken streak (it lapses after 7 days), but
+        // the server only lets it be accepted on a live streak of minStreak
+        // or more.
+        if state.streak < state.minStreak {
+            return Banner(kind: .invited,
+                          text: "\(text) Keep a \(state.minStreak)-day streak going to accept.",
+                          locked: true)
+        }
+        return Banner(kind: .invited, text: text)
+    }
+
+    /// Whether the bar's action hangs on a live streak, which breaks at
+    /// midnight UTC with no event: Adopt, and Accept on their invite (unless
+    /// it's locked already).
+    static func bannerNeedsStreak(_ banner: Banner?) -> Bool {
+        guard let banner else { return false }
+        return banner.kind == .adopt || (banner.kind == .invited && !banner.locked)
     }
 
     // MARK: The in-chat notice
