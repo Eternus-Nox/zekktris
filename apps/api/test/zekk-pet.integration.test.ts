@@ -1216,10 +1216,17 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
       [supervisedChild, received.id, 'received', 'snapchat'],
       [supervisedChild, sent.id, 'sent', 'snapchat'],
     ]);
-    // A name that keeps a word it already had isn't flagged again (as an edit).
+    // Each rename is a new notice, scanned as a fresh send: a name that keeps a
+    // word the old one had is flagged again, against its own notice (the
+    // earlier flag's notice doesn't show what this rename added).
     expect((await rename(friend, dm, 'Snapchat Pip II')).status).toBe(200);
-    await new Promise((r) => setTimeout(r, 300));
-    expect((await flags()).length).toBe(2);
+    const again = await lastNotice();
+    await waitFor(async () => (await flags()).length === 3);
+    expect((await flags()).map((f) => [f.childId, f.messageId, f.direction, f.matchedWord])).toEqual([
+      [supervisedChild, received.id, 'received', 'snapchat'],
+      [supervisedChild, sent.id, 'sent', 'snapchat'],
+      [supervisedChild, again.id, 'received', 'snapchat'],
+    ]);
   });
 
   it('a poke across a block feeds nothing and posts nothing', async () => {

@@ -780,7 +780,7 @@ export async function renamePet(input: {
     await lockPet(tx, input.channelId);
     const row = await loadRow(tx, input.channelId);
     if (!row || row.status === 'invited') throw errors.conflict('There is no Zekk Pet to rename');
-    if (row.name === name) return { row, notice: null, oldName: row.name, recipientIds: [] };
+    if (row.name === name) return { row, notice: null, recipientIds: [] };
     const [saved] = await tx
       .update(schema.dmPets)
       .set({ name, updatedAt: now })
@@ -790,7 +790,6 @@ export async function renamePet(input: {
     return {
       row: saved!,
       notice,
-      oldName: row.name,
       recipientIds: await listAllRecipients(input.channelId, tx),
     };
   });
@@ -801,8 +800,11 @@ export async function renamePet(input: {
   // and every later one repeats it), so it gets the send path's watch-word
   // scan, flagged against the 'renamed' notice. Only the new name is scanned
   // (the notice also carries the renamer's display name, which no path
-  // scans), and a word already in the old name isn't flagged again, as for an
-  // edit. Fire-and-forget: it never fails the rename.
+  // scans). Each rename posts a new notice, so it's scanned as a fresh send,
+  // not as an edit of the old name: a word the old name already had is
+  // flagged again, since that earlier flag's notice doesn't show what this
+  // rename added (and may be from the other person). Fire-and-forget: it
+  // never fails the rename.
   void supervision
     .scanMessageForFlags({
       messageId: out.notice.id,
@@ -810,7 +812,6 @@ export async function renamePet(input: {
       channelType: 'dm',
       authorId: input.userId,
       content: name,
-      previousContent: out.oldName,
     })
     .catch(() => undefined);
   return { pet, changed: true };
