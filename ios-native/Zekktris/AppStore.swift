@@ -3306,8 +3306,10 @@ final class AppStore: ObservableObject {
               before.contains(where: { $0.id == gone }),
               !after.contains(where: { $0.id == gone }) else { return }
         var back: String?
+        // Pet notices never become the watermark (the server skips them too).
         for m in after where m.channelId == channelId && !m.id.isEmpty
-            && m.id.allSatisfy(\.isNumber) && snowflakeGreater(gone, than: m.id) {
+            && m.id.allSatisfy(\.isNumber) && snowflakeGreater(gone, than: m.id)
+            && !ZekkPet.isNotice(m) {
             if let b = back, !snowflakeGreater(m.id, than: b) { continue }
             back = m.id
         }
@@ -6915,7 +6917,10 @@ final class AppStore: ObservableObject {
                 #endif
                 if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let cid = obj["channelId"] as? String {
-                    if let mid = obj["id"] as? String, !mid.isEmpty {
+                    // A Zekk Pet notice moves no one's recency (see below).
+                    let petNotice = (obj["type"] as? String) == "system_pet"
+                        || ((obj["metadata"] as? [String: Any])?["kind"] as? String) == "pet"
+                    if let mid = obj["id"] as? String, !mid.isEmpty, !petNotice {
                         bumpChannelLastMessage(cid, mid)
                     }
                     if cid == selectedChannel?.id, let c = selectedChannel {
@@ -6928,18 +6933,22 @@ final class AppStore: ObservableObject {
                 }
                 return
             }
-            bumpChannelLastMessage(message.channelId, message.id)
+            // A Zekk Pet notice is quiet (no buzz, no push) and, as on the
+            // server (which never moves the DM's last_message_id for one) and
+            // the web, it isn't activity: it doesn't lift the DM to the top
+            // of the list, light an unread dot or count on the app badge.
+            let isPetNotice = ZekkPet.isNotice(message)
+            if !isPetNotice { bumpChannelLastMessage(message.channelId, message.id) }
             // The disappearing-timer notice also says what the timer now is:
             // apply it in case the DM_SETTINGS_UPDATE beside it is lost.
             let isTimerNotice = DisappearingTimer.isNotice(message)
             if isTimerNotice, let seconds = message.metadata?.timerSeconds {
                 setDmTimer(message.channelId, seconds)
             }
-            // A Zekk Pet notice is quiet too (no buzz, no push). The server's
-            // daily check posts its asleep / ran-away notices under user A,
-            // who did nothing — so only a notice WE caused moves our read
-            // marker below; any other must not hide unread messages.
-            let isPetNotice = ZekkPet.isNotice(message)
+            // The server's daily check posts its asleep / ran-away pet notices
+            // under user A, who did nothing — so only a pet notice WE caused
+            // moves our read marker below; any other must not hide unread
+            // messages.
             let petNoticeByOther = isPetNotice && message.metadata?.actorId != currentUserId
             // A user's message supersedes their typing indicator (web parity).
             if let author = message.authorId ?? message.author?.id, !petNoticeByOther {

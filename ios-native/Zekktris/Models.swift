@@ -954,15 +954,22 @@ struct DmPetState: Decodable, Hashable {
     var eligible: Bool
     var streak: Int
     var minStreak: Int
+    /// The viewer may invite, accept or rename right now. False while either
+    /// person blocks the other, the viewer is muted or supervision-restricted,
+    /// or the other person left the DM: those writes would only fail, so
+    /// Adopt / Accept / Rename hide (Not now and Cancel stay). Older servers
+    /// don't send it: true.
+    var canAct: Bool
 
-    init(pet: PetDTO?, eligible: Bool, streak: Int, minStreak: Int) {
+    init(pet: PetDTO?, eligible: Bool, streak: Int, minStreak: Int, canAct: Bool = true) {
         self.pet = pet
         self.eligible = eligible
         self.streak = streak
         self.minStreak = minStreak
+        self.canAct = canAct
     }
 
-    private enum CodingKeys: String, CodingKey { case pet, eligible, streak, minStreak }
+    private enum CodingKeys: String, CodingKey { case pet, eligible, streak, minStreak, canAct }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -972,6 +979,7 @@ struct DmPetState: Decodable, Hashable {
         eligible = (try? c.decode(Bool.self, forKey: .eligible)) ?? false
         streak = (try? c.decode(Int.self, forKey: .streak)) ?? 0
         minStreak = (try? c.decode(Int.self, forKey: .minStreak)) ?? ZekkPet.minStreak
+        canAct = (try? c.decode(Bool.self, forKey: .canAct)) ?? true
     }
 }
 
@@ -1040,13 +1048,32 @@ enum ZekkPet {
         }
     }
 
-    /// normalizePetName: trim, collapse runs of whitespace to one space. nil
-    /// when the result is empty, longer than `nameMaxLength` code points, or
-    /// holds a control character (U+0000–001F, U+007F–009F).
+    /// The invisible and bidi-formatting characters the shared rule drops
+    /// first: zero-width space, word joiner and invisible operators, the BOM,
+    /// the LRM / RLM / ALM marks, and the embeddings, overrides and isolates.
+    private static func isStrippedFormat(_ s: Unicode.Scalar) -> Bool {
+        switch s.value {
+        case 0x200B, 0x2060...0x2064, 0xFEFF, 0x200E, 0x200F, 0x061C, 0x202A...0x202E, 0x2066...0x2069:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// normalizePetName: drop invisible and bidi-formatting characters
+    /// (isStrippedFormat), then trim and collapse runs of whitespace to one
+    /// space. ZWNJ / ZWJ (U+200C / U+200D) stay, for emoji sequences and the
+    /// scripts that need them, but a name of nothing else is empty. nil when
+    /// the result is empty, longer than `nameMaxLength` code points, or holds
+    /// a control character (U+0000–001F, U+007F–009F).
     static func normalizeName(_ raw: String) -> String? {
         var out = String.UnicodeScalarView()
         var pendingSpace = false
         for s in raw.unicodeScalars {
+            // Before the whitespace test: U+FEFF is JS whitespace too, but
+            // it's dropped ("a\u{FEFF}b" is "ab"), and a dropped character
+            // doesn't split a run of whitespace.
+            if isStrippedFormat(s) { continue }
             if isJSWhitespace(s) {
                 pendingSpace = !out.isEmpty
                 continue
@@ -1055,7 +1082,9 @@ enum ZekkPet {
             pendingSpace = false
             out.append(s)
         }
-        guard !out.isEmpty, out.count <= nameMaxLength else { return nil }
+        // Only spaces left once ZWNJ / ZWJ are set aside: empty.
+        guard out.contains(where: { $0.value != 0x20 && $0.value != 0x200C && $0.value != 0x200D }),
+              out.count <= nameMaxLength else { return nil }
         if out.contains(where: { $0.value <= 0x1F || (0x7F...0x9F).contains($0.value) }) { return nil }
         return String(out)
     }

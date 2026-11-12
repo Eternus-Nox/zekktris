@@ -90,6 +90,11 @@ enum ZekkPetDrawing {
     static let crackAt = 0.8
     /// Body / limb outline and every stroked face line.
     static let outlineWidth: CGFloat = 2.5
+    /// Room drawn past each side of the 100-unit box. The breathe and the
+    /// tap squash scale the whole pet about the ground point, sleeping Zs
+    /// included, which carries the largest Z's top bar up to about −1.6 and
+    /// its right end out to about 102.5; a Canvas clips at its own bounds.
+    static let overscan: CGFloat = 3
 
     private static func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: x, y: y) }
 
@@ -468,24 +473,32 @@ struct ZekkPetArt: View {
         let progress = self.progress
         let squashAt = self.squashAt
         let hearts = self.hearts
-        return Canvas { ctx, size in
-            let s = min(size.width, size.height) / 100
-            ctx.translateBy(x: (size.width - 100 * s) / 2, y: (size.height - 100 * s) / 2)
-            ctx.scaleBy(x: s, y: s)
-            var pet = ctx
-            if idle {
-                ZekkPetDrawing.applyIdle(ZekkPetDrawing.motion(stage: stage, mood: mood),
-                                         t: date.timeIntervalSinceReferenceDate, to: &pet)
+        let margin = ZekkPetDrawing.overscan
+        return GeometryReader { geo in
+            // The 100-unit box still fills the frame given; the Canvas
+            // reaches `margin` units past it on every side, so nothing the
+            // motion carries out of the box is cut off. Layout is unchanged.
+            let pad = min(geo.size.width, geo.size.height) * margin / 100
+            Canvas { ctx, size in
+                let s = min(size.width, size.height) / (100 + 2 * margin)
+                ctx.translateBy(x: (size.width - 100 * s) / 2, y: (size.height - 100 * s) / 2)
+                ctx.scaleBy(x: s, y: s)
+                var pet = ctx
+                if idle {
+                    ZekkPetDrawing.applyIdle(ZekkPetDrawing.motion(stage: stage, mood: mood),
+                                             t: date.timeIntervalSinceReferenceDate, to: &pet)
+                }
+                if !still, let squashAt {
+                    ZekkPetDrawing.applySquash(elapsed: date.timeIntervalSince(squashAt), to: &pet)
+                }
+                ZekkPetDrawing.draw(stage: stage, mood: mood, progress: progress, palette: palette, in: pet)
+                for heart in hearts {
+                    let elapsed = date.timeIntervalSince(heart.start)
+                    guard elapsed >= 0, elapsed < 0.8 else { continue }
+                    ZekkPetDrawing.drawHeart(elapsed: elapsed, rise: !still, in: ctx)
+                }
             }
-            if !still, let squashAt {
-                ZekkPetDrawing.applySquash(elapsed: date.timeIntervalSince(squashAt), to: &pet)
-            }
-            ZekkPetDrawing.draw(stage: stage, mood: mood, progress: progress, palette: palette, in: pet)
-            for heart in hearts {
-                let elapsed = date.timeIntervalSince(heart.start)
-                guard elapsed >= 0, elapsed < 0.8 else { continue }
-                ZekkPetDrawing.drawHeart(elapsed: elapsed, rise: !still, in: ctx)
-            }
+            .padding(-pad)
         }
     }
 }
@@ -542,7 +555,11 @@ struct ZekkPetBanner: View {
                 .foregroundColor(Theme.ink2)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            ZekkPetInviteActions(channelId: channelId, kind: banner.kind)
+            // The buttons keep their full width ("Accepting…" included); the
+            // text wraps into what's left.
+            ZekkPetInviteActions(channelId: channelId, kind: banner.kind,
+                                 canAct: store.dmPets[channelId]?.canAct ?? true)
+                .fixedSize()
             Button { store.dismissPetBanner(channelId, banner.kind) } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 11, weight: .semibold))
@@ -568,6 +585,13 @@ struct ZekkPetInviteActions: View {
     @EnvironmentObject private var store: AppStore
     let channelId: String
     let kind: ZekkPet.BannerKind
+    /// False (a block, a mute, supervision, or the other person left): Adopt
+    /// and Accept hide, since they would only fail. Not now / Cancel stay.
+    var canAct: Bool = true
+    /// For a caller whose sheet hides MainView's error toast (the pet card):
+    /// nil as a change starts, then the message if it fails (taken out of the
+    /// toast). Unset, a failure shows in the toast (the banner).
+    var onError: ((String?) -> Void)? = nil
     @State private var busy: Busy?
 
     private enum Busy { case invite, accept, decline }
@@ -576,11 +600,15 @@ struct ZekkPetInviteActions: View {
         HStack(spacing: 6) {
             switch kind {
             case .adopt:
-                primary(busy == .invite ? "Inviting…" : "Adopt") { run(.invite, .invite) }
+                if canAct {
+                    primary(busy == .invite ? "Inviting…" : "Adopt") { run(.invite, .invite) }
+                }
             case .waiting:
                 secondary(busy == .decline ? "Cancelling…" : "Cancel") { run(.decline, .decline) }
             case .invited:
-                primary(busy == .accept ? "Accepting…" : "Accept") { run(.accept, .accept) }
+                if canAct {
+                    primary(busy == .accept ? "Accepting…" : "Accept") { run(.accept, .accept) }
+                }
                 secondary("Not now") { run(.decline, .decline) }
             }
         }
@@ -590,9 +618,14 @@ struct ZekkPetInviteActions: View {
     private func run(_ change: AppStore.PetChange, _ marker: Busy) {
         guard busy == nil else { return }
         busy = marker
+        onError?(nil)
         Task { @MainActor in
-            await store.changeDmPet(channelId, change)
+            let ok = await store.changeDmPet(channelId, change)
             busy = nil
+            if !ok, let onError {
+                onError(store.errorText ?? "Couldn't update the invite.")
+                store.errorText = nil
+            }
         }
     }
 
@@ -645,10 +678,23 @@ struct ZekkPetCardSheet: View {
     @State private var renaming = false
     @State private var nameDraft = ""
     @State private var saving = false
+    /// Why a rename / accept / decline from here failed. MainView's error
+    /// toast sits behind this sheet, so the card says it itself.
+    @State private var actionError: String?
+    /// When it failed. Only a failure that just happened explains the pet
+    /// hatching or going away under it (the resync after a 409: they
+    /// accepted first, the invite expired); an older one is stale by then.
+    @State private var actionErrorAt: Date?
     @FocusState private var nameFocused: Bool
+
+    /// How long a failure can explain the pet changing (time for the
+    /// resync after it to land).
+    private static let errorExplainsChangeFor: TimeInterval = 10
 
     private var state: DmPetState? { store.dmPets[channel.id] }
     private var pet: PetDTO? { state?.pet }
+    /// Accept and Rename hide while the server says they'd only fail.
+    private var canAct: Bool { state?.canAct ?? true }
     /// The other person (their DM nickname when set).
     private var peerName: String { store.dmDisplayTitle(channel) }
 
@@ -684,10 +730,29 @@ struct ZekkPetCardSheet: View {
                 }
             }
         }
-        // Nothing left to show: the invite was declined / cancelled /
-        // expired or the pet ran away (from here or anywhere else).
-        .onChange(of: pet == nil) { _, gone in
-            if gone, state != nil { dismiss() }
+        .onChange(of: pet?.status) { _, status in
+            // An error from before the pet hatched / fell asleep / went away
+            // (a lost connection, say, while someone else then acted) says
+            // nothing about this change: don't show it on the new card or
+            // hand it to the toast.
+            let fresh = actionErrorAt.map {
+                Date().timeIntervalSince($0) <= Self.errorExplainsChangeFor
+            } ?? false
+            let reason = fresh ? actionError : nil
+            if !fresh { actionError = nil }
+            // Nothing left to show: the invite was declined / cancelled /
+            // expired or the pet ran away (from here or anywhere else).
+            if status == nil, state != nil {
+                // A change that just failed because the pet was already gone
+                // (an expired invite, a pet that ran away): hand the reason
+                // back to the toast, which the closing sheet uncovers.
+                if let reason { store.errorText = reason }
+                dismiss()
+            }
+        }
+        .onChange(of: canAct) { _, can in
+            // A block or the other person leaving mid-rename hides the field.
+            if !can { renaming = false }
         }
         .task { if state == nil { await store.loadDmPet(channel.id) } }
     }
@@ -703,8 +768,22 @@ struct ZekkPetCardSheet: View {
                 .foregroundColor(Theme.ink2)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            ZekkPetInviteActions(channelId: channel.id, kind: banner.kind)
+            ZekkPetInviteActions(channelId: channel.id, kind: banner.kind, canAct: canAct) { setActionError($0) }
+            if let actionError { errorLine(actionError) }
         }
+    }
+
+    private func setActionError(_ message: String?) {
+        actionError = message
+        actionErrorAt = message == nil ? nil : Date()
+    }
+
+    private func errorLine(_ message: String) -> some View {
+        Text(message)
+            .font(.zkSans(12))
+            .foregroundColor(Theme.dangerSoft)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     // MARK: The pet
@@ -713,7 +792,7 @@ struct ZekkPetCardSheet: View {
     private func card(_ pet: PetDTO) -> some View {
         ZekkPetStage(pet: pet)
         VStack(spacing: 2) {
-            if renaming {
+            if renaming && canAct {
                 renameField(pet)
             } else {
                 HStack(spacing: 4) {
@@ -721,23 +800,30 @@ struct ZekkPetCardSheet: View {
                         .font(.zkSans(19, weight: .semibold))
                         .foregroundColor(Theme.ink1)
                         .lineLimit(1)
-                    Button {
-                        nameDraft = pet.name
-                        renaming = true
-                    } label: {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(Theme.ink3)
-                            .frame(width: 30, height: 30)
-                            .contentShape(Rectangle())
+                    if canAct {
+                        Button {
+                            nameDraft = pet.name
+                            actionError = nil
+                            renaming = true
+                        } label: {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(Theme.ink3)
+                                .frame(width: 30, height: 30)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Rename pet")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Rename pet")
                 }
             }
             Text(ZekkPet.levelLine(pet))
                 .font(.zkSans(14))
                 .foregroundColor(Theme.ink2)
+            // An invite change that failed as the pet hatched (e.g. Cancel
+            // just after they accepted; an older error was dropped as it
+            // hatched). A rename's shows in the field.
+            if !renaming, let actionError { errorLine(actionError) }
         }
         moodChip(pet)
         levelBar(pet)
@@ -814,6 +900,8 @@ struct ZekkPetCardSheet: View {
                 .frame(width: 20, height: 20)
                 .background(Circle().fill(row.done ? Theme.accent.opacity(0.15) : Color.clear))
                 .overlay(Circle().strokeBorder(row.done ? Theme.accent.opacity(0.5) : Theme.line, lineWidth: 1))
+                // Drawn clear when not done; the row's value says which.
+                .accessibilityHidden(true)
             Text(row.label)
                 .font(.zkSans(14))
                 .foregroundColor(row.done ? Theme.ink1 : Theme.ink2)
@@ -881,7 +969,8 @@ struct ZekkPetCardSheet: View {
     // MARK: Rename
 
     /// Inline rename: ✓ (or Return) saves, ✕ cancels. The name is checked
-    /// like the server does (trimmed, spaces collapsed, 1–24 characters).
+    /// like the server does (invisible and bidi-formatting characters
+    /// dropped, trimmed, spaces collapsed, 1–24 characters).
     private func renameField(_ pet: PetDTO) -> some View {
         let name = ZekkPet.normalizeName(nameDraft)
         let canSave = name != nil && name != pet.name && !saving
@@ -896,6 +985,7 @@ struct ZekkPetCardSheet: View {
                     .submitLabel(.done)
                     .focused($nameFocused)
                     .onSubmit { save(pet) }
+                    .onChange(of: nameDraft) { _, _ in actionError = nil }
                     .disabled(saving)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
@@ -920,7 +1010,10 @@ struct ZekkPetCardSheet: View {
                 .buttonStyle(.plain)
                 .disabled(!canSave)
                 .accessibilityLabel("Save name")
-                Button { renaming = false } label: {
+                Button {
+                    renaming = false
+                    actionError = nil
+                } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(Theme.ink2)
@@ -931,12 +1024,16 @@ struct ZekkPetCardSheet: View {
                 .disabled(saving)
                 .accessibilityLabel("Cancel rename")
             }
-            Text(invalid
-                 ? "Names are 1–\(ZekkPet.nameMaxLength) characters, with no control characters."
-                 : "Up to \(ZekkPet.nameMaxLength) characters. You'll both see the new name.")
-                .font(.zkSans(12))
-                .foregroundColor(invalid ? Theme.dangerSoft : Theme.ink3)
-                .multilineTextAlignment(.center)
+            if let actionError {
+                errorLine(actionError)
+            } else {
+                Text(invalid
+                     ? "Names are 1–\(ZekkPet.nameMaxLength) characters, with no control characters."
+                     : "Up to \(ZekkPet.nameMaxLength) characters. You'll both see the new name.")
+                    .font(.zkSans(12))
+                    .foregroundColor(invalid ? Theme.dangerSoft : Theme.ink3)
+                    .multilineTextAlignment(.center)
+            }
         }
         .frame(maxWidth: 340)
         .onAppear { DispatchQueue.main.async { nameFocused = true } }
@@ -945,10 +1042,18 @@ struct ZekkPetCardSheet: View {
     private func save(_ pet: PetDTO) {
         guard !saving, let name = ZekkPet.normalizeName(nameDraft), name != pet.name else { return }
         saving = true
+        actionError = nil
         Task { @MainActor in
             let ok = await store.changeDmPet(channel.id, .rename(name))
             saving = false
-            if ok { renaming = false }
+            if ok {
+                renaming = false
+            } else {
+                // Keep the draft for a retry; say why here, not in the toast
+                // behind the sheet (nor in one left for after it closes).
+                setActionError(store.errorText ?? "Couldn't rename the pet.")
+                store.errorText = nil
+            }
         }
     }
 }
