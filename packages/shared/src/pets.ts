@@ -95,14 +95,24 @@ export function petStageLabel(stage: PetStage): string {
 }
 
 /**
- * Normalise a proposed pet name: trim, collapse runs of whitespace to one
- * space. Returns null when the result is empty, longer than
+ * Normalise a proposed pet name: drop invisible and bidi-formatting
+ * characters (zero-width space U+200B, word joiner and invisible operators
+ * U+2060–U+2064, BOM U+FEFF, the marks U+200E/U+200F/U+061C, and the
+ * embeddings, overrides and isolates U+202A–U+202E / U+2066–U+2069, much as
+ * the server strips them from display names; they would hide the name or
+ * reorder the notice text around it), then trim and collapse runs of
+ * whitespace to one space. ZWNJ/ZWJ (U+200C/U+200D) stay so emoji sequences
+ * and scripts that need them keep working, but a name of nothing else is
+ * empty. Returns null when the result is empty, longer than
  * PET_NAME_MAX_LENGTH (counted in code points), or contains a control
  * character.
  */
 export function normalizePetName(raw: string): string | null {
-  const name = raw.replace(/\s+/g, ' ').trim();
-  if (name.length === 0) return null;
+  const name = raw
+    .replace(/[\u200B\u2060-\u2064\uFEFF\u200E\u200F\u061C\u202A-\u202E\u2066-\u2069]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (name.replace(/[\u200C\u200D]/g, '').trim().length === 0) return null;
   if ([...name].length > PET_NAME_MAX_LENGTH) return null;
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) return null;
