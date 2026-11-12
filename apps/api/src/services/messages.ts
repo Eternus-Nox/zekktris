@@ -1055,6 +1055,11 @@ export async function deleteMessage(messageId: bigint): Promise<void> {
  * ackable message is older — so the unread dot sticks FOREVER (until someone
  * posts again). Conditional UPDATE: a no-op unless the deleted message WAS the
  * watermark, so the common mid-history delete costs one indexed check.
+ *
+ * Zekk Pet notices ('system_pet') never set the watermark when posted, so
+ * they never become it here either: a notice newer than the deleted message
+ * would otherwise make the DM unread for both people. With only notices left
+ * the watermark is NULL, as in a DM where only notices were ever posted.
  */
 async function rollbackChannelWatermark(channelId: bigint, deletedId: bigint): Promise<void> {
   await db.execute(sql`
@@ -1062,6 +1067,7 @@ async function rollbackChannelWatermark(channelId: bigint, deletedId: bigint): P
        SET last_message_id = (
          SELECT max(id) FROM messages
           WHERE channel_id = ${channelId} AND deleted_at IS NULL
+            AND type <> 'system_pet'
        )
      WHERE id = ${channelId} AND last_message_id = ${deletedId}
   `);
@@ -1074,7 +1080,10 @@ async function rollbackChannelWatermark(channelId: bigint, deletedId: bigint): P
  * one of `deletedIds` moves back to its newest message that is neither
  * deleted nor already past its deadline (or NULL when none is left). A
  * hard-deleted id works as well as a tombstone (the subquery can't see it).
- * One statement per batch; pass `exec` to run it inside a transaction.
+ * Pet notices never become the watermark (see rollbackChannelWatermark): a
+ * DM's last real message expiring after an 'asleep' notice must not make the
+ * DM unread. One statement per batch; pass `exec` to run it inside a
+ * transaction.
  */
 export async function rollbackChannelWatermarks(
   channelIds: bigint[],
@@ -1090,6 +1099,7 @@ export async function rollbackChannelWatermarks(
          SELECT max(m.id) FROM messages m
           WHERE m.channel_id = c.id AND m.deleted_at IS NULL
             AND (m.expires_at IS NULL OR m.expires_at > now())
+            AND m.type <> 'system_pet'
        )
      WHERE c.id IN (${chList}) AND c.last_message_id IN (${delList})
   `);
@@ -1154,12 +1164,14 @@ export async function purgeChannel(channelId: bigint): Promise<bigint[]> {
 
   // The watermark almost certainly pointed at a purged message — recompute it
   // (newest surviving message, or NULL when the channel is now empty) so the
-  // unread dot doesn't chase an unloadable id forever.
+  // unread dot doesn't chase an unloadable id forever. Pet notices never set
+  // it (see rollbackChannelWatermark).
   await db.execute(sql`
     UPDATE channels
        SET last_message_id = (
          SELECT max(id) FROM messages
           WHERE channel_id = ${channelId} AND deleted_at IS NULL
+            AND type <> 'system_pet'
        )
      WHERE id = ${channelId}
   `);

@@ -31,6 +31,7 @@ import { RateLimiter } from '../lib/rateLimit';
 import { DISAPPEARING_MAX_SECONDS, DISAPPEARING_MIN_SECONDS } from '../lib/disappearing';
 import * as pets from '../services/pets';
 import { normalizePetName } from '@zekktris/shared/pets';
+import { log } from '../log';
 
 export const dmsRouter = new Hono();
 dmsRouter.use('*', requireAuth);
@@ -202,6 +203,18 @@ dmsRouter.delete(
     // connections receive nothing — their channel still exists.
     const channelDTO = toChannel(channel, null, []);
     dispatch.dmChannelClosedForUser({ userId, channelId, channelDTO });
+    // A 1:1 DM closed by one side stays one-sided (reopening makes a new
+    // channel), so its Zekk Pet or invite could never be fed or accepted
+    // again: drop it, and the other person's pet UI with it (DM_PET_UPDATE
+    // null, no notice). Best-effort: the close already happened.
+    if (channel.type === 'dm') {
+      await pets.dropPet(channelId).catch((err) =>
+        log.warn?.('pet drop on DM close failed', {
+          channelId: channelId.toString(),
+          err: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
     return c.json({ ok: true });
   },
 );
@@ -386,10 +399,20 @@ async function petDm(channelId: bigint, userId: bigint): Promise<Channel> {
 /** The send route's gates for a write that posts a notice, in its order and
  *  error style (as the timer PATCH applies them): instance mute, then a block
  *  either way (notFound, so the direction doesn't leak) and the supervision
- *  DM policy. Returns the other recipient (null if they closed the DM). */
+ *  DM policy. Returns the other recipient: null if they closed the DM or
+ *  deleted their account (a tombstone can't raise a pet; account deletion
+ *  drops its pets, services/pets.ts dropPetsForUser). */
 async function assertPetWriteAllowed(channelId: bigint, userId: bigint): Promise<bigint | null> {
   await assertNotInstanceMuted(userId);
-  const other = await dms.getOtherRecipient(channelId, userId);
+  let other = await dms.getOtherRecipient(channelId, userId);
+  if (other !== null) {
+    const [u] = await db
+      .select({ deletedAt: schema.users.deletedAt })
+      .from(schema.users)
+      .where(eq(schema.users.id, other))
+      .limit(1);
+    if (!u || u.deletedAt !== null) other = null;
+  }
   if (other !== null) {
     if (await isBlockedEitherWay(userId, other)) throw errors.notFound('Channel');
     if (await supervision.dmBlockedBySupervision(userId, other)) {
@@ -403,7 +426,12 @@ async function assertPetWriteAllowed(channelId: bigint, userId: bigint): Promise
   return other;
 }
 
-/** GET — `{ pet, eligible, streak, minStreak }`. */
+/** GET — `{ pet, eligible, streak, minStreak, canAct }`. `canAct`: the
+    caller passes the gates of invite / accept / rename right now (not
+    blocked either way, not instance-muted or supervision-restricted, and the
+    other person is still in the DM); `eligible` needs it too, so no client
+    offers an Adopt that can only fail. Like the writes' 404, it doesn't say
+    which gate. */
 dmsRouter.get(
   '/:channelId/pet',
   validate('param', z.object({ channelId: snowflakeSchema })),
@@ -411,7 +439,15 @@ dmsRouter.get(
     const userId = requireUserId(c);
     const channelId = BigInt(c.req.valid('param').channelId);
     await petDm(channelId, userId);
-    return c.json(await pets.getPetState(channelId));
+    const state = await pets.getPetState(channelId);
+    let canAct: boolean;
+    try {
+      canAct = (await assertPetWriteAllowed(channelId, userId)) !== null;
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      canAct = false;
+    }
+    return c.json({ ...state, eligible: state.eligible && canAct, canAct });
   },
 );
 
@@ -441,7 +477,10 @@ dmsRouter.post(
     const userId = requireUserId(c);
     const channelId = BigInt(c.req.valid('param').channelId);
     await petDm(channelId, userId);
-    await assertPetWriteAllowed(channelId, userId);
+    // As for invite: never a pet nobody else can feed. Closing the DM drops
+    // its invite; this also refuses one an in-flight invite wrote after that.
+    const other = await assertPetWriteAllowed(channelId, userId);
+    if (other === null) throw errors.conflict('The other person has left this conversation');
     const pet = await pets.acceptPet({ channelId, userId });
     return c.json({ pet });
   },

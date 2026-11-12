@@ -28,13 +28,17 @@ function prevUtcDay(day: string): string {
   return utcDay(d);
 }
 
-/** Record a message from `authorId` in a 1:1 DM and update the streak. */
+/** Record a message from `authorId` in a 1:1 DM and update the streak. `at`
+ *  (default now) fixes the UTC day it counts for: the send route passes the
+ *  message's createdAt, and the same instant to the Zekk Pet, so a message
+ *  sent a few ms before midnight is credited to one day by both. */
 export async function recordDmMessage(args: {
   channelId: bigint;
   authorId: bigint;
   recipientId: bigint;
+  at?: Date;
 }): Promise<{ streak: number; changed: boolean }> {
-  const today = utcDay();
+  const today = utcDay(args.at);
   const [a, b] = args.authorId < args.recipientId
     ? [args.authorId, args.recipientId]
     : [args.recipientId, args.authorId];
@@ -66,8 +70,10 @@ export async function recordDmMessage(args: {
     let bestStreak = row?.bestStreak ?? 0;
     const prevStreak = streak;
 
-    if (authorIsA) lastDayA = today;
-    else lastDayB = today;
+    // Never rewind a side's stamp: with `at`, a send from just before
+    // midnight can get here after the same person's first send of the new day.
+    if (authorIsA) lastDayA = lastDayA !== null && lastDayA > today ? lastDayA : today;
+    else lastDayB = lastDayB !== null && lastDayB > today ? lastDayB : today;
 
     // Credit today once both sides have messaged today.
     if (lastDayA === today && lastDayB === today && lastCountedDay !== today) {

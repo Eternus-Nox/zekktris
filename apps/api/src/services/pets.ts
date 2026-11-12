@@ -30,7 +30,7 @@
  * same transaction; the gateway events go out after it commits.
  */
 
-import { and, eq, inArray, lt, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import {
   PET_ALL_TASKS_MASK,
   PET_CHATTY_GOAL,
@@ -52,7 +52,8 @@ import type { PetNoticeEvent } from '@zekktris/db';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { createSystemMessage, type DbHandle } from './messages';
-import { listAllRecipients, notifyHeldReadMarkerIfWaiting } from './dms';
+import { listAllRecipients, notifyHeldReadMarker } from './dms';
+import * as supervision from './supervision';
 import { toMessage } from '../lib/dto';
 import * as dispatch from '../gateway/dispatch';
 import { log } from '../log';
@@ -238,20 +239,24 @@ export function petDTO(row: PetRow, now: Date = clock()): PetDTO {
 }
 
 /** The counters, tasks, points and status after `kinds` from one side, and
- *  the notices that earns ('awake', then a stage change). Pure. */
+ *  the notices that earns ('awake', then a stage change). `seeded`: the
+ *  message is one the accept's seed already stands for (recordActivity), so
+ *  it makes that side's count at least 1 instead of adding one. Pure. */
 function applyActivity(
   row: PetRow,
   today: string,
   side: 'a' | 'b',
   kinds: readonly PetActivity[],
+  seeded = false,
 ): { next: PetRow; events: PetNoticeEvent[] } {
   let { countA, countB, tasksDone } = todayCounters(row, today);
   const doneBefore = tasksDone;
+  // Capped: past the chatty goal a count changes nothing anyone sees.
+  const counted = (n: number) => Math.min(seeded ? Math.max(n, 1) : n + 1, PET_CHATTY_GOAL);
   for (const kind of kinds) {
     if (kind === 'message') {
-      // Capped: past the chatty goal a count changes nothing anyone sees.
-      if (side === 'a') countA = Math.min(countA + 1, PET_CHATTY_GOAL);
-      else countB = Math.min(countB + 1, PET_CHATTY_GOAL);
+      if (side === 'a') countA = counted(countA);
+      else countB = counted(countB);
     } else {
       tasksDone |= ACTIVITY_BIT[kind] ?? 0;
     }
@@ -394,12 +399,53 @@ async function insertNotice(
   );
 }
 
+/** Does anything from someone other than `userId` (not deleted) sit between
+ *  their stored read marker and `belowId`? Other pet notices don't count:
+ *  they never make the DM unread, so a client marker past them hides
+ *  nothing. */
+async function unreadMessageBelow(input: {
+  userId: bigint;
+  channelId: bigint;
+  belowId: bigint;
+}): Promise<boolean> {
+  const [rs] = await db
+    .select({ last: schema.readStates.lastMessageId })
+    .from(schema.readStates)
+    .where(
+      and(eq(schema.readStates.userId, input.userId), eq(schema.readStates.channelId, input.channelId)),
+    )
+    .limit(1);
+  const [hit] = await db
+    .select({ id: schema.messages.id })
+    .from(schema.messages)
+    .where(
+      and(
+        eq(schema.messages.channelId, input.channelId),
+        lt(schema.messages.id, input.belowId),
+        gt(schema.messages.id, rs?.last ?? 0n),
+        isNull(schema.messages.deletedAt),
+        sql`${schema.messages.authorId} IS DISTINCT FROM ${input.userId}`,
+        sql`${schema.messages.type} <> 'system_pet'`,
+      ),
+    )
+    .limit(1);
+  return !!hit;
+}
+
 /**
  * After the commit: DM_PET_UPDATE to the DM's recipients (when `pet` is
  * given; null = gone), then each notice the way system rows reach a DM —
  * re-subscribe the recipients' connections, MESSAGE_CREATE, and the author's
- * held read marker (notifyHeldReadMarkerIfWaiting: their clients move their
- * local marker to their own row on its echo; the call-record pattern).
+ * held read marker. The author's clients move their local marker to their
+ * own row on its echo, but a notice never moves the stored one, and its
+ * author hasn't necessarily read what came before it: a poke or a widget
+ * action reads nothing, a sweep notice ('asleep', 'ran_away', actorId null)
+ * is only nominally user A's, and the other person's message can land
+ * between a send and the notice it causes. So whenever anything from the
+ * other person waits between the author's stored marker and the notice, that
+ * marker goes back to their devices (a CHANNEL_ACK, after the echo). This
+ * covers the timed message the call-record pattern
+ * (notifyHeldReadMarkerIfWaiting) looks for, and any other unread one.
  */
 async function announce(
   channelId: bigint,
@@ -423,12 +469,13 @@ async function announce(
       channelId,
       guildId: null,
     });
-    if (notice.authorId !== null) {
-      await notifyHeldReadMarkerIfWaiting({
-        userId: notice.authorId,
-        channelId,
-        belowId: notice.id,
-      });
+    if (
+      notice.authorId !== null &&
+      (await unreadMessageBelow({ userId: notice.authorId, channelId, belowId: notice.id }).catch(
+        () => false,
+      ))
+    ) {
+      await notifyHeldReadMarker({ userId: notice.authorId, channelId });
     }
   }
 }
@@ -613,9 +660,54 @@ export async function declinePet(input: { channelId: bigint; userId: bigint }): 
   if (removed) await announce(input.channelId, [], null);
 }
 
+/**
+ * Remove a DM's pet or invite, whatever its state, under its lock (a feed,
+ * accept or sweep that already holds it finishes first and the next one
+ * finds no row), and tell the DM's remaining recipients (DM_PET_UPDATE
+ * null). No notice. For a DM one person closed (routes/dms.ts DELETE): that
+ * channel stays one-sided for good — reopening creates a new one — so its
+ * pet could never be fed or adopted again.
+ */
+export async function dropPet(channelId: bigint): Promise<boolean> {
+  const removed = await db.transaction(async (tx) => {
+    await lockPet(tx, channelId);
+    const gone = await tx
+      .delete(schema.dmPets)
+      .where(eq(schema.dmPets.channelId, channelId))
+      .returning({ channelId: schema.dmPets.channelId });
+    return gone.length > 0;
+  });
+  if (removed) await announce(channelId, [], null);
+  return removed;
+}
+
+/**
+ * Account deletion (services/purge.ts): the user row stays as a tombstone, so
+ * dm_pets' ON DELETE CASCADE never fires. Drop every pet and invite the user
+ * is part of (dropPet) and tell the other person. Per-pet failures are
+ * logged and skipped.
+ */
+export async function dropPetsForUser(userId: bigint): Promise<void> {
+  const rows = await db
+    .select({ channelId: schema.dmPets.channelId })
+    .from(schema.dmPets)
+    .where(or(eq(schema.dmPets.userAId, userId), eq(schema.dmPets.userBId, userId)));
+  for (const { channelId } of rows) {
+    try {
+      await dropPet(channelId);
+    } catch (err) {
+      log.warn?.('pet drop on account deletion failed', {
+        channelId: channelId.toString(),
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
 /** Rename the pet. `changed: false` (no write, no notice, no event) when the
  *  normalised name is the current one. 400 for an invalid name; 409 while
- *  it's only an invite. Posts the 'renamed' notice. */
+ *  it's only an invite. Posts the 'renamed' notice, and runs the new name
+ *  through the parental watch-word scan as a send would be. */
 export async function renamePet(input: {
   channelId: bigint;
   userId: bigint;
@@ -628,18 +720,34 @@ export async function renamePet(input: {
     await lockPet(tx, input.channelId);
     const row = await loadRow(tx, input.channelId);
     if (!row || row.status === 'invited') throw errors.conflict('There is no Zekk Pet to rename');
-    if (row.name === name) return { row, notice: null };
+    if (row.name === name) return { row, notice: null, oldName: row.name };
     const [saved] = await tx
       .update(schema.dmPets)
       .set({ name, updatedAt: now })
       .where(eq(schema.dmPets.channelId, input.channelId))
       .returning();
     const notice = await insertNotice(tx, { pet: saved!, event: 'renamed', actorId: input.userId });
-    return { row: saved!, notice };
+    return { row: saved!, notice, oldName: row.name };
   });
   const pet = petDTO(out.row, now);
   if (!out.notice) return { pet, changed: false };
   await announce(input.channelId, [out.notice], pet);
+  // Parental controls: the name is free text that reaches the DM (this notice
+  // and every later one repeats it), so it gets the send path's watch-word
+  // scan, flagged against the 'renamed' notice. Only the new name is scanned
+  // (the notice also carries the renamer's display name, which no path
+  // scans), and a word already in the old name isn't flagged again, as for an
+  // edit. Fire-and-forget: it never fails the rename.
+  void supervision
+    .scanMessageForFlags({
+      messageId: out.notice.id,
+      channelId: input.channelId,
+      channelType: 'dm',
+      authorId: input.userId,
+      content: name,
+      previousContent: out.oldName,
+    })
+    .catch(() => undefined);
   return { pet, changed: true };
 }
 
@@ -653,25 +761,50 @@ export async function renamePet(input: {
  * DM_PET_UPDATE, and only when the DTO changed. No pet (or only an invite) =
  * nothing happens. Called fire-and-forget after the send / poke; the caller
  * catches and logs.
+ *
+ * `at` fixes the UTC day the activity counts for: a send passes its message's
+ * createdAt (and gives the streak the same instant), a poke the time it was
+ * handled, so a message a few ms before midnight is credited to the same day
+ * by the streak and the pet however long this call waits. It also tells a
+ * send from before the adoption (already in the accept's seed) from one
+ * after it. Defaults to now.
  */
 export async function recordActivity(args: {
   channelId: bigint;
   authorId: bigint;
   kind: PetActivity | readonly PetActivity[];
+  at?: Date;
 }): Promise<void> {
   const now = clock();
-  const today = utcDay(now);
+  const today = utcDay(args.at ?? now);
   const kinds: readonly PetActivity[] = typeof args.kind === 'string' ? [args.kind] : args.kind;
-  // Most DMs have no pet: one indexed read, no transaction, for those.
+  // Most DMs have no pet: one indexed read, no transaction, for those. An
+  // invite still takes the lock below: an accept in flight may be about to
+  // turn it into a pet whose seed (read from dm_streaks) missed this send.
   const peek = await loadRow(db, args.channelId);
-  if (!peek || peek.status === 'invited') return;
+  if (!peek) return;
   const out = await db.transaction(async (tx) => {
     await lockPet(tx, args.channelId);
     const row = await loadRow(tx, args.channelId);
     if (!row || row.status === 'invited' || dueToRunAway(row, today)) return null;
+    // A later day already started on the row (an activity of that day got the
+    // lock first): never rewind it, or todayCounters would zero that day and
+    // its tasks would pay out twice. A late activity is dropped; no per-day
+    // history is kept.
+    if (row.taskDay !== null && row.taskDay > today) return null;
     const side = args.authorId === row.userAId ? 'a' : args.authorId === row.userBId ? 'b' : null;
     if (side === null) return null;
-    const { next, events } = applyActivity(row, today, side, kinds);
+    // A send from before the adoption, on the adoption day, that only gets
+    // here now (it raced the accept): the accept seeded that side's count
+    // with one for "said hi today" from dm_streaks, which may or may not have
+    // seen this send's streak commit. Either way it is that one message, so
+    // it counts at most once.
+    const seeded =
+      args.at !== undefined &&
+      row.adoptedAt !== null &&
+      args.at < row.adoptedAt &&
+      utcDay(row.adoptedAt) === today;
+    const { next, events } = applyActivity(row, today, side, kinds, seeded);
     if (!rowChanged(row, next)) return null;
     const [saved] = await tx
       .update(schema.dmPets)
@@ -840,27 +973,27 @@ export async function sweepPets(): Promise<{
   );
 
   // 4. Clock-only changes. Best-effort: a missed one heals on the client's
-  // next GET (every DM open), and a duplicate is harmless.
+  // next GET (every DM open), and a duplicate is harmless. The unlocked read
+  // only picks candidates; each DTO is built from the row re-read under its
+  // lock, so a rename, feed or wake that commits meanwhile isn't followed by
+  // an older snapshot.
   const prev = lastSweepAt;
   lastSweepAt = now;
   if (prev && prev < now && crossedMoodBoundary(prev, now)) {
-    const pets = await db
-      .select()
+    const candidates = await db
+      .select({ channelId: schema.dmPets.channelId })
       .from(schema.dmPets)
       .where(inArray(schema.dmPets.status, ['active', 'asleep']));
-    for (const row of pets) {
-      if (touched.has(row.channelId.toString()) || dueToRunAway(row, today)) continue;
-      if (!changedWithClock(row, prev, now)) continue;
-      try {
-        await announce(row.channelId, [], petDTO(row, now));
-        out.refreshed++;
-      } catch (err) {
-        log.warn?.('pet refresh failed', {
-          channelId: row.channelId.toString(),
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
+    await eachLocked(
+      ids(candidates.filter((r) => !touched.has(r.channelId.toString()))),
+      async (_tx, row) =>
+        (row.status === 'active' || row.status === 'asleep') &&
+        !dueToRunAway(row, today) &&
+        changedWithClock(row, prev, now)
+          ? { pet: petDTO(row, now) }
+          : null,
+      'refreshed',
+    );
   }
   return out;
 }
