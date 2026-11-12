@@ -14,6 +14,7 @@ import { registry } from '../src/gateway/registry';
 import { achievementsForUser } from '../src/services/achievements';
 import {
   acceptPet,
+  invitePet,
   petNoticeText,
   recordActivity,
   setPetClockForTests,
@@ -1440,6 +1441,60 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     at(`${day(4)}T00:05:00Z`);
     await sweepPets();
     expect(await events(q.dm)).toEqual(['invited', 'adopted']);
+  });
+
+  it('an invite that passed the route before a close or an account deletion writes nothing', async () => {
+    // The route read both people as here; the close (and its drop, which
+    // found nothing) landed before the invite took the pet lock.
+    const p = await pair();
+    await setStreak(p, { streak: 4, lastCountedDay: day(-1) });
+    expect((await call('DELETE', `/users/@me/channels/${p.dm}`, p.a)).status).toBe(200);
+    await expect(invitePet({ channelId: p.dm, inviterId: p.b, otherId: p.a })).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(await petRow(p.dm)).toBeNull();
+    expect(await events(p.dm)).toEqual([]);
+
+    // Account deletion, of the other person or of the inviter themselves.
+    const q = await pair();
+    await setStreak(q, { streak: 4, lastCountedDay: day(-1) });
+    await purgeAccount(q.a);
+    for (const [inviterId, otherId] of [
+      [q.b, q.a],
+      [q.a, q.b],
+    ]) {
+      await expect(invitePet({ channelId: q.dm, inviterId, otherId })).rejects.toMatchObject({ status: 409 });
+    }
+    expect(await petRow(q.dm)).toBeNull();
+    expect(await events(q.dm)).toEqual([]);
+
+    // A deletion that lands after the invite read the person as live, but
+    // before it wrote anything, waits for it: its pet cleanup then finds the
+    // invite and removes it. (The in-lock recipient check comes after that
+    // read; stall it there.)
+    const r = await pair();
+    await setStreak(r, { streak: 4, lastCountedDay: day(-1) });
+    const bSent = connect(r.b, [r.dm]);
+    let stalled!: () => void;
+    const isStalled = new Promise<void>((res) => (stalled = res));
+    let letGo!: () => void;
+    const gate = new Promise<void>((res) => (letGo = res));
+    recipients.stallNext = async () => {
+      stalled();
+      await gate;
+    };
+    const inviting = invitePet({ channelId: r.dm, inviterId: r.b, otherId: r.a });
+    await isStalled;
+    let purged = false;
+    const purging = purgeAccount(r.a).finally(() => {
+      purged = true;
+    });
+    await waitFor(async () => purged || (await backendWaitingOn('update "users" set %"deleted_at" = %')));
+    letGo();
+    await inviting;
+    await purging;
+    expect(await petRow(r.dm)).toBeNull();
+    expect(petFrames(bSent).at(-1)).toEqual({ channelId: r.dm.toString(), pet: null });
   });
 
   it('builds every notice fallback from the shared names', () => {

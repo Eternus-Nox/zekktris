@@ -586,6 +586,27 @@ export async function invitePet(input: {
     input.inviterId < input.otherId ? [input.inviterId, input.otherId] : [input.otherId, input.inviterId];
   const out = await db.transaction(async (tx) => {
     await lockPet(tx, input.channelId);
+    // The route checked both people are still here, but a close or an account
+    // deletion can land before this lock, and its drop (dropPet,
+    // dropPetsForUser) would then have run already and found nothing: check
+    // again under the lock. The users rows are read FOR SHARE so a tombstone
+    // not seen here waits for this commit, and dropPetsForUser's later read
+    // finds the invite. A close commits before its drop takes the lock, so it
+    // is either seen here or its drop waits for this commit.
+    const people = await tx
+      .select({ deletedAt: schema.users.deletedAt })
+      .from(schema.users)
+      .where(inArray(schema.users.id, [a, b]))
+      .for('share');
+    const here = await listAllRecipients(input.channelId, tx);
+    if (
+      people.length !== 2 ||
+      people.some((u) => u.deletedAt !== null) ||
+      !here.includes(a) ||
+      !here.includes(b)
+    ) {
+      throw errors.conflict('The other person has left this conversation');
+    }
     const existing = await loadRow(tx, input.channelId);
     if (existing) {
       if (!inviteLapsed(existing, now)) {
