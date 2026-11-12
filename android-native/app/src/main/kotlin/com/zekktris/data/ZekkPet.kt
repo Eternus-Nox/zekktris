@@ -261,7 +261,7 @@ object ZekkPet {
 
     /**
      * Fit the DM header's title line: the name, then the streak pill, the
-     * disappearing-timer pill and the pet. Each chip's width includes its
+     * pet and the disappearing-timer pill. Each chip's width includes its
      * leading gap (0 = not there); [room] is the line's width after the name
      * tag, and [name] the name's own width, all in one unit. A chip shows
      * whole or not at all, never squeezed (the pet would be drawn off-centre
@@ -283,22 +283,27 @@ object ZekkPet {
         return HeaderChips(streak = s, timer = t, pet = p)
     }
 
-    /** The header pet's spoken label. */
-    fun headerLabel(pet: PetDTO): String =
-        if (pet.status == "invited") "Zekk Pet: ${pet.name} (invite pending)"
-        else "Zekk Pet: ${pet.name}, ${Mood.of(pet.mood).label}"
+    /** The header pet's spoken label. [name]: the pet's name as this viewer
+     *  sees it (masked for a supervised child with "Blur swear words" on). */
+    fun headerLabel(pet: PetDTO, name: String = pet.name): String =
+        if (pet.status == "invited") "Zekk Pet: $name (invite pending)"
+        else "Zekk Pet: $name, ${Mood.of(pet.mood).label}"
 
     // ── Adopt banner ──────────────────────────────────────────────────────
 
     enum class BannerKind { Adopt, Waiting, Invited }
 
-    data class Banner(val kind: BannerKind, val text: String)
+    /** [locked]: [BannerKind.Invited] only — the streak broke or is under
+     *  the minimum, so accepting would only fail. Accept hides until the
+     *  streak is back (Not now stays). */
+    data class Banner(val kind: BannerKind, val text: String, val locked: Boolean = false)
 
     /**
      * The slim bar under the DM header:
      *   - no pet, and the DM may adopt → "🥚 5-day streak! Adopt a Zekk Pet with Sam." [Adopt]
      *   - our invite is waiting → "Waiting for Sam to accept your Zekk Pet." [Cancel]
      *   - their invite to us → "Sam wants to raise a Zekk Pet with you." [Accept] [Not now]
+     *     (the streak is under minStreak → "… Keep a 3-day streak going to accept." [Not now], [Banner.locked])
      * Null otherwise (not loaded, not eligible, or a pet that's hatched already).
      */
     fun banner(state: DmPetState?, selfId: String?, peerName: String): Banner? {
@@ -309,9 +314,23 @@ object ZekkPet {
             return Banner(BannerKind.Adopt, "🥚 ${state.streak}-day streak! Adopt a Zekk Pet with $peerName.")
         }
         if (pet.status != "invited") return null
-        return if (pet.invitedBy == selfId) Banner(BannerKind.Waiting, "Waiting for $peerName to accept your Zekk Pet.")
-        else Banner(BannerKind.Invited, "$peerName wants to raise a Zekk Pet with you.")
+        if (pet.invitedBy == selfId) return Banner(BannerKind.Waiting, "Waiting for $peerName to accept your Zekk Pet.")
+        val text = "$peerName wants to raise a Zekk Pet with you."
+        // The invite outlives a broken streak (it lapses after 7 days), but
+        // the server only lets it be accepted on a live streak of minStreak
+        // or more.
+        if (state.streak < state.minStreak) {
+            return Banner(BannerKind.Invited, "$text Keep a ${state.minStreak}-day streak going to accept.", locked = true)
+        }
+        return Banner(BannerKind.Invited, text)
     }
+
+    /** Whether the bar's action hangs on a live streak, which breaks at
+     *  midnight UTC with no event: Adopt, and Accept on their invite (unless
+     *  it's [Banner.locked] already). The open DM refetches then
+     *  ([nextUtcMidnightRefreshAt]). */
+    fun bannerNeedsStreak(banner: Banner?): Boolean =
+        banner != null && (banner.kind == BannerKind.Adopt || (banner.kind == BannerKind.Invited && !banner.locked))
 
     /** A dismissed bar stays hidden for the session, per DM and per kind (so
      *  hiding the adopt prompt doesn't also hide a later invite). */
@@ -348,6 +367,11 @@ object ZekkPet {
      *  their read marker past what the other person sent, or end their
      *  typing. */
     fun isNoticeNotBy(m: Message, selfId: String?): Boolean = isNotice(m) && m.metadata?.actorId != selfId
+
+    /** Whose row [m] counts as for following it down: a pet notice is its
+     *  actor's (no one's for the sweep's 'asleep' / 'ran_away', though user
+     *  A is their author), anything else its author's. */
+    fun ownerId(m: Message): String? = if (isNotice(m)) m.metadata?.actorId else m.authorId ?: m.author?.id
 
     /** "a Kid", "an Adult". */
     private fun withArticle(word: String): String =
@@ -387,10 +411,20 @@ object ZekkPet {
      * viewer ([selfId]), the other person ([peerId], read as [peerName]), the
      * row's author ([authorName]) or else "Someone". Falls back to the row's
      * third-person `content` without the metadata or for an unknown event.
+     * [mask] is the viewer's profanity mask (a supervised child's "Blur swear
+     * words"): either person picks the pet's name, so it goes over the name
+     * and the fallback content, as over message bodies.
      */
-    fun noticeLine(m: Message, selfId: String?, peerId: String?, peerName: String, authorName: String?): String {
-        val md = m.metadata?.takeIf { it.kind == "pet" } ?: return m.content
-        val petName = md.petName ?: return m.content
+    fun noticeLine(
+        m: Message,
+        selfId: String?,
+        peerId: String?,
+        peerName: String,
+        authorName: String?,
+        mask: (String) -> String = { it },
+    ): String {
+        val md = m.metadata?.takeIf { it.kind == "pet" } ?: return mask(m.content)
+        val petName = md.petName ?: return mask(m.content)
         val actorId = md.actorId
         val actorName = when {
             actorId == null -> null
@@ -400,12 +434,12 @@ object ZekkPet {
         }
         return noticeText(
             event = md.event.orEmpty(),
-            petName = petName,
+            petName = mask(petName),
             stage = Stage.of(md.stage),
             actorIsSelf = selfId != null && actorId == selfId,
             actorName = actorName,
             peerName = peerName,
-        ) ?: m.content
+        ) ?: mask(m.content)
     }
 
     /** The small pet drawn beside a notice: the stage it reached, asleep for
@@ -440,6 +474,19 @@ object ZekkPet {
         val dayEnd = runCatching { java.time.Instant.parse(pet.dayEndsAt).toEpochMilli() }.getOrNull()
         val next = listOfNotNull(evening, dayEnd).filter { it + REFRESH_SLACK_MS > nowMs }.minOrNull() ?: return null
         return next + REFRESH_SLACK_MS
+    }
+
+    /**
+     * When the open DM should refetch because its streak may break: the next
+     * midnight UTC after [nowMs] (epoch ms), plus [REFRESH_SLACK_MS]. Adopt
+     * and Accept are only offered on a live streak ([bannerNeedsStreak]), and
+     * no event says when one ends. Like [nextRefreshAt], a midnight counts
+     * until its slack is over, so a call in those seconds returns the same
+     * time and the pending refetch stands.
+     */
+    fun nextUtcMidnightRefreshAt(nowMs: Long): Long {
+        val day = java.time.Instant.ofEpochMilli(nowMs - REFRESH_SLACK_MS).atZone(java.time.ZoneOffset.UTC).toLocalDate()
+        return day.plusDays(1).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli() + REFRESH_SLACK_MS
     }
 
     // ── Gateway payload ───────────────────────────────────────────────────

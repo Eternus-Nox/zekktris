@@ -250,8 +250,25 @@ fun ChatScreen(store: AppStore, state: AppState) {
         val cid = channelId ?: return@LaunchedEffect
         val p = petClock ?: return@LaunchedEffect
         while (true) {
-            val at = ZekkPet.nextRefreshAt(p, System.currentTimeMillis()) ?: break
-            kotlinx.coroutines.delay((at - System.currentTimeMillis()).coerceAtLeast(0L))
+            // On the server's clock, as the mood is: by a device clock that
+            // runs fast this refetched before the turn, saw the boundary as
+            // past and waited for the next one.
+            val at = ZekkPet.nextRefreshAt(p, store.serverNowMs()) ?: break
+            kotlinx.coroutines.delay((at - store.serverNowMs()).coerceAtLeast(0L))
+            store.refreshDmPet(cid)
+        }
+    }
+    // With no adopted pet, the bar's Adopt (and Accept on their invite) need
+    // a live streak, which breaks at midnight UTC with no event either, so
+    // the open DM refetches then too. Keyed on what the bar offers, not on a
+    // time read during composition; it loops for a DM left open for days.
+    val petBarNeedsStreak = petsHere && ZekkPet.bannerNeedsStreak(ZekkPet.banner(petState, state.me?.id, petPeerName))
+    LaunchedEffect(channelId, petBarNeedsStreak) {
+        val cid = channelId ?: return@LaunchedEffect
+        if (!petBarNeedsStreak) return@LaunchedEffect
+        while (true) {
+            val at = ZekkPet.nextUtcMidnightRefreshAt(store.serverNowMs())
+            kotlinx.coroutines.delay((at - store.serverNowMs()).coerceAtLeast(0L))
             store.refreshDmPet(cid)
         }
     }
@@ -1122,18 +1139,20 @@ private fun ChatHeader(
                         )
                     },
                     streak = { (channel.streak ?: 0).takeIf { it > 0 }?.let { StreakPill(it) } },
+                    // Zekk Pet next to the streak (an egg while the invite is
+                    // open); tapping it opens the pet card. 1:1 DMs only.
+                    pet = {
+                        if (state.zekkPetEnabled && channel.type == "dm") {
+                            state.dmPets[channel.id]?.pet?.let { pet ->
+                                DmPetButton(pet, onPet, name = petDisplayName(pet.name, petNamesMasked(state)))
+                            }
+                        }
+                    },
                     // Disappearing messages on: timer + short value ("1d",
                     // "30s"); tapping it opens the Disappearing Messages screen,
                     // as in Signal. Next to the pet on a narrow phone it gives
                     // way (it's on Conversation settings too), as on web.
                     timer = { state.dmTimerByChannel[channel.id]?.let { secs -> DisappearingPill(secs, onDisappearing) } },
-                    // Zekk Pet next to the streak (an egg while the invite is
-                    // open); tapping it opens the pet card. 1:1 DMs only.
-                    pet = {
-                        if (state.zekkPetEnabled && channel.type == "dm") {
-                            state.dmPets[channel.id]?.pet?.let { pet -> DmPetButton(pet, onPet) }
-                        }
-                    },
                 )
                 // Search leads the trailing action group; hidden for E2EE
                 // channels (iOS MessageViews.swift:493-500).
@@ -1205,14 +1224,14 @@ private fun ChatHeader(
     }
 }
 
-private enum class TitleSlot { Tag, Name, Streak, Timer, Pet }
+private enum class TitleSlot { Tag, Name, Streak, Pet, Timer }
 
 /**
  * The DM header's title line: the name tag, the name, then the streak pill,
- * the disappearing-timer pill and the Zekk Pet, centred vertically. A Row
- * measures the chips before a weighted name and squeezes whichever comes
- * last — on a 360dp phone the pet into a 15dp sliver and the name to
- * nothing — so this lays each chip out whole or leaves it out, the pet
+ * the Zekk Pet next to it and the disappearing-timer pill, centred
+ * vertically. A Row measures the chips before a weighted name and squeezes
+ * whichever comes last — on a 360dp phone the pet into a 15dp sliver and
+ * the name to nothing — so this lays each chip out whole or leaves it out, the pet
  * (the way into its card) before the others ([ZekkPet.fitHeaderChips]), and
  * gives the name, which truncates, the rest.
  * A slot that draws nothing measures 0 wide and counts as absent.
@@ -1223,16 +1242,16 @@ private fun DmTitleLine(
     tag: @Composable () -> Unit,
     name: @Composable () -> Unit,
     streak: @Composable () -> Unit,
-    timer: @Composable () -> Unit,
     pet: @Composable () -> Unit,
+    timer: @Composable () -> Unit,
 ) {
     Layout(
         content = {
             Box(Modifier.layoutId(TitleSlot.Tag)) { tag() }
             Box(Modifier.layoutId(TitleSlot.Name)) { name() }
             Box(Modifier.layoutId(TitleSlot.Streak)) { streak() }
-            Box(Modifier.layoutId(TitleSlot.Timer)) { timer() }
             Box(Modifier.layoutId(TitleSlot.Pet)) { pet() }
+            Box(Modifier.layoutId(TitleSlot.Timer)) { timer() }
         },
         modifier = modifier,
     ) { measurables, constraints ->
@@ -1243,16 +1262,17 @@ private fun DmTitleLine(
         val natural = Constraints(maxHeight = constraints.maxHeight)
         val tagP = slot(TitleSlot.Tag).measure(natural.copy(maxWidth = room))
         val afterTag = (room - tagP.width).coerceAtLeast(0)
-        val chips = listOf(TitleSlot.Streak, TitleSlot.Timer, TitleSlot.Pet).map { slot(it).measure(natural) }
+        // In line order: the pet sits next to the streak pill, as on web.
+        val chips = listOf(TitleSlot.Streak, TitleSlot.Pet, TitleSlot.Timer).map { slot(it).measure(natural) }
         fun withGap(c: Placeable): Int = if (c.width > 0) c.width + gap else 0
         val nameSlot = slot(TitleSlot.Name)
         val fit = ZekkPet.fitHeaderChips(
             room = afterTag,
             name = nameSlot.maxIntrinsicWidth(constraints.maxHeight),
-            streak = withGap(chips[0]), timer = withGap(chips[1]), pet = withGap(chips[2]),
+            streak = withGap(chips[0]), pet = withGap(chips[1]), timer = withGap(chips[2]),
             nameRoom = 56.dp.roundToPx(),
         )
-        val keep = listOf(fit.streak, fit.timer, fit.pet)
+        val keep = listOf(fit.streak, fit.pet, fit.timer)
         val shown = chips.filterIndexed { i, _ -> keep[i] }
         val chipsWidth = shown.sumOf { it.width + gap }
         val nameP = nameSlot.measure(natural.copy(maxWidth = (afterTag - chipsWidth).coerceAtLeast(0)))
@@ -1380,7 +1400,11 @@ private fun MessageList(
         // so a reader at the bottom follows them; an older-history page grows
         // it too, but loads only with the reader near the top.
         val appended = messages.size > lastSeenCount
-        val mine = tail != null && tail.authorId != null && tail.authorId == state.me?.id
+        // A pet notice is its actor's: the sweep's 'asleep' / 'ran_away' name
+        // user A as author but were caused by no one, so they follow A down
+        // only from the bottom, like anyone else's message.
+        val ownerId = tail?.let(ZekkPet::ownerId)
+        val mine = ownerId != null && ownerId == state.me?.id
         if (appended && (mine || atBottom)) {
             listState.animateScrollToItem(messages.lastIndex)
         }
@@ -1488,6 +1512,9 @@ private fun MessageList(
             // The other person, for the Zekk Pet notices' names.
             val petPeer = state.currentChannel?.let { c -> c.recipients?.firstOrNull { it.id != state.me?.id } ?: c.recipients?.firstOrNull() }
             val petPeerName = petPeerNameFor(store, state, state.currentChannel)
+            // A supervised child's "Blur swear words" reaches the pet's name
+            // (either person picks it) as it reaches message bodies.
+            val maskPetNames = petNamesMasked(state)
             val receiptAnchorId = if (isDm) {
                 messages.lastOrNull {
                     it.authorId == state.me?.id && !it.id.startsWith("pending-") &&
@@ -1542,6 +1569,7 @@ private fun MessageList(
                             peerId = petPeer?.id,
                             peerName = petPeerName,
                             authorName = store.dmNickname(authorId) ?: m.author?.bestName,
+                            mask = { petDisplayName(it, maskPetNames) },
                         ),
                         msg = m,
                     )

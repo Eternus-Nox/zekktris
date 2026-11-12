@@ -26,13 +26,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
@@ -51,6 +54,13 @@ import com.zekktris.ui.theme.ZkPalette
 import com.zekktris.ui.theme.ZkTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+
+/** The tap heart's box in the 100-unit space ([ZekkPetArt.heartShapes]:
+ *  circles reaching 6.5 units either side and 3.5 above, the point 9 below),
+ *  the layer it fades in. */
+private val HEART_BOUNDS = Rect(
+    ZekkPetArt.HEART_X - 7f, ZekkPetArt.HEART_Y - 4f, ZekkPetArt.HEART_X + 7f, ZekkPetArt.HEART_Y + 10f,
+)
 
 /** CSS `ease-in-out` and `ease-out`, the curves web's keyframes use. */
 private val EASE_IN_OUT = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
@@ -107,30 +117,30 @@ private fun preparePetShape(shape: PetShape): Prepared = when (shape) {
     )
 }
 
-/** Draw one primitive in the 100-unit space; [alpha] fades the whole shape. */
-private fun DrawScope.drawPrepared(p: Prepared, inks: List<Color>, alpha: Float = 1f) {
+/** Draw one primitive in the 100-unit space. */
+private fun DrawScope.drawPrepared(p: Prepared, inks: List<Color>) {
     when (val s = p.shape) {
         is PetShape.Oval -> {
             val e = s.e
             val topLeft = Offset(e.cx - e.rx, e.cy - e.ry)
             val size = Size(2 * e.rx, 2 * e.ry)
             rotate(e.rotate, pivot = Offset(e.cx, e.cy)) {
-                drawOval(inks[s.fill.ordinal], topLeft, size, alpha = alpha)
-                if (s.stroke != null && p.stroke != null) drawOval(inks[s.stroke.ordinal], topLeft, size, alpha = alpha, style = p.stroke)
+                drawOval(inks[s.fill.ordinal], topLeft, size)
+                if (s.stroke != null && p.stroke != null) drawOval(inks[s.stroke.ordinal], topLeft, size, style = p.stroke)
             }
         }
-        is PetShape.Circle -> drawCircle(inks[s.fill.ordinal], s.r, Offset(s.cx, s.cy), alpha = s.alpha * alpha)
-        is PetShape.Curve -> drawPath(p.path!!, inks[s.stroke.ordinal], alpha = alpha, style = p.stroke!!)
-        is PetShape.Lines -> drawPath(p.path!!, inks[s.stroke.ordinal], alpha = alpha, style = p.stroke!!)
+        is PetShape.Circle -> drawCircle(inks[s.fill.ordinal], s.r, Offset(s.cx, s.cy), alpha = s.alpha)
+        is PetShape.Curve -> drawPath(p.path!!, inks[s.stroke.ordinal], style = p.stroke!!)
+        is PetShape.Lines -> drawPath(p.path!!, inks[s.stroke.ordinal], style = p.stroke!!)
         is PetShape.Polygon -> {
-            drawPath(p.path!!, inks[s.fill.ordinal], alpha = alpha)
-            if (s.stroke != null && p.stroke != null) drawPath(p.path, inks[s.stroke.ordinal], alpha = alpha, style = p.stroke)
+            drawPath(p.path!!, inks[s.fill.ordinal])
+            if (s.stroke != null && p.stroke != null) drawPath(p.path, inks[s.stroke.ordinal], style = p.stroke)
         }
         // 0° is 3 o'clock and angles run clockwise, so 0 → 180 sweeps the
         // bottom half; closing through the centre closes it along its top.
         is PetShape.HalfOval -> drawArc(
             inks[s.fill.ordinal], startAngle = 0f, sweepAngle = 180f, useCenter = true,
-            topLeft = Offset(s.cx - s.rx, s.cy - s.ry), size = Size(2 * s.rx, 2 * s.ry), alpha = alpha,
+            topLeft = Offset(s.cx - s.rx, s.cy - s.ry), size = Size(2 * s.rx, 2 * s.ry),
         )
     }
 }
@@ -205,6 +215,7 @@ fun ZekkPetArt(
         ZekkPetArt.shapes(stage, mood, if (cracked) 1f else 0f).map(::preparePetShape)
     }
     val heart = remember { ZekkPetArt.heartShapes().map(::preparePetShape) }
+    val heartPaint = remember { Paint() }
     val motion = ZekkPetArt.motion(stage, mood)
     val idle: State<Float>? = if (animated && rememberMotionEnabled()) {
         val transition = rememberInfiniteTransition(label = "zekkPet")
@@ -246,10 +257,16 @@ fun ZekkPetArt(
             }) {
                 shapes.forEach { drawPrepared(it, inks) }
             }
+            // Each heart fades as one layer, as web fades its group: its
+            // circles and triangle overlap, and faded one by one their
+            // alphas stacked into darker seams where they meet.
             tap?.hearts?.forEach { h ->
                 val f = h.value
                 translate(top = -ZekkPetArt.HEART_RISE * f) {
-                    heart.forEach { drawPrepared(it, inks, alpha = 1f - f) }
+                    heartPaint.alpha = 1f - f
+                    drawIntoCanvas { it.saveLayer(HEART_BOUNDS, heartPaint) }
+                    heart.forEach { drawPrepared(it, inks) }
+                    drawIntoCanvas { it.restore() }
                 }
             }
         }
@@ -259,12 +276,14 @@ fun ZekkPetArt(
 /**
  * The header pet next to the streak pill: the same 28dp as the DM avatar,
  * on the theme's chip surface (an egg while the invite is open, the asleep
- * face when asleep). Opens the pet card.
+ * face when asleep). Opens the pet card. [name]: the pet's name as the
+ * viewer sees it, for its spoken label (masked for a supervised child with
+ * "Blur swear words" on).
  */
 @Composable
-fun DmPetButton(pet: PetDTO, onClick: () -> Unit) {
+fun DmPetButton(pet: PetDTO, onClick: () -> Unit, name: String = pet.name) {
     val p = ZkTheme.palette
-    val label = ZekkPet.headerLabel(pet)
+    val label = ZekkPet.headerLabel(pet, name)
     Box(
         Modifier
             .size(30.dp)

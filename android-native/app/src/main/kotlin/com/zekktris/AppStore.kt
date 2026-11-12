@@ -1731,12 +1731,20 @@ class AppStore(
 
     /** A DM's pet from DM_PET_UPDATE or our own change (null = no pet any
      *  more). Not fetched yet: whether the DM may adopt is unknown until GET
-     *  /pet answers, so it reads as not eligible (no bar) rather than a guess. */
+     *  /pet answers, so it reads as not eligible (no bar) rather than a guess.
+     *  An invite is only ever sent on a streak of at least the minimum, so
+     *  one takes that until the fetch says otherwise (Accept doesn't flash
+     *  "keep a streak going" while the DM opens). */
     private fun setDmPet(channelId: String, pet: com.zekktris.data.model.PetDTO?) {
         dmPetGen.merge(channelId, 1, Int::plus)
         _state.update { st ->
             val prev = st.dmPets[channelId]
-                ?: com.zekktris.data.model.DmPetState(pet = null, eligible = false, streak = 0, minStreak = ZekkPet.MIN_STREAK)
+                ?: com.zekktris.data.model.DmPetState(
+                    pet = null,
+                    eligible = false,
+                    streak = if (pet?.status == "invited") ZekkPet.MIN_STREAK else 0,
+                    minStreak = ZekkPet.MIN_STREAK,
+                )
             if (prev.pet == pet) st else st.copy(dmPets = st.dmPets + (channelId to prev.copy(pet = pet)))
         }
     }
@@ -1751,6 +1759,7 @@ class AppStore(
      */
     fun changeDmPet(channelId: String, change: ZekkPet.Change, onDone: (String?) -> Unit = {}) {
         scope.launch {
+            val gen = dmPetGen[channelId] ?: 0
             val error = try {
                 val pet = when (change) {
                     ZekkPet.Change.Invite -> api.inviteDmPet(channelId)
@@ -1758,7 +1767,13 @@ class AppStore(
                     ZekkPet.Change.Decline -> api.declineDmPet(channelId)
                     is ZekkPet.Change.Rename -> api.renameDmPet(channelId, change.name)
                 }
-                setDmPet(channelId, pet)
+                // A DM_PET_UPDATE came in meanwhile: the server publishes the
+                // change's own event before it answers, and the socket keeps
+                // order, so the pet from events is this change's or a newer
+                // one (a send that fed it while we waited). The answer, on
+                // its own connection, may be older; leave it. No event
+                // (socket down, a no-op rename): the answer goes in.
+                if ((dmPetGen[channelId] ?: 0) == gen) setDmPet(channelId, pet)
                 // No pet any more: whether the DM may invite again (and its
                 // streak) only comes with a fetch.
                 if (pet == null) scope.launch { loadDmPet(channelId) }
@@ -5000,11 +5015,12 @@ class AppStore(
                     st.copy(dms = next)
                 }
                 // A DM without a pet may just have become able to adopt one
-                // (or the adopt bar's streak count moved). DM_PET_UPDATE
-                // doesn't cover that, so refetch the eligibility of a DM
-                // already loaded.
+                // (or the adopt bar's streak count moved), and an open invite
+                // may be acceptable again (its streak was rebuilt).
+                // DM_PET_UPDATE doesn't cover that, so refetch the
+                // eligibility and streak of a DM already loaded.
                 val petState = _state.value.dmPets[cid]
-                if (petState != null && petState.pet == null) refreshDmPet(cid)
+                if (petState != null && (petState.pet == null || petState.pet.status == "invited")) refreshDmPet(cid)
             }
             "FAMILY_REQUEST_CREATE", "FAMILY_FLAG_CREATE" -> {
                 // Parental-controls activity dispatched to the parent's user
@@ -5185,6 +5201,12 @@ class AppStore(
     /** server − device clock: MESSAGE_EXPIRY's precise value, else the last
      *  message page's Date header, else none. */
     private fun clockOffsetMs(): Long = expiryClockOffsetMs ?: api.dateClockOffsetMs ?: 0L
+
+    /** The server's clock now (epoch ms), from this device's and the last
+     *  offset seen ([clockOffsetMs]): what the open DM's pet refetch times
+     *  18:00 and midnight UTC on, so a phone whose clock is off doesn't
+     *  refetch before the server's mood turns and then wait a whole day. */
+    fun serverNowMs(): Long = System.currentTimeMillis() + clockOffsetMs()
 
     /**
      * Ingest filter for every path that writes rows: record the deadlines REST
