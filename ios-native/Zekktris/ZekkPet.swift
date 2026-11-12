@@ -792,7 +792,11 @@ struct ZekkPetCardSheet: View {
             // A block or the other person leaving mid-rename hides the field.
             if !can { renaming = false }
         }
-        .task { if state == nil { await store.loadDmPet(channel.id) } }
+        // Re-read on every open: a block (either way), an instance mute or a
+        // supervision change closes Accept and Rename (canAct) without any
+        // pet event. A newer pet from an event still wins (loadDmPet's
+        // revision check), and a failed fetch keeps what's known.
+        .task { await store.loadDmPet(channel.id) }
     }
 
     // MARK: Invite pending

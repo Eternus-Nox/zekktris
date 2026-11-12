@@ -5290,6 +5290,7 @@ final class AppStore: ObservableObject {
     func acceptFriend(_ user: PublicUser) async {
         do {
             try await api.acceptFriendRequest(targetId: user.id)
+            reloadDmPets(with: user.id)
             await loadRelationships()
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -5299,6 +5300,7 @@ final class AppStore: ObservableObject {
     func removeFriend(_ user: PublicUser) async {
         do {
             try await api.removeFriend(targetId: user.id)
+            reloadDmPets(with: user.id)
             await loadRelationships()
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -5316,6 +5318,7 @@ final class AppStore: ObservableObject {
                 && (dm.recipients ?? []).contains(where: { $0.id == user.id }) {
                 ShareSuggestions.deleteConversation(dm.id)
             }
+            reloadDmPets(with: user.id)
             await loadRelationships()
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -5325,6 +5328,7 @@ final class AppStore: ObservableObject {
     func unblockUser(_ user: PublicUser) async {
         do {
             try await api.unblockUser(targetId: user.id)
+            reloadDmPets(with: user.id)
             await loadRelationships()
         } catch {
             errorText = (error as? APIError)?.message ?? error.localizedDescription
@@ -6132,9 +6136,10 @@ final class AppStore: ObservableObject {
     /// pet UI without it.
     @Published private(set) var zekkPetEnabled = false
     /// Each 1:1 DM's pet, by channel id; absent = not fetched yet. Fed by
-    /// loadDmPet (when a 1:1 DM opens, on reconnect / foreground and at the
-    /// clock boundaries the mood turns on), DM_PET_UPDATE and our own
-    /// invite / accept / decline / rename.
+    /// loadDmPet (when a 1:1 DM or its pet card opens, on reconnect /
+    /// foreground, at the clock boundaries the mood turns on, and after a
+    /// block / unblock / friendship or supervision change), DM_PET_UPDATE and
+    /// our own invite / accept / decline / rename.
     @Published private(set) var dmPets: [String: DmPetState] = [:]
     /// Bumped on every dmPets write that isn't a fetch, so a fetch already in
     /// flight keeps the newer pet (its eligibility and streak still apply).
@@ -6179,6 +6184,19 @@ final class AppStore: ObservableObject {
         }
         if dmPets[channelId] != next { dmPets[channelId] = next }
         schedulePetRefresh()
+    }
+
+    /// Re-read the pet of every loaded 1:1 DM with this person. A block or
+    /// unblock (and, under a friends-only DM restriction, a friendship
+    /// starting or ending) opens or closes its pet actions (GET's canAct),
+    /// and no event says so. Called once the REST change has answered, so
+    /// the fetch sees it.
+    private func reloadDmPets(with userId: String) {
+        guard zekkPetEnabled else { return }
+        for dm in dms where dm.type == "dm" && dmPets[dm.id] != nil
+            && (dm.recipients ?? []).contains(where: { $0.id == userId }) {
+            Task { await loadDmPet(dm.id) }
+        }
     }
 
     /// Record a DM's pet from an event or our own change (nil = gone).
@@ -7454,6 +7472,12 @@ final class AppStore: ObservableObject {
             // instead of splicing a partial shape in. loadFamily() keeps the
             // last good snapshot if that fetch fails.
             Task { await loadFamily() }
+            // A restriction applied or lifted also opens or closes the open
+            // DM's pet actions (GET's canAct), which no pet event covers. A DM
+            // that isn't open re-reads its pet when it opens.
+            if zekkPetEnabled, let c = selectedChannel, c.type == "dm", dmPets[c.id] != nil {
+                Task { await loadDmPet(c.id) }
+            }
         default:
             break
         }
