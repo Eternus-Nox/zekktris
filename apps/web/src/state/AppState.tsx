@@ -728,10 +728,13 @@ function bumpDmRecency(
  * (a reconnect READY drops closed chats' server rows, CLOSED_CACHES_DROP, so
  * none that missed the gap is left), so its newest remaining row is the new one;
  * otherwise (or with no server row left) the id stays, and MessageView's
- * stale-tail ack clears it on open (lib/readAck). Same array reference when
+ * stale-tail ack clears it on open (lib/readAck). Pet notices are skipped:
+ * they never set the watermark, here or on the server, so a notice newer than
+ * the removed row must not become it (the DM would read unread for both
+ * people). With only notices left the id stays. Same array reference when
  * nothing changes.
  */
-function rollbackDmRecency(
+export function rollbackDmRecency(
   channels: Channel[],
   channelId: string,
   before: Message[],
@@ -751,7 +754,7 @@ function rollbackDmRecency(
   let newest: bigint | null = null;
   let newestId: string | null = null;
   for (const m of after) {
-    if (!/^\d+$/.test(m.id)) continue;
+    if (!/^\d+$/.test(m.id) || isPetNotice(m)) continue;
     const n = BigInt(m.id);
     if (newest === null || n > newest) {
       newest = n;
@@ -1332,12 +1335,15 @@ function reducer(state: State, action: Action): State {
       // oldestFirst is stable and keeps non-snowflake (unsent) rows last.
       const sorted = oldestFirst([...existing, ...fresh]);
       const capped = sorted.length > MESSAGES_CAP ? sorted.slice(sorted.length - MESSAGES_CAP) : sorted;
-      const newestFresh = newestConfirmedId(fresh)!;
+      // Zekk Pet notices don't count (see MESSAGE_APPEND).
+      const newestFresh = newestConfirmedId(fresh.filter((m) => !isPetNotice(m)));
       const next: State = {
         ...base,
         messagesByChannel: { ...base.messagesByChannel, [action.channelId]: capped },
-        dmChannels: bumpDmRecency(base.dmChannels, action.channelId, newestFresh),
-        channelsByGuild: bumpGuildRecency(base.channelsByGuild, action.channelId, newestFresh),
+        dmChannels: newestFresh ? bumpDmRecency(base.dmChannels, action.channelId, newestFresh) : base.dmChannels,
+        channelsByGuild: newestFresh
+          ? bumpGuildRecency(base.channelsByGuild, action.channelId, newestFresh)
+          : base.channelsByGuild,
       };
       return upsertUsersFromMessages(next, fresh);
     }
@@ -1383,6 +1389,11 @@ function reducer(state: State, action: Action): State {
       if (ingest.kept.length === 0) return ingest.state;
       const base = ingest.state;
       const existing = base.messagesByChannel[action.channelId] ?? [];
+      // A Zekk Pet notice is added but moves no recency: the server leaves
+      // channels.last_message_id alone for them (they never make the DM
+      // unread or reorder the DM list), so a bump here would light a dot and
+      // jump the DM to the top until the next reload put it back.
+      const recency = !isPetNotice(action.message);
       // Reconcile a gateway echo with our own optimistic placeholder.
       // The sender's MESSAGE_CREATE carries the `nonce` we sent (the
       // placeholder's local id). If it matches a placeholder we have,
@@ -1407,8 +1418,12 @@ function reducer(state: State, action: Action): State {
               ...base.messagesByChannel,
               [action.channelId]: cleaned,
             },
-            dmChannels: bumpDmRecency(base.dmChannels, action.channelId, action.message.id),
-            channelsByGuild: bumpGuildRecency(base.channelsByGuild, action.channelId, action.message.id),
+            dmChannels: recency
+              ? bumpDmRecency(base.dmChannels, action.channelId, action.message.id)
+              : base.dmChannels,
+            channelsByGuild: recency
+              ? bumpGuildRecency(base.channelsByGuild, action.channelId, action.message.id)
+              : base.channelsByGuild,
           };
           return upsertUsersFromMessages(next, [action.message]);
         }
@@ -1422,8 +1437,10 @@ function reducer(state: State, action: Action): State {
       const next: State = {
         ...base,
         messagesByChannel: { ...base.messagesByChannel, [action.channelId]: capped },
-        dmChannels: bumpDmRecency(base.dmChannels, action.channelId, action.message.id),
-        channelsByGuild: bumpGuildRecency(base.channelsByGuild, action.channelId, action.message.id),
+        dmChannels: recency ? bumpDmRecency(base.dmChannels, action.channelId, action.message.id) : base.dmChannels,
+        channelsByGuild: recency
+          ? bumpGuildRecency(base.channelsByGuild, action.channelId, action.message.id)
+          : base.channelsByGuild,
       };
       return upsertUsersFromMessages(next, [action.message]);
     }
@@ -2679,8 +2696,9 @@ interface AppStateValue {
   /**
    * Invite the other person to adopt, accept their invite, decline / cancel
    * the invite, or rename the pet. The server's answer goes into
-   * `state.dmPets`; failures rethrow (after a refetch, since a 409 means
-   * this view was behind).
+   * `state.dmPets` unless a DM_PET_UPDATE arrived while it was in flight
+   * (that one is as new or newer); failures rethrow (after a refetch, since
+   * a 409 means this view was behind).
    */
   changeDmPet: (channelId: string, change: DmPetChange) => Promise<PetDTO | null>;
 }
@@ -3507,6 +3525,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
   const changeDmPet = useCallback(
     async (channelId: string, change: DmPetChange) => {
+      const epoch = dmPetEpochRef.current.get(channelId) ?? 0;
       try {
         const r =
           change.kind === 'invite'
@@ -3516,8 +3535,15 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
               : change.kind === 'decline'
                 ? await rest.declineDmPet(channelId)
                 : await rest.renameDmPet(channelId, change.name);
-        bumpDmPetEpoch(channelId);
-        dispatch({ type: 'DM_PET_SET', channelId, pet: r.pet });
+        // A DM_PET_UPDATE came in meanwhile: the server publishes the
+        // change's own event before it answers, and one socket keeps order,
+        // so the pet from events is this change's or a newer one (a send
+        // that fed it while we waited). The answer may be older; leave it.
+        // No event (socket down, a no-op rename): the answer goes in.
+        if ((dmPetEpochRef.current.get(channelId) ?? 0) === epoch) {
+          bumpDmPetEpoch(channelId);
+          dispatch({ type: 'DM_PET_SET', channelId, pet: r.pet });
+        }
         // No pet any more: whether the DM may invite again (and its streak)
         // only comes with a fetch.
         if (r.pet === null) void loadDmPet(channelId).catch(() => undefined);
@@ -4094,12 +4120,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           // except for a row that isn't a read (a scheduled message firing,
           // the streak warning) while someone else's timed message still
           // waits for one; MessageView re-acks that case (lib/readAck).
-          if (m.authorId === selfId && /^\d+$/.test(m.id)) {
-            dispatch({
-              type: 'READ_STATE_UPSERT',
-              readState: { channelId: m.channelId, lastMessageId: m.id, mentionCount: 0 },
-            });
-          }
+          // Zekk Pet notices never move it (ownEchoReadState).
+          const own = ownEchoReadState(m, selfId);
+          if (own) dispatch({ type: 'READ_STATE_UPSERT', readState: own });
           return;
         }
 
@@ -5151,6 +5174,25 @@ export function dmE2eeSuppressed(
   if (!peerId) return true;
   const parentIds = new Set(supervision.supervisedBy.map((p) => p.id));
   return !parentIds.has(peerId);
+}
+
+/**
+ * Where a gateway MESSAGE_CREATE of our OWN row moves our local read marker
+ * (null = it doesn't): to the row, so a message we sent from here or another
+ * device doesn't read unread to us. Not for a Zekk Pet notice: one is posted
+ * in a person's name (user A for the sweep's 'asleep' / 'ran_away', caused
+ * by no one) but is no read, and the server never moves a marker for one —
+ * moving ours would mark the other person's unread messages read here only.
+ * The notice doesn't move the DM's lastMessageId either (MESSAGE_APPEND), so
+ * it can't read unread against itself; opening the DM acks it as usual.
+ */
+export function ownEchoReadState(
+  m: Pick<Message, 'id' | 'channelId' | 'authorId' | 'type' | 'metadata'>,
+  selfId: string,
+): ReadState | null {
+  if (!selfId || m.authorId !== selfId || !/^\d+$/.test(m.id)) return null;
+  if (isPetNotice(m)) return null;
+  return { channelId: m.channelId, lastMessageId: m.id, mentionCount: 0 };
 }
 
 export function isChannelUnread(

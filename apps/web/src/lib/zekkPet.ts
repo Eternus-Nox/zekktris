@@ -177,6 +177,15 @@ export function petBanner(
     : { kind: 'invited', text: `${peerName} wants to raise a Zekk Pet with you.` };
 }
 
+/** Whether the viewer may invite, accept or rename right now. The server
+    says no while either person blocks the other, the viewer is muted or
+    supervision-restricted, or the other person left the DM: Accept and
+    Rename would only fail, so they hide (Not now / Cancel stay). Older
+    servers don't send it: treat as yes. */
+export function petCanAct(state: DmPetState | undefined): boolean {
+  return state?.canAct !== false;
+}
+
 // ── The in-chat notice ────────────────────────────────────────────────────
 
 export type PetNoticeMeta = Extract<MessageMetadata, { kind: 'pet' }>;
@@ -190,6 +199,34 @@ export function isPetNotice(m: { type: string; metadata?: { kind: string } | nul
 /** The notice's metadata, when the row has it. */
 export function petNoticeMeta(m: Pick<Message, 'metadata'>): PetNoticeMeta | null {
   return m.metadata?.kind === 'pet' ? m.metadata : null;
+}
+
+/**
+ * What rows that just landed at the bottom of the chat do to its scroll.
+ * 'own': the viewer's, so the view follows them down. 'other': someone
+ * else's, so a scrolled-up viewer gets the 'New messages' pill. 'quiet': only
+ * pet notices the viewer didn't cause, which raise nothing (a quiet notice
+ * never pings). A pet notice is its actor's, not its author's: the daily
+ * check's 'asleep' / 'ran_away' carry user A as author and no actor.
+ * The tail decides 'own'; every row after `prevLastId` counts for the pill,
+ * so a message that lands with a notice in the same render still raises it.
+ * When that row is gone (a confirmed local send) any real row does.
+ */
+export function appendScrollKind(
+  rows: ReadonlyArray<Pick<Message, 'id' | 'type' | 'metadata' | 'author'>>,
+  prevLastId: string | null,
+  selfId: string | null | undefined,
+): 'own' | 'other' | 'quiet' {
+  const tail = rows[rows.length - 1];
+  if (!tail) return 'quiet';
+  const ownerId = isPetNotice(tail) ? (petNoticeMeta(tail)?.actorId ?? null) : (tail.author?.id ?? null);
+  if (selfId && ownerId === selfId) return 'own';
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = rows[i]!;
+    if (m.id === prevLastId) break;
+    if (!isPetNotice(m)) return 'other';
+  }
+  return 'quiet';
 }
 
 /** "a Kid", "an Adult". */
@@ -264,8 +301,10 @@ const REFRESH_SLACK_MS = 5_000;
  * When the open DM should refetch its pet even if no event comes: the mood
  * is worked out when the server answers, and two of its rules turn on the
  * clock alone — 18:00 UTC (a pet fed yesterday turns grumpy) and the end of
- * the UTC day (today's tasks reset). Returns the next of those after `now`
- * (epoch ms, a few seconds past it), or null when the DTO has neither.
+ * the UTC day (today's tasks reset). Returns the next of those (epoch ms, a
+ * few seconds past it) that is still ahead of `now`, or null when the DTO
+ * has neither. A boundary counts until its slack is over too, so a re-render
+ * inside those seconds returns the same time and the pending timer stands.
  */
 export function petNextRefreshAt(pet: Pick<PetDTO, 'today' | 'dayEndsAt'>, now: number): number | null {
   const candidates: number[] = [];
@@ -273,6 +312,6 @@ export function petNextRefreshAt(pet: Pick<PetDTO, 'today' | 'dayEndsAt'>, now: 
   if (!Number.isNaN(evening)) candidates.push(evening);
   const dayEnd = Date.parse(pet.dayEndsAt);
   if (!Number.isNaN(dayEnd)) candidates.push(dayEnd);
-  const next = candidates.filter((t) => t > now).sort((a, b) => a - b)[0];
+  const next = candidates.filter((t) => t + REFRESH_SLACK_MS > now).sort((a, b) => a - b)[0];
   return next === undefined ? null : next + REFRESH_SLACK_MS;
 }

@@ -8,14 +8,17 @@ import {
   PET_TASKS,
   normalizePetName,
   type DmPetState,
+  type Message,
   type PetDTO,
   type PetMood,
   type PetStage,
 } from '@zekktris/client';
 import {
+  appendScrollKind,
   isPetNotice,
   petArtProgress,
   petBanner,
+  petCanAct,
   petLevelLine,
   petLevelProgress,
   petMoodView,
@@ -26,6 +29,7 @@ import {
   petTaskRows,
   utcWeekday,
 } from '../src/lib/zekkPet';
+import { PetInviteActions } from '../src/app/ZekkPet';
 import {
   PET_COLORS,
   PET_INK,
@@ -41,7 +45,15 @@ import {
   type PetShape,
 } from '../src/lib/petArt';
 import { ZekkPetArt } from '../src/lib/ZekkPetArt';
-import { appStateReducer, initialAppState } from '../src/state/AppState';
+import {
+  appStateReducer,
+  channelMentionCount,
+  initialAppState,
+  isChannelUnread,
+  ownEchoReadState,
+} from '../src/state/AppState';
+import { newestConfirmedId, planReadAck } from '../src/lib/readAck';
+import { serverNow, timeoutUntil } from '../src/lib/disappearing';
 
 // Zekk Pet on the web: the words (mood chip, care list, level bar, stage
 // path, adopt bar, in-chat notices), the art's geometry per stage and mood —
@@ -215,6 +227,24 @@ describe('adopt bar', () => {
     expect(petBanner(undefined, SELF, 'Sam')).toBeNull();
     expect(petBanner(state(null), undefined, 'Sam')).toBeNull();
   });
+
+  it('can act unless the server says no (absent from older servers means yes)', () => {
+    expect(petCanAct(undefined)).toBe(true);
+    expect(petCanAct(state(null))).toBe(true);
+    expect(petCanAct({ ...state(null), canAct: true })).toBe(true);
+    expect(petCanAct({ ...state(null), canAct: false })).toBe(false);
+  });
+
+  it('hides Adopt and Accept without canAct, keeping Not now and Cancel', () => {
+    const html = (kind: 'adopt' | 'waiting' | 'invited', canAct?: boolean) =>
+      renderToStaticMarkup(createElement(PetInviteActions, { kind, busy: null, onRun: () => {}, canAct }));
+    expect(html('invited')).toContain('Accept');
+    expect(html('invited', false)).not.toContain('Accept');
+    expect(html('invited', false)).toContain('Not now');
+    expect(html('adopt')).toContain('Adopt');
+    expect(html('adopt', false)).toBe('');
+    expect(html('waiting', false)).toContain('Cancel');
+  });
 });
 
 describe('in-chat notices', () => {
@@ -270,6 +300,33 @@ describe('clock-driven refetch', () => {
     expect(petNextRefreshAt(p, Date.parse('2026-11-11T09:00:00Z'))).toBe(Date.parse('2026-11-11T18:00:05Z'));
     expect(petNextRefreshAt(p, Date.parse('2026-11-11T19:00:00Z'))).toBe(Date.parse('2026-11-12T00:00:05Z'));
     expect(petNextRefreshAt(p, Date.parse('2026-11-12T01:00:00Z'))).toBeNull();
+  });
+
+  it('keeps a boundary through its slack, so a re-render then keeps the timer', () => {
+    // A re-render at 18:00:02 must not drop the 18:00:05 refetch for midnight.
+    expect(petNextRefreshAt(p, Date.parse('2026-11-11T18:00:02Z'))).toBe(Date.parse('2026-11-11T18:00:05Z'));
+    // At 00:00:02 the DTO still says yesterday: the midnight refetch stands.
+    expect(petNextRefreshAt(p, Date.parse('2026-11-12T00:00:02Z'))).toBe(Date.parse('2026-11-12T00:00:05Z'));
+    // Once the timer has fired the next boundary takes over (no refetch loop).
+    expect(petNextRefreshAt(p, Date.parse('2026-11-11T18:00:05Z'))).toBe(Date.parse('2026-11-12T00:00:05Z'));
+    expect(petNextRefreshAt(p, Date.parse('2026-11-12T00:00:05Z'))).toBeNull();
+  });
+
+  it('counts in server time, so a fast device clock still waits for the server', () => {
+    // The device runs 30 s ahead of the server (offset −30 s), as MessageView
+    // schedules it: serverNow for the boundary, timeoutUntil for the delay.
+    const offset = -30_000;
+    const device = (iso: string) => Date.parse(iso);
+    // Device 00:00:05 is server 23:59:35: midnight is still ahead, 30 s out.
+    const atMidnight = petNextRefreshAt(p, serverNow(offset, device('2026-11-12T00:00:05Z')));
+    expect(atMidnight).toBe(Date.parse('2026-11-12T00:00:05Z'));
+    const wait = timeoutUntil(atMidnight!, offset, device('2026-11-12T00:00:05Z'));
+    expect(wait).toBeGreaterThanOrEqual(30_000);
+    expect(wait).toBeLessThan(31_000);
+    // The same at 18:00: device 18:00:05 is server 17:59:35.
+    expect(petNextRefreshAt(p, serverNow(offset, device('2026-11-11T18:00:05Z')))).toBe(
+      Date.parse('2026-11-11T18:00:05Z'),
+    );
   });
 });
 
@@ -618,5 +675,186 @@ describe('AppState pet map', () => {
   it('assumes "not eligible" for a live update before any fetch', () => {
     const s = run({ type: 'DM_PET_SET', channelId: '9', pet: null });
     expect(s.dmPets['9']).toEqual({ pet: null, eligible: false, streak: 0, minStreak: 3 });
+  });
+});
+
+// ── Notices vs. unread ──────────────────────────────────────────────────
+// The server never bumps channels.last_message_id or anyone's read marker for
+// a 'system_pet' row: a notice never makes the DM unread, never reorders the
+// DM list, and never marks the other person's messages read.
+
+describe('pet notices and unread', () => {
+  type State = typeof initialAppState;
+  type Action = Parameters<typeof appStateReducer>[1];
+  const run = (state: State, ...actions: Action[]) => actions.reduce((s, a) => appStateReducer(s, a), state);
+  const CH = '900';
+  const dm = (id: string, lastMessageId: string) =>
+    ({ id, type: 'dm', lastMessageId }) as unknown as State['dmChannels'][number];
+
+  function row(id: string, authorId: string, extra: Partial<Message> = {}): Message {
+    return {
+      id,
+      channelId: CH,
+      authorId,
+      author: null,
+      type: 'default',
+      content: `m${id}`,
+      replyToId: null,
+      pinned: false,
+      editedAt: null,
+      mentionsEveryone: false,
+      mentionedUserIds: [],
+      mentionedRoleIds: [],
+      attachments: [],
+      reactions: [],
+      embeds: [],
+      poll: null,
+      stickerId: null,
+      sticker: null,
+      forwardedFromMessageId: null,
+      forwardedFrom: null,
+      webhookId: null,
+      authorOverrideName: null,
+      authorOverrideAvatar: null,
+      createdAt: '2026-11-12T00:05:00.000Z',
+      ...extra,
+    } as Message;
+  }
+  // The sweep posts 'asleep' in user A's name, caused by no one.
+  const notice = (id: string, authorId: string, actorId: string | null = null) =>
+    row(id, authorId, {
+      type: 'system_pet',
+      content: 'Zekk fell asleep.',
+      metadata: { kind: 'pet', event: 'asleep', petName: 'Zekk', stage: 'baby', actorId },
+    });
+  const channelOf = (s: State) => s.dmChannels.find((c) => c.id === CH)!;
+
+  // We (SELF, user A) last read 90; the peer's 'hey' (100) is unread, 3 mentions.
+  function setup(): State {
+    return run(
+      initialAppState,
+      { type: 'DMS_SET', channels: [dm('800', '500'), dm(CH, '100')] },
+      { type: 'READ_STATES_SET', readStates: [{ channelId: CH, lastMessageId: '90', mentionCount: 3 }] },
+      { type: 'MESSAGES_SET', channelId: CH, messages: [row('90', SELF), row('100', PEER)] },
+    );
+  }
+
+  it('a sweep notice in our name keeps the DM unread and its mentions, and opening it still acks', () => {
+    const s0 = setup();
+    const n = notice('200', SELF);
+    // The gateway handler's own-message branch moves no marker for it…
+    expect(ownEchoReadState(n, SELF)).toBeNull();
+    const s1 = run(s0, { type: 'MESSAGE_APPEND', channelId: CH, message: n });
+    // …the row is added, the DM's recency stays where the server keeps it…
+    expect(s1.messagesByChannel[CH]!.map((m) => m.id)).toEqual(['90', '100', '200']);
+    expect(s1.dmChannels).toBe(s0.dmChannels);
+    expect(channelOf(s1).lastMessageId).toBe('100');
+    // …so 'hey' still reads unread, with its mentions.
+    expect(isChannelUnread(channelOf(s1), s1.readStateByChannel)).toBe(true);
+    expect(channelMentionCount(CH, s1.readStateByChannel)).toBe(3);
+    // Opening the DM acks the newest loaded row, the notice included.
+    const plan = planReadAck({
+      isDm: true,
+      newest: newestConfirmedId(s1.messagesByChannel[CH]!)!,
+      marker: s1.readStateByChannel[CH]!.lastMessageId,
+      lastSent: undefined,
+      unstartedTimer: false,
+      channelLast: channelOf(s1).lastMessageId,
+      lastProbe: undefined,
+    });
+    expect(plan).toEqual({ ack: '200', probe: null });
+    const s2 = run(s1, { type: 'READ_STATE_UPSERT', readState: { channelId: CH, lastMessageId: '200', mentionCount: 0 } });
+    expect(isChannelUnread(channelOf(s2), s2.readStateByChannel)).toBe(false);
+  });
+
+  it('deleting the newest real message rolls the DM back past a newer notice, as the server does', () => {
+    const s0 = run(setup(), { type: 'MESSAGE_APPEND', channelId: CH, message: notice('200', SELF) });
+    expect(channelOf(s0).lastMessageId).toBe('100');
+    // 'hey' (100) is deleted: the watermark goes to 90, not to the notice.
+    const s1 = run(s0, { type: 'MESSAGE_REMOVE', channelId: CH, messageId: '100' });
+    expect(s1.messagesByChannel[CH]!.map((m) => m.id)).toEqual(['90', '200']);
+    expect(channelOf(s1).lastMessageId).toBe('90');
+    expect(isChannelUnread(channelOf(s1), s1.readStateByChannel)).toBe(false);
+  });
+
+  it('a notice we caused moves no marker either; our own messages still do', () => {
+    expect(ownEchoReadState(notice('200', SELF, SELF), SELF)).toBeNull();
+    expect(ownEchoReadState(row('300', SELF), SELF)).toEqual({ channelId: CH, lastMessageId: '300', mentionCount: 0 });
+    expect(ownEchoReadState(row('300', PEER), SELF)).toBeNull();
+    expect(ownEchoReadState(row('local-1', SELF), SELF)).toBeNull();
+  });
+
+  it("the other person's notice doesn't make a read DM unread or move it up the list", () => {
+    const s0 = run(setup(), {
+      type: 'READ_STATE_UPSERT',
+      readState: { channelId: CH, lastMessageId: '100', mentionCount: 0 },
+    });
+    const s1 = run(s0, { type: 'MESSAGE_APPEND', channelId: CH, message: notice('200', PEER, PEER) });
+    expect(s1.messagesByChannel[CH]!.map((m) => m.id)).toContain('200');
+    expect(s1.dmChannels).toBe(s0.dmChannels);
+    expect(isChannelUnread(channelOf(s1), s1.readStateByChannel)).toBe(false);
+    // A real message after it still bumps as before.
+    const s2 = run(s1, { type: 'MESSAGE_APPEND', channelId: CH, message: row('210', PEER) });
+    expect(channelOf(s2).lastMessageId).toBe('210');
+    expect(isChannelUnread(channelOf(s2), s2.readStateByChannel)).toBe(true);
+  });
+
+  it('a gap-fill page bumps recency to its newest row that is not a notice', () => {
+    // A jump window ending at 100 leaves the tail gapped from there.
+    const s0 = run(
+      initialAppState,
+      { type: 'DMS_SET', channels: [dm(CH, '100')] },
+      { type: 'READ_STATES_SET', readStates: [{ channelId: CH, lastMessageId: '100', mentionCount: 0 }] },
+      { type: 'MESSAGES_SET', channelId: CH, messages: [row('90', SELF), row('100', PEER)], preserveNewerSurvivors: false },
+    );
+    expect(s0.tailGapped.has(CH)).toBe(true);
+    // Only a notice in the page: rows merged, recency untouched.
+    const s1 = run(s0, { type: 'MESSAGES_MERGE', channelId: CH, messages: [notice('200', SELF)], from: '100' });
+    expect(s1.messagesByChannel[CH]!.map((m) => m.id)).toEqual(['90', '100', '200']);
+    expect(s1.dmChannels).toBe(s0.dmChannels);
+    expect(isChannelUnread(channelOf(s1), s1.readStateByChannel)).toBe(false);
+    // A message, then a notice: recency moves to the message only.
+    const s2 = run(s0, {
+      type: 'MESSAGES_MERGE',
+      channelId: CH,
+      messages: [row('150', PEER), notice('200', SELF)],
+      from: '100',
+    });
+    expect(channelOf(s2).lastMessageId).toBe('150');
+  });
+
+  // The chat's scroll: an own append follows the viewer down, someone
+  // else's raises the 'New messages' pill when scrolled up.
+  describe('scroll on append', () => {
+    const peerMsg = (id: string) => row(id, PEER, { author: { id: PEER } as Message['author'] });
+    const ownMsg = (id: string) => row(id, SELF, { author: { id: SELF } as Message['author'] });
+    const sweep = (id: string) => ({ ...notice(id, SELF), author: { id: SELF } as Message['author'] });
+    const caused = (id: string, actor: string) => ({
+      ...notice(id, actor, actor),
+      author: { id: actor } as Message['author'],
+    });
+
+    it("a sweep notice in our name neither pulls us down nor raises the pill", () => {
+      expect(appendScrollKind([ownMsg('90'), peerMsg('100'), sweep('200')], '100', SELF)).toBe('quiet');
+      // The peer, scrolled up, gets no pill for it either.
+      expect(appendScrollKind([ownMsg('90'), peerMsg('100'), sweep('200')], '100', PEER)).toBe('quiet');
+    });
+
+    it('a notice we caused follows us down; the other person\'s is quiet', () => {
+      expect(appendScrollKind([peerMsg('100'), caused('200', SELF)], '100', SELF)).toBe('own');
+      expect(appendScrollKind([peerMsg('100'), caused('200', PEER)], '100', SELF)).toBe('quiet');
+    });
+
+    it('messages behave as before', () => {
+      expect(appendScrollKind([peerMsg('100'), ownMsg('110')], '100', SELF)).toBe('own');
+      expect(appendScrollKind([ownMsg('100'), peerMsg('110')], '100', SELF)).toBe('other');
+    });
+
+    it('a message that lands with a notice in the same render still raises the pill', () => {
+      // The peer's send hatched the pet: both rows arrive before one render.
+      expect(appendScrollKind([ownMsg('90'), peerMsg('100'), caused('110', PEER)], '90', SELF)).toBe('other');
+      // A gone previous tail (a confirmed local send) falls back to "any message".
+      expect(appendScrollKind([peerMsg('100'), sweep('200')], 'local-1', SELF)).toBe('other');
+    });
   });
 });

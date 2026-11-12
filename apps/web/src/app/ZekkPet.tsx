@@ -21,7 +21,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { ApiError, type PetDTO } from '@zekktris/client';
 import { ZekkPetArt } from '../lib/ZekkPetArt';
 import { X } from '../lib/icons';
-import { petArtProgress, petMoodView, type PetBanner, type PetBannerKind } from '../lib/zekkPet';
+import { petArtProgress, petCanAct, petMoodView, type PetBanner, type PetBannerKind } from '../lib/zekkPet';
 import { useAppStateSelector, type DmPetChange } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
 
@@ -125,17 +125,22 @@ const SECONDARY =
   'shrink-0 px-3 py-1 rounded-md border border-line text-ink-2 hover:text-ink-1 hover:bg-bg-3 disabled:opacity-50 disabled:cursor-wait text-xs font-medium transition-colors';
 
 /** [Adopt] · [Cancel] · [Accept] [Not now] — "Not now" declines the invite
-    (no notice for either person); the inviter can invite again later. */
+    (no notice for either person); the inviter can invite again later.
+    Without `canAct` (a block, a mute, supervision, or the other person left)
+    Adopt and Accept hide: they would only fail. */
 export function PetInviteActions({
   kind,
   busy,
   onRun,
+  canAct = true,
 }: {
   kind: PetBannerKind;
   busy: DmPetChange['kind'] | null;
   onRun: (change: DmPetChange) => void;
+  canAct?: boolean;
 }) {
   if (kind === 'adopt') {
+    if (!canAct) return null;
     return (
       <button type="button" className={PRIMARY} disabled={busy !== null} onClick={() => onRun({ kind: 'invite' })}>
         {busy === 'invite' ? 'Inviting…' : 'Adopt'}
@@ -151,9 +156,11 @@ export function PetInviteActions({
   }
   return (
     <>
-      <button type="button" className={PRIMARY} disabled={busy !== null} onClick={() => onRun({ kind: 'accept' })}>
-        {busy === 'accept' ? 'Accepting…' : 'Accept'}
-      </button>
+      {canAct && (
+        <button type="button" className={PRIMARY} disabled={busy !== null} onClick={() => onRun({ kind: 'accept' })}>
+          {busy === 'accept' ? 'Accepting…' : 'Accept'}
+        </button>
+      )}
       <button type="button" className={SECONDARY} disabled={busy !== null} onClick={() => onRun({ kind: 'decline' })}>
         Not now
       </button>
@@ -167,6 +174,7 @@ export function PetAdoptBanner({ channelId, banner }: { channelId: string; banne
   const key = `${channelId}:${banner.kind}`;
   const hidden = useBannerDismissed(key);
   const { busy, run } = usePetActions(channelId);
+  const canAct = useAppStateSelector((v) => petCanAct(v.state.dmPets[channelId]));
   if (hidden) return null;
   return (
     <div
@@ -175,7 +183,7 @@ export function PetAdoptBanner({ channelId, banner }: { channelId: string; banne
       style={{ borderBottomColor: 'var(--zk-line-soft)' }}
     >
       <span className="flex-1 min-w-0 text-ink-2 leading-snug">{banner.text}</span>
-      <PetInviteActions kind={banner.kind} busy={busy} onRun={(c) => void run(c)} />
+      <PetInviteActions kind={banner.kind} busy={busy} canAct={canAct} onRun={(c) => void run(c)} />
       <button
         type="button"
         onClick={() => dismissBanner(key)}

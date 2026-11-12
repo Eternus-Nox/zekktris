@@ -31,7 +31,7 @@ import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
 import { Hash, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronDown, ChevronLeft, ChevronRight, CheckCircle, Lock, Timer, Users as UsersIcon } from '../lib/icons';
-import { formatLong, formatShort, isDisappearingNotice, showsUnstartedTimer } from '../lib/disappearing';
+import { effectiveOffset, formatLong, formatShort, isDisappearingNotice, serverNow, showsUnstartedTimer, timeoutUntil } from '../lib/disappearing';
 import { newestConfirmedId, planReadAck } from '../lib/readAck';
 import { isNative } from '../lib/native';
 import { SchedulePickerModal } from './SchedulePickerModal';
@@ -39,7 +39,7 @@ import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { DmStreakPill } from './DMList';
 import { DmPetButton, PetAdoptBanner } from './ZekkPet';
-import { isPetNotice, petBanner, petNextRefreshAt } from '../lib/zekkPet';
+import { appendScrollKind, isPetNotice, petBanner, petNextRefreshAt } from '../lib/zekkPet';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
   import('./DmSettingsPanel').then((m) => ({ default: m.DmSettingsPanel })),
@@ -653,16 +653,22 @@ export function MessageView({
     if (!petsHere || document.visibilityState !== 'visible') return;
     void loadDmPet(channel.id).catch(() => undefined);
   }, [channel.id, petsHere, loadDmPet, wake]);
-  const petRefreshAt = pet && pet.status !== 'invited' ? petNextRefreshAt(pet, Date.now()) : null;
+  // The boundaries are the server's, so count in server time: a device clock
+  // that runs fast would refetch before the day turned there, get the same
+  // DTO back and then have no boundary left to wait for.
+  const clockOffsetMs = useAppStateSelector((v) =>
+    effectiveOffset(v.state.serverClockOffsetMs, v.state.dateClockOffsetMs),
+  );
+  const petRefreshAt =
+    pet && pet.status !== 'invited' ? petNextRefreshAt(pet, serverNow(clockOffsetMs)) : null;
   useEffect(() => {
     if (!petsHere || petRefreshAt === null) return;
-    // setTimeout fires at once past ~24.8 days; this is at most a day out.
     const t = window.setTimeout(
       () => void loadDmPet(channel.id).catch(() => undefined),
-      Math.max(0, petRefreshAt - Date.now()),
+      timeoutUntil(petRefreshAt, clockOffsetMs),
     );
     return () => window.clearTimeout(t);
-  }, [channel.id, petsHere, petRefreshAt, loadDmPet]);
+  }, [channel.id, petsHere, petRefreshAt, clockOffsetMs, loadDmPet]);
   // Shared-media gallery visibility. Hosted at the MessageView level (a
   // stable parent) so the full-screen, body-portaled modal isn't a child of
   // the click-outside-trapped DmSettingsPanel.
@@ -873,11 +879,16 @@ export function MessageView({
             )}
             {/* Zekk Pet next to the streak (an egg while the invite is open). */}
             {pet && <DmPetButton pet={pet} onOpen={() => setPetOpen(true)} />}
-            {/* Disappearing-messages indicator while the timer is on. */}
+            {/* Disappearing-messages indicator while the timer is on. On a
+                phone the pet takes its place: with the streak, the pet, the
+                timer and four actions the row overflows a 360px screen and
+                the Conversation settings gear (which also reaches the timer
+                screen) is cut off. */}
             {isDM && typeof dmTimer === 'number' && dmTimer > 0 && (
               <DisappearingPill
                 seconds={dmTimer}
                 onClick={isDM1to1 ? () => setDisappearingOpen(true) : undefined}
+                className={pet ? 'hidden sm:inline-flex' : ''}
               />
             )}
             {channel.topic && (
@@ -1797,9 +1808,12 @@ function Scroller({
     // Append detection — newest id changed (and it isn't a prepend).
     const newLast = messages?.[messages.length - 1]?.id ?? null;
     const isAppend = !!newLast && newLast !== prevLastIdRef.current && !isPrepend;
-    const newTailAuthorId =
-      isAppend && messages ? messages[messages.length - 1]?.author?.id : null;
-    const isOwnAppend = isAppend && !!selfId && newTailAuthorId === selfId;
+    // A pet notice counts as its actor's: the daily check's 'asleep' /
+    // 'ran_away' name user A as author but were caused by no one, and alone
+    // they never raise the pill (see appendScrollKind).
+    const appendKind =
+      isAppend && messages ? appendScrollKind(messages, prevLastIdRef.current, selfId) : null;
+    const isOwnAppend = appendKind === 'own';
     prevLastIdRef.current = newLast;
 
     // First append after a switch: land at bottom regardless of stale pin.
@@ -1827,7 +1841,7 @@ function Scroller({
     if (wasPinnedRef.current && !isPrepend) {
       vref.current?.scrollToIndex(lastIndex, { align: 'end' });
       setUnreadBelow(false);
-    } else if (isAppend) {
+    } else if (isAppend && appendKind !== 'quiet') {
       setUnreadBelow(true);
     }
   }, [channelId, messages, selfId, lastIndex]);
@@ -3293,10 +3307,17 @@ function conversationVisible(): boolean {
  * sit as a matched pair, but neutral — it's a setting, not an achievement.
  * Opens the Disappearing Messages screen when `onClick` is given (1:1 DMs).
  */
-function DisappearingPill({ seconds, onClick }: { seconds: number; onClick?: () => void }) {
+function DisappearingPill({
+  seconds,
+  onClick,
+  className: extra = '',
+}: {
+  seconds: number;
+  onClick?: () => void;
+  className?: string;
+}) {
   const label = `Disappearing messages: ${formatLong(seconds)}`;
-  const className =
-    'inline-flex items-center self-center gap-0.5 whitespace-nowrap rounded-md px-1.5 pt-[2.5px] pb-[1.5px] text-[10px] font-semibold leading-none border border-line bg-bg-2 text-ink-2 shrink-0';
+  const className = `inline-flex items-center self-center gap-0.5 whitespace-nowrap rounded-md px-1.5 pt-[2.5px] pb-[1.5px] text-[10px] font-semibold leading-none border border-line bg-bg-2 text-ink-2 shrink-0 ${extra}`;
   const body = (
     <>
       <Timer size={10} className="shrink-0 relative -top-[0.5px]" />

@@ -32,6 +32,7 @@ import { ZekkPetArt } from '../lib/ZekkPetArt';
 import {
   petArtProgress,
   petBanner,
+  petCanAct,
   petLevelLine,
   petLevelProgress,
   petMoodView,
@@ -60,6 +61,12 @@ export function ZekkPetModal({
   const pet = petState?.pet ?? null;
   const { busy, run } = usePetActions(channelId);
   const [editing, setEditing] = useState(false);
+  const canAct = petCanAct(petState);
+  // A block or the other person leaving mid-rename hides the field; drop the
+  // edit too, so Escape closes the card instead of cancelling a hidden field.
+  useEffect(() => {
+    if (!canAct) setEditing(false);
+  }, [canAct]);
 
   // Nothing left to show: the invite was declined / cancelled / expired or
   // the pet ran away (from here or anywhere else).
@@ -75,12 +82,16 @@ export function ZekkPetModal({
   useEffect(() => () => openerRef.current?.focus(), []);
   const focusDialog = useCallback((el: HTMLDivElement | null) => el?.focus(), []);
 
-  // Escape: out of the rename field first (it handles its own), then close.
+  // Escape: out of the rename field first, then close. The field cancels its
+  // own Escape and marks it handled (preventDefault). React may already have
+  // re-rendered this listener with editing=false by the time that event gets
+  // to window, so a handled Escape must not close the card as well.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape' || editing) return;
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
       e.preventDefault();
-      onClose();
+      if (editing) setEditing(false);
+      else onClose();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -113,7 +124,12 @@ export function ZekkPetModal({
                 {banner && <p className="text-sm text-ink-2 leading-snug">{banner.text}</p>}
                 {banner && (
                   <div className="flex items-center gap-2">
-                    <PetInviteActions kind={banner.kind} busy={busy} onRun={(c) => void run(c)} />
+                    <PetInviteActions
+                      kind={banner.kind}
+                      busy={busy}
+                      canAct={canAct}
+                      onRun={(c) => void run(c)}
+                    />
                   </div>
                 )}
               </div>
@@ -124,6 +140,7 @@ export function ZekkPetModal({
                 editing={editing}
                 setEditing={setEditing}
                 renaming={busy === 'rename'}
+                canRename={canAct}
                 onRename={(name) => run({ kind: 'rename', name })}
               />
             )}
@@ -178,6 +195,7 @@ function PetCard({
   editing,
   setEditing,
   renaming,
+  canRename,
   onRename,
 }: {
   pet: PetDTO;
@@ -185,6 +203,7 @@ function PetCard({
   editing: boolean;
   setEditing: (v: boolean) => void;
   renaming: boolean;
+  canRename: boolean;
   onRename: (name: string) => Promise<boolean>;
 }) {
   const mood = petMoodView(pet);
@@ -197,7 +216,7 @@ function PetCard({
       <PetStageArt pet={pet} />
 
       <div className="w-full flex flex-col items-center gap-1 text-center">
-        {editing ? (
+        {editing && canRename ? (
           <RenameField
             current={pet.name}
             saving={renaming}
@@ -209,15 +228,17 @@ function PetCard({
         ) : (
           <div className="flex items-center gap-1.5 min-w-0 max-w-full">
             <h3 className="text-lg font-semibold text-ink-1 truncate">{pet.name}</h3>
-            <button
-              type="button"
-              onClick={() => setEditing(true)}
-              className="shrink-0 w-7 h-7 flex items-center justify-center rounded text-ink-3 hover:text-ink-1 hover:bg-bg-3 transition-colors"
-              aria-label="Rename pet"
-              title="Rename"
-            >
-              <Edit size={14} />
-            </button>
+            {canRename && (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="shrink-0 w-7 h-7 flex items-center justify-center rounded text-ink-3 hover:text-ink-1 hover:bg-bg-3 transition-colors"
+                aria-label="Rename pet"
+                title="Rename"
+              >
+                <Edit size={14} />
+              </button>
+            )}
           </div>
         )}
         <p className="text-sm text-ink-2">{petLevelLine(pet)}</p>
