@@ -121,17 +121,30 @@ object ZekkPet {
      *  server rejects, and leaves out the BOM). */
     private val JS_WHITESPACE_RUN = Regex("[\\t\\n\\u000B\\f\\r \\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]+")
 
+    /** Invisible and bidi-formatting characters the server drops from a name
+     *  before anything else: zero-width space, word joiner and the invisible
+     *  operators, the BOM, the LRM / RLM / ALM marks and the bidi embeddings,
+     *  overrides and isolates. */
+    private val NAME_INVISIBLE = Regex("[\\u200B\\u2060-\\u2064\\uFEFF\\u200E\\u200F\\u061C\\u202A-\\u202E\\u2066-\\u2069]")
+
+    /** ZWNJ and ZWJ: kept inside a name (they shape scripts and join emoji),
+     *  but a name of nothing else is empty. */
+    private val NAME_JOINERS = Regex("[\\u200C\\u200D]")
+
     /**
-     * Normalise a proposed pet name exactly like the server: collapse runs of
-     * whitespace to one space and trim. Null when the result is empty, longer
-     * than [NAME_MAX_LENGTH] (counted in code points), or contains a control
-     * character (U+0000–U+001F, U+007F–U+009F).
+     * Normalise a proposed pet name exactly like the server: drop invisible
+     * and bidi-formatting characters ([NAME_INVISIBLE]), collapse runs of
+     * whitespace to one space and trim. Null when the result is empty or
+     * nothing but ZWNJ / ZWJ, longer than [NAME_MAX_LENGTH] (counted in code
+     * points), or contains a control character (U+0000–U+001F,
+     * U+007F–U+009F).
      */
     fun normalizeName(raw: String): String? {
+        // The strip comes first, so a BOM goes rather than becoming a space.
         // After the collapse a plain space is the only whitespace left that
         // JavaScript's trim() would strip.
-        val name = raw.replace(JS_WHITESPACE_RUN, " ").trim(' ')
-        if (name.isEmpty()) return null
+        val name = raw.replace(NAME_INVISIBLE, "").replace(JS_WHITESPACE_RUN, " ").trim(' ')
+        if (name.replace(NAME_JOINERS, "").trim(' ').isEmpty()) return null
         if (name.codePointCount(0, name.length) > NAME_MAX_LENGTH) return null
         if (name.any { it.code <= 0x1F || it.code in 0x7F..0x9F }) return null
         return name
@@ -243,6 +256,33 @@ object ZekkPet {
     /** Progress towards the next level, for the art (the egg cracks near the end). */
     fun artProgress(pet: PetDTO): Float = levelProgress(pet).fraction
 
+    /** Which chips the DM header's title line shows beside the name. */
+    data class HeaderChips(val streak: Boolean, val timer: Boolean, val pet: Boolean)
+
+    /**
+     * Fit the DM header's title line: the name, then the streak pill, the
+     * disappearing-timer pill and the pet. Each chip's width includes its
+     * leading gap (0 = not there); [room] is the line's width after the name
+     * tag, and [name] the name's own width, all in one unit. A chip shows
+     * whole or not at all, never squeezed (the pet would be drawn off-centre
+     * in a sliver), and the name, which truncates, takes what they leave.
+     * The room goes to the pet first, as it is the only way into the pet
+     * card, then to the streak (also in the DM list), then to the timer
+     * (also on Conversation settings); they are still placed in line order.
+     * Next to the pet, the timer pill gives way once the name would get less
+     * than [nameRoom] (or its own width, if that's less): web hides it on
+     * phones next to the pet too. Otherwise a chip is left out only when it
+     * can't fit at all.
+     */
+    fun fitHeaderChips(room: Int, name: Int, streak: Int, timer: Int, pet: Int, nameRoom: Int): HeaderChips {
+        var left = room
+        fun take(width: Int, on: Boolean): Boolean = (on && width in 1..left).also { if (it) left -= width }
+        val p = take(pet, true)
+        val s = take(streak, true)
+        val t = take(timer, timer > 0 && (pet <= 0 || left - timer >= minOf(name, nameRoom)))
+        return HeaderChips(streak = s, timer = t, pet = p)
+    }
+
     /** The header pet's spoken label. */
     fun headerLabel(pet: PetDTO): String =
         if (pet.status == "invited") "Zekk Pet: ${pet.name} (invite pending)"
@@ -301,6 +341,13 @@ object ZekkPet {
     /** A Zekk Pet notice: type 'system_pet', or (defensively) any row
      *  carrying the 'pet' metadata. */
     fun isNotice(m: Message): Boolean = m.type == "system_pet" || m.metadata?.kind == "pet"
+
+    /** A pet notice [selfId] didn't cause. The sweep's 'asleep' and
+     *  'ran_away' (actorId null) are authored by the DM's user A only
+     *  nominally, so for A too it is not their own message: it doesn't move
+     *  their read marker past what the other person sent, or end their
+     *  typing. */
+    fun isNoticeNotBy(m: Message, selfId: String?): Boolean = isNotice(m) && m.metadata?.actorId != selfId
 
     /** "a Kid", "an Adult". */
     private fun withArticle(word: String): String =
@@ -382,14 +429,16 @@ object ZekkPet {
      * When the open DM should refetch its pet even if no event comes: the
      * mood is worked out when the server answers, and two of its rules turn
      * on the clock alone — 18:00 UTC (a pet fed yesterday turns grumpy) and
-     * the end of the UTC day (today's tasks reset). The next of those after
-     * [nowMs] (epoch ms, plus [REFRESH_SLACK_MS]), or null when the DTO has
-     * neither.
+     * the end of the UTC day (today's tasks reset). The next of those (epoch
+     * ms, plus [REFRESH_SLACK_MS]) that is still ahead of [nowMs], or null
+     * when the DTO has neither. A boundary counts until its slack is over
+     * too, so a call inside those seconds returns the same time and the
+     * pending refetch stands.
      */
     fun nextRefreshAt(pet: PetDTO, nowMs: Long): Long? {
         val evening = parseDay(pet.today)?.atTime(18, 0)?.toInstant(java.time.ZoneOffset.UTC)?.toEpochMilli()
         val dayEnd = runCatching { java.time.Instant.parse(pet.dayEndsAt).toEpochMilli() }.getOrNull()
-        val next = listOfNotNull(evening, dayEnd).filter { it > nowMs }.minOrNull() ?: return null
+        val next = listOfNotNull(evening, dayEnd).filter { it + REFRESH_SLACK_MS > nowMs }.minOrNull() ?: return null
         return next + REFRESH_SLACK_MS
     }
 

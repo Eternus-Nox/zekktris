@@ -216,8 +216,8 @@ class ZekkPetArtTest {
                 // Three Z's, each as wide as it is tall: 6, 8, 10.
                 assertEquals(listOf(6f, 8f, 10f), zs.map { it.points[1].x - it.points[0].x })
                 assertEquals(listOf(6f, 8f, 10f), zs.map { it.points[3].y - it.points[0].y })
-                assertEquals(listOf(Point(66f, 30f), Point(74f, 20f), Point(84f, 8f)), zs.map { it.points[0] })
-                zs.forEach { assertEquals(Ink.Outline, it.stroke); near(2f, it.width) }
+                assertEquals(listOf(Point(74f, 26f), Point(80f, 14f), Point(88f, 2f)), zs.map { it.points[0] })
+                zs.forEach { assertEquals(Ink.Belly, it.stroke); near(2f, it.width) }
             } else {
                 assertTrue("$s $m", zs.isEmpty())
             }

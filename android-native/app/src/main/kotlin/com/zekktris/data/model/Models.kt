@@ -587,13 +587,18 @@ data class PetDTO(
 
 /** GET /users/@me/channels/:id/pet. [eligible]: the streak is alive and at
  *  least [minStreak] days, so either person may invite (meaningful only
- *  while [pet] is null). */
+ *  while [pet] is null). [canAct]: the viewer may invite, accept or rename
+ *  right now — false while either person blocks the other, the viewer is
+ *  muted or supervision-restricted, or the other person left the DM, so
+ *  Adopt / Accept / Rename hide (Not now and Cancel stay). Older servers
+ *  don't send it: true. */
 @Serializable
 data class DmPetState(
     val pet: PetDTO? = null,
     val eligible: Boolean = false,
     val streak: Int = 0,
     val minStreak: Int = 3,
+    val canAct: Boolean = true,
 )
 
 @Serializable

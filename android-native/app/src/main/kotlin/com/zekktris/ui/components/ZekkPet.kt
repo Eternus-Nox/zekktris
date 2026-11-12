@@ -67,13 +67,12 @@ private val easeInOut: (Float) -> Float = EASE_IN_OUT::transform
 @Composable
 private fun rememberMotionEnabled(): Boolean = remember { android.animation.ValueAnimator.areAnimatorsEnabled() }
 
-/** The pet's inks as Compose colours for [palette], indexed by [Ink.ordinal]. */
+/** The pet's inks as opaque Compose colours for [palette], indexed by
+ *  [Ink.ordinal]. A shape's own alpha (the cheeks' [ZekkPetArt.CHEEK_ALPHA])
+ *  is applied once, when it is drawn — never baked in here as well. */
 private fun petInks(palette: ZkPalette): List<Color> {
     val colors = ZekkPetArt.colorsFor(palette.accent.toArgb(), palette.accent2.toArgb())
-    return Ink.entries.map { ink ->
-        val c = Color(ZekkPetArt.rgbOf(ink, colors) or (0xFF shl 24))
-        if (ink == Ink.Cheek) c.copy(alpha = ZekkPetArt.CHEEK_ALPHA) else c
-    }
+    return Ink.entries.map { ink -> Color(ZekkPetArt.rgbOf(ink, colors) or (0xFF shl 24)) }
 }
 
 /**

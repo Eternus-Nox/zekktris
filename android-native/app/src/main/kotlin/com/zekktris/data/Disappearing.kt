@@ -413,7 +413,8 @@ object Disappearing {
         reachTail: Boolean = true,
     ): String? {
         if (lastId == null || lastId !in removed || !reachTail) return lastId
-        return remaining.asSequence().map { it.id }
+        // Pet notices never become the watermark (the server skips them too).
+        return remaining.asSequence().filterNot { ZekkPet.isNotice(it) }.map { it.id }
             .filter { isServerId(it) && compareIds(it, lastId) < 0 }
             .maxWithOrNull(ID_ORDER) ?: lastId
     }

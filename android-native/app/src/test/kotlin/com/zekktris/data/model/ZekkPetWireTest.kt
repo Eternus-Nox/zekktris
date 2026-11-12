@@ -137,6 +137,11 @@ class ZekkPetWireTest {
         assertNull(bare.pet)
         assertFalse(bare.eligible)
         assertEquals(3, bare.minStreak)
+        // canAct: absent (older servers) reads as allowed; false is kept.
+        assertTrue(none.canAct)
+        assertTrue(bare.canAct)
+        val blocked = json.decodeFromString<DmPetState>("""{"pet":$active,"eligible":false,"streak":9,"minStreak":3,"canAct":false}""")
+        assertFalse(blocked.canAct)
     }
 
     @Test fun changeAnswersAndRenameBody() {

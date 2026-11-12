@@ -141,6 +141,30 @@ class ZekkPetTest {
         }
     }
 
+    @Test fun namesDropInvisibleAndBidiCharactersLikeTheServer() {
+        // apps/api/test/zekk-pet.integration.test.ts: nothing visible is no name …
+        listOf("​", "⁠﻿", "‮", "‍ ‌", "⁦⁩", "‍", "‌‍").forEach {
+            assertNull(it, ZekkPet.normalizeName(it))
+        }
+        // … and the marks go wherever they are.
+        assertEquals("abc", ZekkPet.normalizeName("‮abc"))
+        assertEquals("Mochi", ZekkPet.normalizeName("Mo​chi"))
+        assertEquals("Pip", ZekkPet.normalizeName("⁦Pip⁩ ‎"))
+        assertEquals("kkeZ", ZekkPet.normalizeName("‮kkeZ"))
+        assertEquals("Zekk", ZekkPet.normalizeName("Zekk‎"))
+        // The BOM is dropped, not turned into a space.
+        assertEquals("ab", ZekkPet.normalizeName("a﻿b"))
+        assertEquals("Zekk", ZekkPet.normalizeName("Ze﻿kk"))
+        // A mark an RTL keyboard adds doesn't count towards the 24.
+        assertEquals("x".repeat(24), ZekkPet.normalizeName("x".repeat(24) + "‏"))
+        assertEquals("x".repeat(24), ZekkPet.normalizeName("‎" + "x".repeat(24)))
+        assertEquals("x".repeat(23), ZekkPet.normalizeName("‪" + "x".repeat(23) + "‬"))
+        // ZWJ and ZWNJ stay inside a name: they join emoji and shape scripts.
+        assertEquals("a‍b", ZekkPet.normalizeName("a‍b"))
+        assertEquals("🐣‍🔥", ZekkPet.normalizeName("🐣‍🔥"))
+        assertEquals("👩‍💻", ZekkPet.normalizeName("👩‍💻"))
+    }
+
     // ── The pet card ────────────────────────────────────────────────────────
 
     @Test fun weekdaysAreUtcDays() {
@@ -227,6 +251,41 @@ class ZekkPetTest {
         assertEquals(Stage.Kid, ZekkPet.displayStage(pet(stage = "kid")))
         assertEquals("Zekk Pet: Zekk (invite pending)", ZekkPet.headerLabel(pet(status = "invited")))
         assertEquals("Zekk Pet: Biscuit, Asleep", ZekkPet.headerLabel(pet(name = "Biscuit", status = "asleep", mood = "asleep")))
+    }
+
+    @Test fun headerChipsShowWholeOrNotAtAll() {
+        // dp on a 360dp phone, non-E2EE DM: 104 for the name and its chips;
+        // each chip with its 6dp gap: 2-digit streak 41, "1d" timer 42, pet 36.
+        fun fit(room: Int, name: Int = 90, streak: Int = 41, timer: Int = 42, pet: Int = 36) =
+            ZekkPet.fitHeaderChips(room, name, streak, timer, pet, nameRoom = 56)
+        // Next to the pet the timer gives way, and the pet keeps its full size
+        // (a Row squeezed it to 15dp and the name to nothing).
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = false, pet = true), fit(104))
+        // A wide phone has room for all three.
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = true, pet = true), fit(180))
+        // A short name that still fits whole keeps the timer.
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = true, pet = true), fit(156, name = 30))
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = false, pet = true), fit(156))
+        // Without a pet the timer stays, as before.
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = true, pet = false), fit(104, pet = 0))
+        // Chips that aren't there never show.
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(104, streak = 0, timer = 0))
+        // A chip that can't fit whole is left out, never squeezed; the pet,
+        // the only way into its card, keeps its place before the streak.
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(60))
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = false), fit(30))
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(40, streak = 0))
+        // 360dp with a 2-character clan tag (76dp left), 320dp with no tag
+        // (64dp), a 1-character tag and a 100+ day streak (82dp, a 47dp pill):
+        // the streak gives way, the pet stays.
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(76))
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(64))
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(82, streak = 47))
+        // Both show whenever both fit.
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = false, pet = true), fit(77))
+        // With the streak gone the timer still needs the name's room.
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(76, timer = 30))
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = true, pet = true), fit(76, name = 10, timer = 30))
     }
 
     // ── The adopt bar ───────────────────────────────────────────────────────
@@ -336,6 +395,18 @@ class ZekkPetTest {
         assertFalse(ZekkPet.isNotice(Message(id = "1", channelId = "100", createdAt = "2026-11-11T10:00:00Z", type = "system_disappearing")))
     }
 
+    @Test fun aNoticeTheViewerDidNotCauseIsNotTheirs() {
+        // The sweep's notices are posted in user A's ("1") name but caused by
+        // no one: for A they are not their own message (no read-marker move).
+        assertTrue(ZekkPet.isNoticeNotBy(notice("asleep", actorId = null, authorId = "1"), "1"))
+        assertTrue(ZekkPet.isNoticeNotBy(notice("ran_away", actorId = null, authorId = "1"), "1"))
+        assertTrue(ZekkPet.isNoticeNotBy(notice("hatched", actorId = "2"), "1"))
+        assertTrue(ZekkPet.isNoticeNotBy(notice("asleep", actorId = null, kind = null, authorId = "1"), "1"))
+        // One the viewer caused is theirs, as is anything that isn't a notice.
+        assertFalse(ZekkPet.isNoticeNotBy(notice("renamed", actorId = "1", authorId = "1"), "1"))
+        assertFalse(ZekkPet.isNoticeNotBy(Message(id = "1", channelId = "100", createdAt = "2026-11-11T10:00:00Z", authorId = "1"), "1"))
+    }
+
     @Test fun noticeGlyph() {
         assertEquals(Stage.Kid to Mood.Asleep, ZekkPet.noticeArt(notice("asleep", actorId = null)))
         assertEquals(Stage.Kid to Mood.Lonely, ZekkPet.noticeArt(notice("ran_away", actorId = null)))
@@ -351,9 +422,15 @@ class ZekkPetTest {
     @Test fun refetchAtTheClockBoundaries() {
         val p = pet(today = "2026-11-11", dayEndsAt = "2026-11-12T00:00:00.000Z")
         assertEquals(at("2026-11-11T18:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T10:00:00Z")))
-        assertEquals(at("2026-11-12T00:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T18:00:00Z")))
+        // A boundary stands until its slack is over, so a recomposition just
+        // past 18:00 or midnight keeps the pending refetch instead of
+        // skipping to the next boundary (or to none).
+        assertEquals(at("2026-11-11T18:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T18:00:00Z")))
+        assertEquals(at("2026-11-11T18:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T18:00:04Z")))
+        assertEquals(at("2026-11-12T00:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T18:00:05Z")))
         assertEquals(at("2026-11-12T00:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T19:30:00Z")))
-        assertNull(ZekkPet.nextRefreshAt(p, at("2026-11-12T00:00:01Z")))
+        assertEquals(at("2026-11-12T00:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-12T00:00:01Z")))
+        assertNull(ZekkPet.nextRefreshAt(p, at("2026-11-12T00:00:05Z")))
         assertNull(ZekkPet.nextRefreshAt(pet(today = "", dayEndsAt = ""), at("2026-11-11T10:00:00Z")))
     }
 

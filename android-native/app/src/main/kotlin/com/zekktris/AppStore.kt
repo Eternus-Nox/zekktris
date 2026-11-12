@@ -2518,7 +2518,8 @@ class AppStore(
      *  MESSAGE_CREATE reconciliation (2294-2295). `batch` is API order
      *  (newest-first). No-op when nothing genuinely newer arrived. */
     private fun reconcilePointer(channelId: String, batch: List<Message>) {
-        val newest = batch.firstOrNull { it.id.all(Char::isDigit) }?.id ?: return
+        // Zekk Pet notices don't count, as on the live path.
+        val newest = batch.firstOrNull { it.id.all(Char::isDigit) && !ZekkPet.isNotice(it) }?.id ?: return
         val cur = _state.value.dms.firstOrNull { it.id == channelId }?.lastMessageId
         if (cur == null || newest > cur) {
             advanceLastMessage(channelId, newest) // self-guards monotonicity
@@ -4200,6 +4201,9 @@ class AppStore(
                 val dms = listOf(ch) + it.dms.filterNot { d -> d.id == ch.id }
                 it.copy(dms = dms, selectedGuildId = null, selectedChannelId = ch.id, guildEmojis = emptyList())
             }
+            // The header's disappearing timer and Zekk Pet, as openDM fetches them.
+            scope.launch { getDmSettings(ch.id) }
+            refreshDmPet(ch.id)
             if (_state.value.messagesByChannel[ch.id] == null) loadMessages(ch.id)
             requestVoice(ch.id)
         }
@@ -4512,16 +4516,27 @@ class AppStore(
                     // listDMs/READY refreshes. Without this, reading a chat and
                     // then a later refresh (or the next message) flips it back to
                     // unread because the read-state was ahead of the stale channel.
-                    advanceLastMessage(m.channelId, m.id)
-                    bumpRecency(m.channelId)
+                    // A Zekk Pet notice moves neither: the server leaves the DM's
+                    // last_message_id alone for one (it never makes the DM unread
+                    // or reorders the list), so a bump would light a dot that only
+                    // the next channel list took back.
+                    if (!ZekkPet.isNotice(m)) {
+                        advanceLastMessage(m.channelId, m.id)
+                        bumpRecency(m.channelId)
+                    }
                     // A disappearing-timer notice carries the new value: keeps
                     // the header right even if DM_SETTINGS_UPDATE was missed.
                     if (Disappearing.isNotice(m)) {
                         Disappearing.noticeTimer(m)?.let { noteDmTimerChange(m.channelId, it) }
                     }
                     val authorId = m.authorId ?: m.author?.id
+                    // A pet notice we didn't cause — the sweep's 'asleep' /
+                    // 'ran_away' is authored by the DM's user A only nominally
+                    // — is not our message: it neither ends our typing nor
+                    // moves our read marker past what the other person sent.
+                    val petNoticeByOther = ZekkPet.isNoticeNotBy(m, _state.value.me?.id)
                     // A user's message supersedes their typing indicator.
-                    authorId?.let { uid -> clearTyping(m.channelId, uid) }
+                    if (!petNoticeByOther) authorId?.let { uid -> clearTyping(m.channelId, uid) }
                     // Our OWN message (sent from THIS or another device) must never
                     // light an unread dot for us. The server advances our read-state
                     // on create but emits NO CHANNEL_ACK, and a CLOSED channel never
@@ -4529,7 +4544,7 @@ class AppStore(
                     // here (mirrors iOS/web). Monotonic string guard so an
                     // out-of-order echo can't regress it; require a numeric id to
                     // skip Android's optimistic "pending-$nonce" ids.
-                    if (authorId != null && authorId == _state.value.me?.id &&
+                    if (authorId != null && authorId == _state.value.me?.id && !petNoticeByOther &&
                         m.id.isNotEmpty() && m.id.all(Char::isDigit)) {
                         _state.update { st ->
                             val prev = st.readStates[m.channelId]?.lastMessageId
