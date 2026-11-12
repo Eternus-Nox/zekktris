@@ -1116,8 +1116,10 @@ private fun ChatHeader(
                     // bottom-end), as on iOS. Beside the pet and the streak
                     // the title line has no room left for the pill on most
                     // phones, and it's the open DM's only cue that messages
-                    // disappear. Tapping it opens the Disappearing Messages
-                    // screen, like the pill.
+                    // disappear. Display-only, as on iOS: a 13dp disc would
+                    // get a 48dp touch area that swallows taps on the avatar
+                    // and the gap after Back. Disappearing Messages stays in
+                    // Conversation settings; TalkBack still reads the timer.
                     if (timerCue == ZekkPet.TimerCue.Badge && timerSecs != null) {
                         Box(
                             Modifier
@@ -1126,8 +1128,7 @@ private fun ChatHeader(
                                 .size(13.dp)
                                 .clip(CircleShape)
                                 .background(p.bg2)
-                                .border(1.dp, p.accent.copy(alpha = 0.45f), CircleShape)
-                                .clickable(onClick = onDisappearing),
+                                .border(1.dp, p.accent.copy(alpha = 0.45f), CircleShape),
                             contentAlignment = Alignment.Center,
                         ) {
                             Icon(

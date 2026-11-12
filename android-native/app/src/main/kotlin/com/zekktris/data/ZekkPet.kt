@@ -1,5 +1,6 @@
 package com.zekktris.data
 
+import com.zekktris.data.model.Channel
 import com.zekktris.data.model.DmPetState
 import com.zekktris.data.model.Message
 import com.zekktris.data.model.PetDTO
@@ -550,6 +551,19 @@ object ZekkPet {
         }
         return fetched.copy(pet = kept, eligible = eligible)
     }
+
+    /**
+     * The 1:1 DMs in [dms] with [userId] whose pet is loaded in [dmPets].
+     * Whether their pet may be adopted, accepted or renamed (GET's canAct,
+     * and eligible, which needs it) follows a block or unblock between the
+     * two of them, and a friendship starting or ending too (a friends-only
+     * supervision DM policy opens or closes it), and no pet event says so,
+     * so the store re-reads these (web's petDmIdsWithUser). A DM not loaded
+     * yet fetches when it opens.
+     */
+    fun dmIdsWithUser(dms: List<Channel>, dmPets: Map<String, DmPetState>, userId: String): List<String> =
+        dms.filter { ch -> ch.type == "dm" && ch.id in dmPets && ch.recipients.orEmpty().any { it.id == userId } }
+            .map { it.id }
 
     // ── Gateway payload ───────────────────────────────────────────────────
 

@@ -4259,12 +4259,20 @@ class AppStore(
     }
 
     fun acceptFriend(targetId: String) {
-        scope.launch { runCatching { api.acceptFriend(targetId) }; loadRelationships() }
+        scope.launch {
+            runCatching { api.acceptFriend(targetId) }
+            refreshPetsWithUser(targetId)
+            loadRelationships()
+        }
     }
 
     /** Remove friend / decline incoming / cancel outgoing — one endpoint. */
     fun removeFriend(targetId: String) {
-        scope.launch { runCatching { api.removeFriend(targetId) }; loadRelationships() }
+        scope.launch {
+            runCatching { api.removeFriend(targetId) }
+            refreshPetsWithUser(targetId)
+            loadRelationships()
+        }
     }
 
     fun blockUser(targetId: String) {
@@ -4273,6 +4281,7 @@ class AppStore(
             // filter excludes this peer whether or not the server ever confirms.
             locallyBlockedIds = locallyBlockedIds + targetId
             runCatching { api.blockUser(targetId) }
+            refreshPetsWithUser(targetId)
             // Blocking someone must also pull them out of the SYSTEM share sheet,
             // where their name + face would otherwise stay published as a direct
             // share target. Explicitly, not via the republish: a republish drops
@@ -4314,11 +4323,23 @@ class AppStore(
         scope.launch {
             runCatching { api.unblockUser(targetId) }
             locallyBlockedIds = locallyBlockedIds - targetId
+            refreshPetsWithUser(targetId)
             // Eligible to be a share target again — but only republish off a
             // list we actually re-fetched, which refreshRelationships does for
             // us on success. On failure the peer stays absent from the sheet.
             refreshRelationships()
         }
+    }
+
+    /** A block or unblock opens or closes the pet actions of our DMs with
+     *  [targetId] (GET's canAct), and so does a friendship starting or
+     *  ending (accept / remove) when either side's DMs are friends-only
+     *  under supervision. No event says so: re-read their pets once the
+     *  request has answered, whether or not it worked — the GET is the
+     *  truth either way. Mirrors web's applyRelationship. */
+    private fun refreshPetsWithUser(targetId: String) {
+        val st = _state.value
+        ZekkPet.dmIdsWithUser(st.dms, st.dmPets, targetId).forEach(::refreshDmPet)
     }
 
     fun loadMentions() {
@@ -5042,6 +5063,13 @@ class AppStore(
                 // the last good snapshot when that fetch fails, so a revoked
                 // permission can never be re-opened by a failed refresh.
                 loadFamily()
+                // A restriction applied or lifted also opens or closes the
+                // open DM's pet actions (GET's canAct), which no pet event
+                // covers. A DM that isn't open re-reads its pet when it opens.
+                // Mirrors web.
+                _state.value.let { st ->
+                    st.selectedChannelId?.takeIf { it in st.dmPets }?.let(::refreshDmPet)
+                }
             }
         }
     }

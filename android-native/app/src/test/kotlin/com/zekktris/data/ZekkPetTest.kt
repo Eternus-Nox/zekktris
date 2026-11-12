@@ -4,6 +4,7 @@ import com.zekktris.data.ZekkPet.BannerKind
 import com.zekktris.data.ZekkPet.Mood
 import com.zekktris.data.ZekkPet.Stage
 import com.zekktris.data.ZekkPet.Task
+import com.zekktris.data.model.Channel
 import com.zekktris.data.model.DmPetState
 import com.zekktris.data.model.Message
 import com.zekktris.data.model.MessageMetadata
@@ -409,6 +410,26 @@ class ZekkPetTest {
         val kept = ZekkPet.afterFetch(ZekkPet.withPet(null, invite), none, keepPet = true)
         assertEquals(invite, kept.pet)
         assertEquals(BannerKind.Invited, ZekkPet.banner(kept, "1", "Sam")?.kind)
+    }
+
+    @Test fun aBlockOrUnblockReReadsTheLoadedPetsOfDmsWithThatPerson() {
+        val sam = PublicUser(id = "2", username = "sam")
+        val kim = PublicUser(id = "3", username = "kim")
+        val dms = listOf(
+            Channel(id = "100", type = "dm", recipients = listOf(sam)),
+            Channel(id = "101", type = "dm", recipients = listOf(kim)),
+            Channel(id = "102", type = "group_dm", recipients = listOf(sam, kim)),
+            Channel(id = "103", type = "dm", recipients = listOf(sam)),
+            Channel(id = "104", type = "dm", recipients = null),
+        )
+        val loaded = DmPetState(pet = null, eligible = true, streak = 5, minStreak = 3, canAct = true)
+        val pets = mapOf("100" to loaded, "101" to loaded, "102" to loaded, "104" to loaded)
+        // Sam's 1:1 DM with a loaded pet; not the group DM, not one never
+        // fetched (103: it fetches when it opens), not Kim's.
+        assertEquals(listOf("100"), ZekkPet.dmIdsWithUser(dms, pets, "2"))
+        assertEquals(listOf("101"), ZekkPet.dmIdsWithUser(dms, pets, "3"))
+        assertEquals(emptyList<String>(), ZekkPet.dmIdsWithUser(dms, pets, "9"))
+        assertEquals(emptyList<String>(), ZekkPet.dmIdsWithUser(dms, emptyMap(), "2"))
     }
 
     @Test fun dismissalIsPerDmAndPerKind() {
