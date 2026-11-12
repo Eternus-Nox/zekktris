@@ -259,20 +259,18 @@ class ZekkPetTest {
     @Test fun headerChipsShowWholeOrNotAtAll() {
         // dp on a 360dp phone, non-E2EE DM: 104 for the name and its chips;
         // each chip with its 6dp gap: 2-digit streak 41, "1d" timer 42, pet 36.
-        fun fit(room: Int, name: Int = 90, streak: Int = 41, timer: Int = 42, pet: Int = 36) =
-            ZekkPet.fitHeaderChips(room, name, streak, timer, pet, nameRoom = 56)
-        // Next to the pet the timer gives way, and the pet keeps its full size
-        // (a Row squeezed it to 15dp and the name to nothing).
+        // Next to a pet the timer isn't on the line (it's the avatar's
+        // badge, headerTimerCue), so it defaults to 0 here.
+        fun fit(room: Int, streak: Int = 41, timer: Int = 0, pet: Int = 36) =
+            ZekkPet.fitHeaderChips(room, streak, timer, pet)
+        // The pet keeps its full size (a Row squeezed it to 15dp and the
+        // name to nothing), and the streak sits beside it.
         assertEquals(ZekkPet.HeaderChips(streak = true, timer = false, pet = true), fit(104))
-        // A wide phone has room for all three.
-        assertEquals(ZekkPet.HeaderChips(streak = true, timer = true, pet = true), fit(180))
-        // A short name that still fits whole keeps the timer.
-        assertEquals(ZekkPet.HeaderChips(streak = true, timer = true, pet = true), fit(156, name = 30))
-        assertEquals(ZekkPet.HeaderChips(streak = true, timer = false, pet = true), fit(156))
-        // Without a pet the timer stays, as before.
-        assertEquals(ZekkPet.HeaderChips(streak = true, timer = true, pet = false), fit(104, pet = 0))
+        // Without a pet the timer pill is on the line, and stays whenever it fits.
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = true, pet = false), fit(104, timer = 42, pet = 0))
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = true, pet = false), fit(83, timer = 42, pet = 0))
         // Chips that aren't there never show.
-        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(104, streak = 0, timer = 0))
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(104, streak = 0))
         // A chip that can't fit whole is left out, never squeezed; the pet,
         // the only way into its card, keeps its place before the streak.
         assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(60))
@@ -286,9 +284,22 @@ class ZekkPetTest {
         assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(82, streak = 47))
         // Both show whenever both fit.
         assertEquals(ZekkPet.HeaderChips(streak = true, timer = false, pet = true), fit(77))
-        // With the streak gone the timer still needs the name's room.
-        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(76, timer = 30))
-        assertEquals(ZekkPet.HeaderChips(streak = false, timer = true, pet = true), fit(76, name = 10, timer = 30))
+    }
+
+    @Test fun aTimerNextToAPetIsTheAvatarsBadge() {
+        // Off: nothing, pet or not.
+        assertNull(ZekkPet.headerTimerCue(null, petShown = false))
+        assertNull(ZekkPet.headerTimerCue(null, petShown = true))
+        assertNull(ZekkPet.headerTimerCue(0, petShown = true))
+        // On without a pet: the pill on the title line.
+        assertEquals(ZekkPet.TimerCue.Pill, ZekkPet.headerTimerCue(86_400, petShown = false))
+        // On next to a pet: the avatar's badge, which needs no room on the
+        // line. A 360dp phone with a 12-day streak, a pet and a 1-day timer
+        // seats the pet and the streak (104dp: 36 + 41) and still shows the
+        // timer, where the 42dp pill used to give way.
+        assertEquals(ZekkPet.TimerCue.Badge, ZekkPet.headerTimerCue(86_400, petShown = true))
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = false, pet = true), ZekkPet.fitHeaderChips(104, streak = 41, timer = 0, pet = 36))
+        assertEquals(ZekkPet.TimerCue.Badge, ZekkPet.headerTimerCue(30, petShown = true))
     }
 
     // ── The adopt bar ───────────────────────────────────────────────────────

@@ -263,24 +263,45 @@ object ZekkPet {
      * Fit the DM header's title line: the name, then the streak pill, the
      * pet and the disappearing-timer pill. Each chip's width includes its
      * leading gap (0 = not there); [room] is the line's width after the name
-     * tag, and [name] the name's own width, all in one unit. A chip shows
-     * whole or not at all, never squeezed (the pet would be drawn off-centre
-     * in a sliver), and the name, which truncates, takes what they leave.
-     * The room goes to the pet first, as it is the only way into the pet
-     * card, then to the streak (also in the DM list), then to the timer
-     * (also on Conversation settings); they are still placed in line order.
-     * Next to the pet, the timer pill gives way once the name would get less
-     * than [nameRoom] (or its own width, if that's less): web hides it on
-     * phones next to the pet too. Otherwise a chip is left out only when it
-     * can't fit at all.
+     * tag, in the same unit. A chip shows whole or not at all, never
+     * squeezed (the pet would be drawn off-centre in a sliver), and the
+     * name, which truncates, takes what they leave. The room goes to the pet
+     * first, as it is the only way into the pet card, then to the streak
+     * (also in the DM list), then to the timer (also on Conversation
+     * settings); they are still placed in line order, and a chip is left out
+     * only when it can't fit at all. Next to a pet the timer isn't on this
+     * line: it's the avatar's badge there ([headerTimerCue]).
      */
-    fun fitHeaderChips(room: Int, name: Int, streak: Int, timer: Int, pet: Int, nameRoom: Int): HeaderChips {
+    fun fitHeaderChips(room: Int, streak: Int, timer: Int, pet: Int): HeaderChips {
         var left = room
-        fun take(width: Int, on: Boolean): Boolean = (on && width in 1..left).also { if (it) left -= width }
-        val p = take(pet, true)
-        val s = take(streak, true)
-        val t = take(timer, timer > 0 && (pet <= 0 || left - timer >= minOf(name, nameRoom)))
+        fun take(width: Int): Boolean = (width in 1..left).also { if (it) left -= width }
+        val p = take(pet)
+        val s = take(streak)
+        val t = take(timer)
         return HeaderChips(streak = s, timer = t, pet = p)
+    }
+
+    /** How the DM header shows a disappearing timer that's on. */
+    enum class TimerCue {
+        /** The pill on the title line: the stopwatch and "1d". */
+        Pill,
+        /** A small disc with the stopwatch on the avatar's bottom-start
+         *  corner, as on iOS. */
+        Badge,
+    }
+
+    /**
+     * How the DM header shows the disappearing timer: null when it's off.
+     * Next to a pet ([petShown]) it's the avatar's badge, which takes no
+     * room on the title line, so it never hides there: beside the pet and
+     * the streak most phones have no room left for the pill, and it's the
+     * open DM's only cue that messages disappear (web shrinks it to its
+     * stopwatch there). Otherwise it's the pill, as before the pet.
+     */
+    fun headerTimerCue(timerSeconds: Int?, petShown: Boolean): TimerCue? = when {
+        timerSeconds == null || timerSeconds <= 0 -> null
+        petShown -> TimerCue.Badge
+        else -> TimerCue.Pill
     }
 
     /** The header pet's spoken label. [name]: the pet's name as this viewer

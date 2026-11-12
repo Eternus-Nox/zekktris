@@ -1066,6 +1066,12 @@ private fun ChatHeader(
             Icon(Icons.Filled.ChevronLeft, "Back", tint = ZkInk.ink2, modifier = Modifier.size(24.dp))
         }
         if (isDm && channel != null) {
+            // The Zekk Pet beside the streak: 1:1 DMs only, an egg while the
+            // invite is open. Next to it the disappearing timer is the
+            // avatar's badge rather than the title line's pill.
+            val headerPet = state.dmPets[channel.id]?.pet?.takeIf { state.zekkPetEnabled && channel.type == "dm" }
+            val timerSecs = state.dmTimerByChannel[channel.id]
+            val timerCue = ZekkPet.headerTimerCue(timerSecs, petShown = headerPet != null)
             // DM: avatar + presence + name + streak, iOS-style rich header.
             Row(
                 Modifier.align(Alignment.CenterStart).padding(start = 74.dp).fillMaxWidth(),
@@ -1102,6 +1108,32 @@ private fun ChatHeader(
                                 Icons.Filled.Lock, "Encrypted",
                                 tint = if (state.e2eeUnlocked.contains(channel.id)) ZkStatus.online else ZkInk.ink3,
                                 modifier = Modifier.size(7.dp),
+                            )
+                        }
+                    }
+                    // Disappearing-messages badge next to a pet: the same
+                    // small themed disc, bottom-start (the presence dot holds
+                    // bottom-end), as on iOS. Beside the pet and the streak
+                    // the title line has no room left for the pill on most
+                    // phones, and it's the open DM's only cue that messages
+                    // disappear. Tapping it opens the Disappearing Messages
+                    // screen, like the pill.
+                    if (timerCue == ZekkPet.TimerCue.Badge && timerSecs != null) {
+                        Box(
+                            Modifier
+                                .align(Alignment.BottomStart)
+                                .offset(x = (-4).dp, y = 4.dp)
+                                .size(13.dp)
+                                .clip(CircleShape)
+                                .background(p.bg2)
+                                .border(1.dp, p.accent.copy(alpha = 0.45f), CircleShape)
+                                .clickable(onClick = onDisappearing),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Outlined.Timer, "Disappearing messages: ${Disappearing.formatLong(timerSecs)}",
+                                tint = p.accent,
+                                modifier = Modifier.size(8.dp),
                             )
                         }
                     }
@@ -1142,17 +1174,17 @@ private fun ChatHeader(
                     // Zekk Pet next to the streak (an egg while the invite is
                     // open); tapping it opens the pet card. 1:1 DMs only.
                     pet = {
-                        if (state.zekkPetEnabled && channel.type == "dm") {
-                            state.dmPets[channel.id]?.pet?.let { pet ->
-                                DmPetButton(pet, onPet, name = petDisplayName(pet.name, petNamesMasked(state)))
-                            }
+                        headerPet?.let { pet ->
+                            DmPetButton(pet, onPet, name = petDisplayName(pet.name, petNamesMasked(state)))
                         }
                     },
                     // Disappearing messages on: timer + short value ("1d",
                     // "30s"); tapping it opens the Disappearing Messages screen,
-                    // as in Signal. Next to the pet on a narrow phone it gives
-                    // way (it's on Conversation settings too), as on web.
-                    timer = { state.dmTimerByChannel[channel.id]?.let { secs -> DisappearingPill(secs, onDisappearing) } },
+                    // as in Signal. Next to a pet it's the avatar's badge
+                    // instead (web shrinks it to its stopwatch there).
+                    timer = {
+                        if (timerCue == ZekkPet.TimerCue.Pill && timerSecs != null) DisappearingPill(timerSecs, onDisappearing)
+                    },
                 )
                 // Search leads the trailing action group; hidden for E2EE
                 // channels (iOS MessageViews.swift:493-500).
@@ -1228,10 +1260,11 @@ private enum class TitleSlot { Tag, Name, Streak, Pet, Timer }
 
 /**
  * The DM header's title line: the name tag, the name, then the streak pill,
- * the Zekk Pet next to it and the disappearing-timer pill, centred
- * vertically. A Row measures the chips before a weighted name and squeezes
- * whichever comes last — on a 360dp phone the pet into a 15dp sliver and
- * the name to nothing — so this lays each chip out whole or leaves it out, the pet
+ * the Zekk Pet next to it and the disappearing-timer pill (empty next to a
+ * pet: the timer is the avatar's badge there), centred vertically. A Row
+ * measures the chips before a weighted name and squeezes whichever comes
+ * last — on a 360dp phone the pet into a 15dp sliver and the name to
+ * nothing — so this lays each chip out whole or leaves it out, the pet
  * (the way into its card) before the others ([ZekkPet.fitHeaderChips]), and
  * gives the name, which truncates, the rest.
  * A slot that draws nothing measures 0 wide and counts as absent.
@@ -1265,17 +1298,14 @@ private fun DmTitleLine(
         // In line order: the pet sits next to the streak pill, as on web.
         val chips = listOf(TitleSlot.Streak, TitleSlot.Pet, TitleSlot.Timer).map { slot(it).measure(natural) }
         fun withGap(c: Placeable): Int = if (c.width > 0) c.width + gap else 0
-        val nameSlot = slot(TitleSlot.Name)
         val fit = ZekkPet.fitHeaderChips(
             room = afterTag,
-            name = nameSlot.maxIntrinsicWidth(constraints.maxHeight),
             streak = withGap(chips[0]), pet = withGap(chips[1]), timer = withGap(chips[2]),
-            nameRoom = 56.dp.roundToPx(),
         )
         val keep = listOf(fit.streak, fit.pet, fit.timer)
         val shown = chips.filterIndexed { i, _ -> keep[i] }
         val chipsWidth = shown.sumOf { it.width + gap }
-        val nameP = nameSlot.measure(natural.copy(maxWidth = (afterTag - chipsWidth).coerceAtLeast(0)))
+        val nameP = slot(TitleSlot.Name).measure(natural.copy(maxWidth = (afterTag - chipsWidth).coerceAtLeast(0)))
         val height = maxOf(tagP.height, nameP.height, shown.maxOfOrNull { it.height } ?: 0)
             .coerceIn(constraints.minHeight, constraints.maxHeight)
         val width = (tagP.width + nameP.width + chipsWidth).coerceIn(constraints.minWidth, constraints.maxWidth)
