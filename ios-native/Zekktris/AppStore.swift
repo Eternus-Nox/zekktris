@@ -6167,6 +6167,15 @@ final class AppStore: ObservableObject {
         // A DM_PET_UPDATE or our own change landed meanwhile: keep its pet.
         if (dmPetRevision[channelId] ?? 0) != revision, let known = dmPets[channelId] {
             next.pet = known.pet
+            // The pet went away while this fetch was in flight (cancelled,
+            // expired, ran away), but the answer still saw it — and the server
+            // says "not eligible" whenever a pet exists. Work it out as the
+            // server would for no pet, from the answer's live streak and gate;
+            // otherwise the Adopt bar stays hidden and nothing refetches (the
+            // pet-gone refetch only runs for a DM that had already loaded).
+            if known.pet == nil, state.pet != nil {
+                next.eligible = state.canAct && state.streak >= state.minStreak
+            }
         }
         if dmPets[channelId] != next { dmPets[channelId] = next }
         schedulePetRefresh()
