@@ -1098,6 +1098,35 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     expect((await notices(p.dm)).at(-1)!.content).toBe('Bo renamed the pet to 🐣\u200D🔥.');
   });
 
+  it("a notice's fallback content can't carry a masked link or a mention token from a name; its metadata keeps the name", async () => {
+    // Old apps render `content` as an ordinary message from its author.
+    const unsafe = (s: string) => /\]\(|<[@#]|@(everyone|here)/.test(s);
+    // B's link in a name the sweep posts as A, and A's display name in B's accept.
+    const p = await adopted();
+    const q = await pair();
+    await setName(q.a, '[Ari](https://e.io) @here');
+    await setStreak(q, { streak: 4, lastCountedDay: day(-1) });
+    expect((await invite(q.a, q.dm)).status).toBe(200);
+    expect((await accept(q.b, q.dm)).status).toBe(200);
+    const adoptedNotice = (await notices(q.dm)).at(-1)!;
+    expect(adoptedNotice.content).toBe('Bo and [Ari]⁠(https://e.io) @⁠here adopted a Zekk Pet! 🥚');
+
+    expect((await rename(p.b, p.dm, '[x](https://e.io)')).status).toBe(200);
+    expect((await rename(q.b, q.dm, '<@1> <#2> \\<@&3>')).status).toBe(200);
+    expect((await notices(p.dm)).at(-1)!.content).toBe('Bo renamed the pet to [x]⁠(https://e.io).');
+    for (const dm of [p.dm, q.dm]) await setRow(dm, { lastFedDay: D0, taskDay: D0 });
+    at(`${day(2)}T00:05:00Z`);
+    await sweepPets();
+    const [pa, qa] = [(await notices(p.dm)).at(-1)!, (await notices(q.dm)).at(-1)!];
+    expect(pa.content).toBe('[x]⁠(https://e.io) fell asleep. 😴 Say hi to each other within 2 days to wake it up.');
+    expect(qa.content).toBe(
+      '<⁠@1> <⁠#2> \\⁠<⁠@&3> fell asleep. 😴 Say hi to each other within 2 days to wake it up.',
+    );
+    for (const n of [adoptedNotice, pa, qa]) expect(unsafe(n.content), n.content).toBe(false);
+    expect(pa.metadata).toMatchObject({ event: 'asleep', petName: '[x](https://e.io)' });
+    expect(qa.metadata).toMatchObject({ event: 'asleep', petName: '<@1> <#2> \\<@&3>' });
+  });
+
   it('a rename runs the parental watch-word scan, flagged against its notice', async () => {
     const friend = await createUser();
     await setName(friend, 'Bo');
@@ -1370,5 +1399,17 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     expect(petNoticeText('awake', p)).toBe('Zekk woke up! 🎉');
     expect(petNoticeText('ran_away', p)).toBe('Zekk ran away. Keep a 3-day streak to adopt a new one.');
     expect(petNoticeText('renamed', p)).toBe('Sam renamed the pet to Zekk.');
+    // Names are defused for old apps' markdown and mention scan; emphasis stays.
+    const odd = { petName: '[a](b) <@1>', stage: 'kid' as const, actorName: 'x\\]', otherName: '@everyone_*' };
+    expect(petNoticeText('hatched', odd)).toBe('[a]⁠(b) <⁠@1> hatched! 🐣');
+    expect(petNoticeText('adopted', odd)).toBe('x\\⁠]⁠ and @⁠everyone_* adopted a Zekk Pet! 🥚');
+    // With no backslash-escapes, a name reads unchanged where `content` is shown
+    // as is (installed Android, the web, iOS search): the joiners are invisible.
+    for (const name of ['[AFK] Ari', 'Mochi [v2]', '¯\\_(ツ)_/¯', '\\(^o^)/', 'a\\\\b']) {
+      const shown = (e: 'hatched' | 'renamed') =>
+        petNoticeText(e, { ...p, petName: name, actorName: name }).replace(/\u2060/g, '');
+      expect(shown('hatched')).toBe(`${name} hatched! 🐣`);
+      expect(shown('renamed')).toBe(`${name} renamed the pet to ${name}.`);
+    }
   });
 });

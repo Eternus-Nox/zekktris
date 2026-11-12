@@ -313,34 +313,64 @@ function sameDTO(a: PetDTO, b: PetDTO): boolean {
 // ── Notices ─────────────────────────────────────────────────────────────────
 
 /**
+ * Defuse a user-chosen name (the pet's, or a display name) for a notice's
+ * fallback `content`. Installed apps that predate 'system_pet' render that
+ * content as an ordinary message — a mention scan over the raw string, then
+ * inline markdown (CommonMark on iOS) — in a bubble authored by one of the
+ * two people, often carrying the name the other one chose. Left raw,
+ * `[Claim](https://evil.io)` would show there as a masked link and `<@id>` as
+ * someone's profile chip.
+ *  - An invisible word joiner (U+2060, which normalizePetName strips from
+ *    names) goes after every `]`, so no link, image, reference or
+ *    `^[…](…)` attribute can form (each needs `(`, `[` or `:` right after
+ *    the `]`), and after every `\`, so it is never an escape and prints once
+ *    on every renderer. No backslash-escapes: Android and the web have none,
+ *    so they would print them (`\[AFK\] Ari`).
+ *  - The same joiner goes after every `<` and after the `@` of @everyone /
+ *    @here, so no autolink, inline HTML or mention token (`<@id>`, `<@&id>`,
+ *    `<#id>`) can form on either app.
+ * Emphasis characters stay: at worst they style the name itself, and an
+ * escape would print as a backslash on Android (`cool\_guy`). The metadata
+ * keeps the raw name; new clients show it as plain text.
+ */
+export function escapeNoticeInline(s: string): string {
+  return s
+    .replace(/[\\\]]/g, '$&⁠')
+    .replace(/</g, '<⁠')
+    .replace(/@(everyone|here)/g, '@⁠$1');
+}
+
+/**
  * The readable third-person `content` of a 'system_pet' notice — what
  * installed apps that don't know the type show as-is. New clients build their
- * own "You…" line from the metadata instead.
+ * own "You…" line from the metadata instead. Every name in it goes through
+ * escapeNoticeInline.
  */
 export function petNoticeText(
   event: PetNoticeEvent,
   p: { petName: string; stage: PetStage; actorName?: string; otherName?: string },
 ): string {
-  const actor = p.actorName ?? 'Someone';
+  const actor = escapeNoticeInline(p.actorName ?? 'Someone');
+  const pet = escapeNoticeInline(p.petName);
   switch (event) {
     case 'invited':
       return `${actor} wants to raise a Zekk Pet together. 🥚`;
     case 'adopted':
-      return `${actor} and ${p.otherName ?? 'Someone'} adopted a Zekk Pet! 🥚`;
+      return `${actor} and ${escapeNoticeInline(p.otherName ?? 'Someone')} adopted a Zekk Pet! 🥚`;
     case 'hatched':
-      return `${p.petName} hatched! 🐣`;
+      return `${pet} hatched! 🐣`;
     case 'evolved': {
       const label = petStageLabel(p.stage);
-      return `${p.petName} grew into ${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label}!`;
+      return `${pet} grew into ${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label}!`;
     }
     case 'asleep':
-      return `${p.petName} fell asleep. 😴 Say hi to each other within 2 days to wake it up.`;
+      return `${pet} fell asleep. 😴 Say hi to each other within 2 days to wake it up.`;
     case 'awake':
-      return `${p.petName} woke up! 🎉`;
+      return `${pet} woke up! 🎉`;
     case 'ran_away':
-      return `${p.petName} ran away. Keep a ${PET_MIN_STREAK}-day streak to adopt a new one.`;
+      return `${pet} ran away. Keep a ${PET_MIN_STREAK}-day streak to adopt a new one.`;
     case 'renamed':
-      return `${actor} renamed the pet to ${p.petName}.`;
+      return `${actor} renamed the pet to ${pet}.`;
   }
 }
 
