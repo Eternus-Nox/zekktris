@@ -40,7 +40,7 @@ import {
   petTaskRows,
 } from '../lib/zekkPet';
 import { useAppStateSelector } from '../state/AppState';
-import { PetInviteActions, usePetActions, usePetDisplayName } from './ZekkPet';
+import { PetInviteActions, refocusIfDropped, usePetActions, usePetDisplayName } from './ZekkPet';
 
 /** How long one tap heart floats (matches zk-pet-heart in index.css). */
 const HEART_MS = 800;
@@ -51,19 +51,6 @@ const HEART_MS = 800;
 export function restoreFocus(opener: HTMLElement | null, fallback: (() => void) | undefined): void {
   if (opener?.isConnected) opener.focus();
   else fallback?.();
-}
-
-/** The focused control left the card while the card stays open (the rename
-    field closed, the invite view became the pet card, the name input was
-    disabled while saving): focus fell to <body>, so put it on `target`. Left
-    alone when focus is still somewhere on the page. */
-export function refocusIfDropped(
-  target: HTMLElement | null,
-  doc: Pick<Document, 'activeElement' | 'body'> = document,
-): void {
-  const active = doc.activeElement;
-  if (active && active !== doc.body && active.isConnected) return;
-  target?.focus();
 }
 
 export function ZekkPetModal({
@@ -83,6 +70,13 @@ export function ZekkPetModal({
 }) {
   const petState = useAppStateSelector((v) => v.state.dmPets[channelId]);
   const pet = petState?.pet ?? null;
+  // Re-read on open: whether Accept and Rename may run (canAct) also changes
+  // with things this client never hears about — the other person blocking,
+  // a mute, their supervision.
+  const loadDmPet = useAppStateSelector((v) => v.loadDmPet);
+  useEffect(() => {
+    void loadDmPet(channelId).catch(() => undefined);
+  }, [channelId, loadDmPet]);
   const { busy, run } = usePetActions(channelId);
   const [editing, setEditing] = useState(false);
   const canAct = petCanAct(petState);

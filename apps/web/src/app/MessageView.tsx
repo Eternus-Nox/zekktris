@@ -1093,9 +1093,15 @@ export function MessageView({
         )}
       </header>
       {/* Zekk Pet adopt / invite bar. Keyed by channel so a pending action
-          never carries over to another DM. */}
+          never carries over to another DM. When it goes while focused,
+          focus moves to the gear, as it does from the pet card. */}
       {petsHere && petBannerView && (
-        <PetAdoptBanner key={channel.id} channelId={channel.id} banner={petBannerView} />
+        <PetAdoptBanner
+          key={channel.id}
+          channelId={channel.id}
+          banner={petBannerView}
+          returnFocus={focusDmSettingsToggle}
+        />
       )}
 
       <div className="flex-1 min-h-0 flex relative">

@@ -3271,30 +3271,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'SUPERVISION_SET', supervision: r });
   }, [rest]);
 
-  /**
-   * Optimistically apply a relationship change to local state. Caller
-   * is responsible for firing the REST mutation; we expose this so
-   * UIs (ProfileCard, friend list) can update the global view as
-   * they act, instead of waiting for the next loadRelationships()
-   * round-trip. Pass `null` to remove a relationship row entirely.
-   */
-  const applyRelationship = useCallback(
-    (
-      user: PublicUser,
-      type: 'friend' | 'incoming_request' | 'outgoing_request' | 'blocked' | null,
-    ) => {
-      if (type === null) {
-        dispatch({ type: 'RELATIONSHIP_REMOVE', userId: user.id });
-      } else {
-        dispatch({
-          type: 'RELATIONSHIP_UPSERT',
-          relationship: { type, createdAt: new Date().toISOString(), user },
-        });
-      }
-    },
-    [],
-  );
-
   const replaceUser = useCallback((u: PublicUser) => {
     dispatch({ type: 'USER_REPLACE', user: u });
   }, []);
@@ -3574,6 +3550,37 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       }
     },
     [rest, bumpDmPetEpoch, loadDmPet],
+  );
+
+  /**
+   * Optimistically apply a relationship change to local state. Caller
+   * is responsible for firing the REST mutation; we expose this so
+   * UIs (ProfileCard, friend list) can update the global view as
+   * they act, instead of waiting for the next loadRelationships()
+   * round-trip. Pass `null` to remove a relationship row entirely.
+   */
+  const applyRelationship = useCallback(
+    (
+      user: PublicUser,
+      type: 'friend' | 'incoming_request' | 'outgoing_request' | 'blocked' | null,
+    ) => {
+      if (type === null) {
+        dispatch({ type: 'RELATIONSHIP_REMOVE', userId: user.id });
+      } else {
+        dispatch({
+          type: 'RELATIONSHIP_UPSERT',
+          relationship: { type, createdAt: new Date().toISOString(), user },
+        });
+      }
+      // A block or unblock opens or closes the pet actions of our DM with
+      // them (GET's canAct), and no event says so: re-read its pet. The
+      // callers apply this once their REST change has answered, so the
+      // fetch sees it.
+      for (const channelId of petDmIdsWithUser(stateRef.current, user.id)) {
+        void loadDmPet(channelId).catch(() => undefined);
+      }
+    },
+    [loadDmPet],
   );
 
   // ── Disappearing messages: local expiry ───────────────────────────────
@@ -4736,6 +4743,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // every other supervision refresh path.
       gateway.on<unknown>(GatewayEvent.FAMILY_SUPERVISION_UPDATE, () => {
         void loadSupervision().catch(() => undefined);
+        // A restriction applied or lifted also opens or closes the open DM's
+        // pet actions (GET's canAct), which no pet event covers. A DM that
+        // isn't open re-reads its pet when it opens.
+        const openChannelId = routeChannelId();
+        const fresh = stateRef.current;
+        if (openChannelId && fresh.zekkPetEnabled && openChannelId in fresh.dmPets) {
+          void loadDmPet(openChannelId).catch(() => undefined);
+        }
       }),
       gateway.on<VoiceState>(GatewayEvent.VOICE_STATE_UPDATE, (v) => {
         // ── Ambient join/leave blips ──────────────────────────────────────
@@ -4861,13 +4876,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           readyOnceRef.current = true;
           return;
         }
-        // AppState doesn't track the active channel, so derive it from the
-        // route (the router encodes it as the last segment of
-        // /channels/<...>/<channelId>).
-        const openChannelId =
-          typeof window !== 'undefined'
-            ? window.location.pathname.match(/\/channels\/[^/]+\/([^/?#]+)/)?.[1] ?? null
-            : null;
+        const openChannelId = routeChannelId();
         // Closed chats missed everything sent during the gap, and only the
         // open one is resynced below. Drop their caches before anything else
         // lands, so each reopens with a full latest-window load.
@@ -5364,6 +5373,35 @@ export function isUserBlocked(
   userId: string,
 ): boolean {
   return relationships.some((r) => r.type === 'blocked' && r.user.id === userId);
+}
+
+/**
+ * Zekk Pets: the 1:1 DMs with `userId` whose pet is loaded. Whether their
+ * pet may be adopted, accepted or renamed (GET's `canAct`, and `eligible`,
+ * which needs it) follows a block or unblock between the two of them, and
+ * no pet event says so — so applyRelationship re-reads these.
+ */
+export function petDmIdsWithUser(
+  state: Pick<State, 'zekkPetEnabled' | 'dmChannels' | 'dmPets'>,
+  userId: string,
+): string[] {
+  if (!state.zekkPetEnabled) return [];
+  return state.dmChannels
+    .filter(
+      (c) => c.type === 'dm' && c.id in state.dmPets && (c.recipients ?? []).some((r) => r.id === userId),
+    )
+    .map((c) => c.id);
+}
+
+/**
+ * The channel the route shows. AppState doesn't track the active channel,
+ * so it's read from the URL (the router encodes it as the last segment of
+ * /channels/<...>/<channelId>).
+ */
+function routeChannelId(): string | null {
+  return typeof window !== 'undefined'
+    ? window.location.pathname.match(/\/channels\/[^/]+\/([^/?#]+)/)?.[1] ?? null
+    : null;
 }
 
 

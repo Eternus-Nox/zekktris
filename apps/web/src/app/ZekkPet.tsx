@@ -18,7 +18,7 @@
  * lib/zekkPet so the web reads like the native apps.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ApiError, type PetDTO } from '@zekktris/client';
 import { ZekkPetArt } from '../lib/ZekkPetArt';
 import { X } from '../lib/icons';
@@ -66,6 +66,37 @@ export function DmPetButton({ pet, onOpen }: { pet: PetDTO; onOpen: () => void }
       />
     </button>
   );
+}
+
+// ── Focus ────────────────────────────────────────────────────────────────
+
+/** The focused control left the card or the bar while it stays (the rename
+    field closed, the invite view became the pet card, the buttons were
+    disabled while an action ran): focus fell to <body>, so put it on
+    `target`. Left alone when focus is still somewhere on the page. */
+export function refocusIfDropped(
+  target: HTMLElement | null,
+  doc: Pick<Document, 'activeElement' | 'body'> = document,
+): void {
+  const active = doc.activeElement;
+  if (active && active !== doc.body && active.isConnected) return;
+  target?.focus();
+}
+
+/** The adopt bar is going away (Accept adopted the pet, Not now / Cancel
+    ended the invite): does it take the viewer's focus with it? Yes when
+    focus is on one of its controls — or, while one of its own actions runs,
+    when focus is nowhere, since the disabled buttons may already have
+    dropped it to <body>. Focus somewhere else on the page is left alone. */
+export function barHoldsFocus(
+  bar: Pick<HTMLElement, 'contains'> | null,
+  acting: boolean,
+  doc: Pick<Document, 'activeElement' | 'body'> = document,
+): boolean {
+  if (!bar) return false;
+  const active = doc.activeElement;
+  if (active && bar.contains(active)) return true;
+  return acting && (!active || active === doc.body || !active.isConnected);
 }
 
 // ── Actions ──────────────────────────────────────────────────────────────
@@ -167,14 +198,51 @@ export function PetInviteActions({
 
 /** The slim bar under the DM header. MessageView keys it by channel so a
     switch never carries a pending action over to another DM. */
-export function PetAdoptBanner({ channelId, banner }: { channelId: string; banner: PetBanner }) {
+export function PetAdoptBanner({
+  channelId,
+  banner,
+  returnFocus,
+}: {
+  channelId: string;
+  banner: PetBanner;
+  /** Focuses something that stays on the page, for when the bar goes away
+      with focus on one of its buttons. */
+  returnFocus?: () => void;
+}) {
   const key = `${channelId}:${banner.kind}`;
   const hidden = usePetBannerDismissed(key);
   const { busy, run } = usePetActions(channelId);
   const canAct = useAppStateSelector((v) => petCanAct(v.state.dmPets[channelId]));
+
+  // Accept, Not now and Cancel take the whole bar away (MessageView stops
+  // rendering it), and the focused button with it. A layout cleanup runs
+  // before React removes the bar, so it still sees where focus is. Read
+  // through refs: the cleanup must see the latest callback and busy state.
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const returnFocusRef = useRef(returnFocus);
+  returnFocusRef.current = returnFocus;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  useLayoutEffect(
+    () => () => {
+      if (!barHoldsFocus(barRef.current, busyRef.current !== null)) return;
+      const f = returnFocusRef.current;
+      queueMicrotask(() => f?.());
+    },
+    [],
+  );
+  // A failed action keeps the bar, but its buttons were disabled while it
+  // ran, which can drop focus.
+  const wasBusy = useRef(busy);
+  useEffect(() => {
+    if (wasBusy.current && !busy) refocusIfDropped(barRef.current?.querySelector('button') ?? null);
+    wasBusy.current = busy;
+  }, [busy]);
+
   if (hidden) return null;
   return (
     <div
+      ref={barRef}
       role="status"
       className="px-4 py-1.5 border-b bg-bg-2/60 flex items-center gap-2 text-sm"
       style={{ borderBottomColor: 'var(--zk-line-soft)' }}
@@ -189,7 +257,12 @@ export function PetAdoptBanner({ channelId, banner }: { channelId: string; banne
       />
       <button
         type="button"
-        onClick={() => dismissPetBanner(key)}
+        onClick={() => {
+          // Hiding keeps the bar mounted, so the cleanup above doesn't run.
+          const hadFocus = barHoldsFocus(barRef.current, false);
+          dismissPetBanner(key);
+          if (hadFocus) returnFocus?.();
+        }}
         className="shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-ink-3 hover:text-ink-1 hover:bg-bg-3 transition-colors"
         aria-label="Dismiss"
         title="Dismiss"

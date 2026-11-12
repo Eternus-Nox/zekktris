@@ -7,6 +7,7 @@ import {
   PET_STAGES,
   PET_TASKS,
   normalizePetName,
+  type Channel,
   type DmPetState,
   type Message,
   type PetDTO,
@@ -32,8 +33,8 @@ import {
   petTaskRows,
   utcWeekday,
 } from '../src/lib/zekkPet';
-import { PetInviteActions } from '../src/app/ZekkPet';
-import { refocusIfDropped, restoreFocus } from '../src/app/ZekkPetModal';
+import { PetInviteActions, barHoldsFocus, refocusIfDropped } from '../src/app/ZekkPet';
+import { restoreFocus } from '../src/app/ZekkPetModal';
 import {
   clearPetBannerDismissals,
   dismissPetBanner,
@@ -61,6 +62,7 @@ import {
   initialAppState,
   isChannelUnread,
   ownEchoReadState,
+  petDmIdsWithUser,
 } from '../src/state/AppState';
 import { newestConfirmedId, planReadAck } from '../src/lib/readAck';
 import { serverNow, timeoutUntil } from '../src/lib/disappearing';
@@ -289,6 +291,41 @@ describe('adopt bar', () => {
     expect(html('adopt')).toContain('Adopt');
     expect(html('adopt', false)).toBe('');
     expect(html('waiting', false)).toContain('Cancel');
+  });
+
+  it('hands focus on to the gear when it goes with focus on it', () => {
+    // Accept / Not now / Cancel take the bar away (the pet is adopted, the
+    // invite is gone), and the X hides it: focus must not drop to <body>.
+    const body = { isConnected: true } as unknown as HTMLElement;
+    const button = { isConnected: true } as unknown as HTMLElement;
+    const composer = { isConnected: true } as unknown as HTMLElement;
+    const bar = { contains: (n: Node | null) => n === (button as unknown as Node) };
+    const doc = (activeElement: Element | null) => ({ activeElement, body: body as HTMLBodyElement });
+    // Focus on one of its buttons, acting or not.
+    expect(barHoldsFocus(bar, false, doc(button))).toBe(true);
+    expect(barHoldsFocus(bar, true, doc(button))).toBe(true);
+    // Its own action disabled the button, which already dropped focus.
+    expect(barHoldsFocus(bar, true, doc(body))).toBe(true);
+    expect(barHoldsFocus(bar, true, doc(null))).toBe(true);
+    // The other person cancelled while the viewer typed: leave focus alone,
+    // and don't pull it out of nowhere either.
+    expect(barHoldsFocus(bar, false, doc(composer))).toBe(false);
+    expect(barHoldsFocus(bar, true, doc(composer))).toBe(false);
+    expect(barHoldsFocus(bar, false, doc(body))).toBe(false);
+    // Already hidden (no bar on the page).
+    expect(barHoldsFocus(null, true, doc(body))).toBe(false);
+
+    // Wired up: a layout cleanup (it runs before React removes the bar),
+    // the X, a failed action, and MessageView's gear as the target.
+    const src = readFileSync(new URL('../src/app/ZekkPet.tsx', import.meta.url), 'utf8');
+    expect(src).toMatch(
+      /useLayoutEffect\(\s*\(\) => \(\) => \{\s*if \(!barHoldsFocus\(barRef\.current, busyRef\.current !== null\)\) return;/,
+    );
+    expect(src).toContain('ref={barRef}');
+    expect(src).toMatch(/const hadFocus = barHoldsFocus\(barRef\.current, false\);\s*dismissPetBanner\(key\);\s*if \(hadFocus\) returnFocus\?\.\(\);/);
+    expect(src).toContain("if (wasBusy.current && !busy) refocusIfDropped(barRef.current?.querySelector('button') ?? null);");
+    const view = readFileSync(new URL('../src/app/MessageView.tsx', import.meta.url), 'utf8');
+    expect(view).toMatch(/<PetAdoptBanner[^>]*returnFocus=\{focusDmSettingsToggle\}/);
   });
 
   it('forgets dismissed bars when the signed-in account changes', () => {
@@ -907,6 +944,41 @@ describe('AppState pet map', () => {
       keepPet: true,
     });
     expect(none.dmPets['9']!.eligible).toBe(false);
+  });
+
+  it("re-reads the pet of a DM with someone the viewer blocks or unblocks", () => {
+    // Blocking Sam turns canAct off (Adopt, Accept and Rename would 404),
+    // unblocking turns it back on, and no pet event says so.
+    const dm = (id: string, type: 'dm' | 'group_dm', ...peers: string[]) =>
+      ({ id, type, recipients: peers.map((p) => ({ id: p })) }) as unknown as Channel;
+    const loaded: DmPetState = { pet: null, eligible: true, streak: 5, minStreak: 3, canAct: true };
+    const state = {
+      zekkPetEnabled: true,
+      dmChannels: [dm('9', 'dm', PEER), dm('8', 'dm', '300'), dm('7', 'group_dm', PEER, '300'), dm('6', 'dm', PEER)],
+      dmPets: { '9': loaded, '8': loaded, '7': loaded },
+    };
+    // Only 1:1 DMs with them whose pet has loaded ('6' fetches when it opens).
+    expect(petDmIdsWithUser(state, PEER)).toEqual(['9']);
+    expect(petDmIdsWithUser(state, '300')).toEqual(['8']);
+    expect(petDmIdsWithUser(state, '400')).toEqual([]);
+    expect(petDmIdsWithUser({ ...state, zekkPetEnabled: false }, PEER)).toEqual([]);
+    expect(petDmIdsWithUser({ ...state, dmChannels: [dm('9', 'dm')] }, PEER)).toEqual([]);
+
+    // Wired into applyRelationship (block, unblock, friend changes) and the
+    // supervision event; the card re-reads when it opens.
+    const appState = readFileSync(new URL('../src/state/AppState.tsx', import.meta.url), 'utf8');
+    expect(appState).toMatch(
+      /const applyRelationship = useCallback\([\s\S]*?for \(const channelId of petDmIdsWithUser\(stateRef\.current, user\.id\)\) \{\s*void loadDmPet\(channelId\)\.catch\(\(\) => undefined\);\s*\}\s*\},\s*\[loadDmPet\],/,
+    );
+    expect(appState).toMatch(
+      /FAMILY_SUPERVISION_UPDATE, \(\) => \{[\s\S]*?openChannelId in fresh\.dmPets\) \{\s*void loadDmPet\(openChannelId\)/,
+    );
+    // Declared after loadDmPet, which its deps read.
+    expect(appState.indexOf('const applyRelationship = useCallback')).toBeGreaterThan(
+      appState.indexOf('const loadDmPet = useCallback'),
+    );
+    const modal = readFileSync(new URL('../src/app/ZekkPetModal.tsx', import.meta.url), 'utf8');
+    expect(modal).toMatch(/useEffect\(\(\) => \{\s*void loadDmPet\(channelId\)\.catch\(\(\) => undefined\);\s*\}, \[channelId, loadDmPet\]\);/);
   });
 });
 
