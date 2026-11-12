@@ -28,6 +28,8 @@ import {
   petMoodView,
   petNextRefreshAt,
   petNoticeArt,
+  petNoticeLine,
+  petNoticePeer,
   petNoticeText,
   petStagePath,
   petTaskRows,
@@ -489,6 +491,78 @@ describe('in-chat notices', () => {
   it('leaves unknown events and actorless actor events to the fallback content', () => {
     expect(petNoticeText({ ...theirs, event: 'danced' })).toBeNull();
     expect(petNoticeText({ ...base, actorIsSelf: false, actorName: null, event: 'renamed' })).toBeNull();
+  });
+
+  describe('the line every surface shows (chat row, DM search)', () => {
+    // Ari ('1') is user A, so the daily check files its notices under Ari.
+    const ari = { id: '1', username: 'ari', displayName: 'Ari' } as Message['author'] & object;
+    const bo = { id: '2', username: 'bo', displayName: 'Bo' } as Message['author'] & object;
+    const notice = (
+      author: typeof ari,
+      event: string,
+      actorId: string | null,
+      content: string,
+    ): Pick<Message, 'author' | 'authorId' | 'content' | 'metadata'> => ({
+      author,
+      authorId: author.id,
+      content,
+      metadata: { kind: 'pet', event, petName: 'Zekk', stage: 'baby', actorId } as Message['metadata'],
+    });
+    const line = (m: ReturnType<typeof notice>, self: typeof ari, channel?: Pick<Channel, 'recipients'>) => {
+      const peer = petNoticePeer(channel, m, self.id);
+      return petNoticeLine({
+        message: m,
+        selfId: self.id,
+        peerId: peer?.id ?? null,
+        peerName: peer?.displayName ?? 'them',
+        authorName: m.author?.displayName ?? 'Someone',
+        nameOf: (id) => [ari, bo].find((u) => u.id === id)?.displayName,
+        filterProfanity: false,
+      });
+    };
+    const asleep = notice(ari, 'asleep', null, 'Zekk fell asleep. 😴 Say hi to each other within 2 days to wake it up.');
+    const adopted = notice(bo, 'adopted', '2', 'Bo and Ari adopted a Zekk Pet! 🥚');
+
+    it('words the adoption for the viewer, not as the server filed it', () => {
+      expect(line(adopted, ari, { recipients: [bo] }).text).toBe('You and Bo adopted a Zekk Pet! 🥚');
+      expect(line(adopted, bo, { recipients: [ari] }).text).toBe('You and Ari adopted a Zekk Pet! 🥚');
+      expect(line(asleep, bo, { recipients: [ari] })).toEqual({
+        text: 'Zekk fell asleep. 😴 Say hi to each other within 2 days to wake it up.',
+        art: { stage: 'baby', mood: 'asleep' },
+      });
+    });
+
+    it('finds the other person in a DM search hit from a closed DM (no channel)', () => {
+      expect(petNoticePeer(undefined, adopted, ari.id)).toBe(bo);
+      expect(petNoticePeer(undefined, asleep, ari.id)).toBeNull();
+      expect(petNoticePeer({ recipients: [bo] }, asleep, ari.id)).toBe(bo);
+      expect(line(adopted, ari).text).toBe('You and Bo adopted a Zekk Pet! 🥚');
+      expect(line(notice(bo, 'renamed', '2', 'Bo renamed the pet to Zekk.'), ari).text).toBe(
+        'Bo renamed the pet to Zekk.',
+      );
+    });
+
+    it("falls back to the server's content (masked for a supervised child) without metadata", () => {
+      const bare = { ...adopted, metadata: null };
+      expect(line(bare, ari)).toEqual({ text: 'Bo and Ari adopted a Zekk Pet! 🥚', art: { stage: 'egg', mood: 'happy' } });
+      expect(line(notice(bo, 'danced', '2', 'Zekk danced.'), ari).text).toBe('Zekk danced.');
+      const masked = (m: ReturnType<typeof notice>) =>
+        petNoticeLine({ message: m, selfId: ari.id, peerId: bo.id, peerName: 'Bo', authorName: 'Bo', nameOf: () => null, filterProfanity: true }).text;
+      expect(masked({ ...bare, content: 'Bo renamed the pet to shit.' })).toBe('Bo renamed the pet to s•••.');
+      const renamed = notice(bo, 'renamed', '2', '');
+      expect(masked({ ...renamed, metadata: { ...renamed.metadata!, petName: 'shit' } as Message['metadata'] })).toBe(
+        'Bo renamed the pet to s•••.',
+      );
+    });
+
+    it('DM search shows a pet notice as the pet\'s, not as a message from its author', () => {
+      const dmList = readFileSync(new URL('../src/app/DMList.tsx', import.meta.url), 'utf8');
+      expect(dmList).toMatch(/isPetNotice\(m\) \?\s*\(\s*<DMSearchPetResult /);
+      const pet = dmList.slice(dmList.indexOf('function DMSearchPetResult'));
+      expect(pet).toMatch(/petNoticeLine\(/);
+      expect(pet).toMatch(/<ZekkPetArt stage=\{art\.stage\} mood=\{art\.mood\} size=\{16\}/);
+      expect(pet).toMatch(/>Zekk Pet</);
+    });
   });
 
   it('recognises the row and picks its glyph', () => {

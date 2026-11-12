@@ -16,6 +16,7 @@ import {
   PET_STAGES,
   PET_TASKS,
   petStageLabel,
+  type Channel,
   type DmPetState,
   type Message,
   type MessageMetadata,
@@ -24,6 +25,7 @@ import {
   type PetNoticeEvent,
   type PetStage,
   type PetTaskKey,
+  type PublicUser,
 } from '@zekktris/client';
 import { maskProfanity } from './profanity';
 
@@ -322,6 +324,75 @@ export function petNoticeArt(meta: Pick<PetNoticeMeta, 'event' | 'stage'>): { st
   const stage: PetStage = PET_STAGES.some((s) => s.stage === meta.stage) ? meta.stage : 'egg';
   const mood: PetMood = meta.event === 'asleep' ? 'asleep' : meta.event === 'ran_away' ? 'lonely' : 'happy';
   return { stage, mood };
+}
+
+/** The other person in the 1:1 DM a pet notice sits in: the channel's
+    recipients (which never include the viewer), else the row's author when
+    that isn't the viewer. The fallback is for DM search, whose results can
+    come from a DM the viewer closed (no longer in their DM list). */
+export function petNoticePeer(
+  channel: Pick<Channel, 'recipients'> | undefined,
+  message: Pick<Message, 'author'>,
+  selfId: string | undefined,
+): PublicUser | null {
+  const fromChannel = channel?.recipients?.find((u) => u.id !== selfId);
+  if (fromChannel) return fromChannel;
+  return message.author && message.author.id !== selfId ? message.author : null;
+}
+
+/**
+ * A pet notice's line and glyph, the same on every surface that shows one
+ * (the chat row, DM search): built from metadata so it reads "You" for the
+ * viewer and the other person's (nicknamed) name otherwise — never as a
+ * message from whichever person the server filed it under (the daily check
+ * files 'asleep' / 'ran_away' under user A). The server's third-person
+ * `content` is the fallback for an event this client doesn't know or a row
+ * without its metadata. A supervised child's profanity mask covers the pet's
+ * name and that fallback.
+ */
+export function petNoticeLine({
+  message,
+  selfId,
+  peerId,
+  peerName,
+  authorName,
+  nameOf,
+  filterProfanity,
+}: {
+  message: Pick<Message, 'content' | 'metadata' | 'authorId'>;
+  selfId: string | undefined;
+  /** The other person in the DM, and their (nicknamed) name. */
+  peerId: string | null;
+  peerName: string;
+  /** The row author's name, for an actor who is the author but not the peer. */
+  authorName: string;
+  /** Any other user's name, when known. */
+  nameOf: (id: string) => string | null | undefined;
+  filterProfanity: boolean;
+}): { text: string; art: { stage: PetStage; mood: PetMood } } {
+  const meta = petNoticeMeta(message);
+  const actorId = meta?.actorId ?? null;
+  const actorName =
+    actorId === null
+      ? null
+      : actorId === peerId
+        ? peerName
+        : actorId === message.authorId
+          ? authorName
+          : (nameOf(actorId) ?? 'Someone');
+  const text =
+    (meta &&
+      petNoticeText({
+        event: meta.event,
+        petName: petDisplayName(meta.petName, filterProfanity),
+        stage: meta.stage,
+        actorIsSelf: selfId !== undefined && actorId === selfId,
+        actorName,
+        peerName,
+      })) ||
+    (filterProfanity ? maskProfanity(message.content) : message.content);
+  const art = meta ? petNoticeArt(meta) : ({ stage: 'egg', mood: 'happy' } as const);
+  return { text, art };
 }
 
 /** Progress towards the next level for the art (the egg cracks near the end). */

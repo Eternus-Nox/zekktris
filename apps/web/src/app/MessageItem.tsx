@@ -37,7 +37,7 @@ import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark, Timer } from '../lib/icons';
 import { disappearingHint, isDisappearingNotice, noticeText } from '../lib/disappearing';
-import { blockSubjectId, isPetNotice, petDisplayName, petNoticeArt, petNoticeMeta, petNoticeText } from '../lib/zekkPet';
+import { blockSubjectId, isPetNotice, petNoticeLine, petNoticePeer } from '../lib/zekkPet';
 import { ZekkPetArt } from '../lib/ZekkPetArt';
 import { useE2eeLinkPreviews, resolveE2eeLinkPreviews, cachedUnfurl } from '../lib/e2eeLinkPreviews';
 import { e2eeSupported, E2EE_INSECURE_SHORT } from '../lib/e2eeSupport';
@@ -1374,32 +1374,19 @@ function PetNotice({
   filterProfanity: boolean;
 }) {
   const usersById = useAppStateSelector((v) => v.state.usersById);
-  const meta = petNoticeMeta(message);
   // The other person in the DM (recipients never include the viewer).
-  const peer = channel?.recipients?.find((u) => u.id !== selfId) ?? null;
+  const peer = petNoticePeer(channel, message, selfId);
   const peerNick = useDmNickname(peer?.id);
   const peerName = peerNick ?? peer?.displayName ?? peer?.username ?? 'them';
-  const actorId = meta?.actorId ?? null;
-  const actorName =
-    actorId === null
-      ? null
-      : actorId === peer?.id
-        ? peerName
-        : actorId === message.authorId
-          ? authorName
-          : (usersById[actorId]?.displayName ?? usersById[actorId]?.username ?? 'Someone');
-  const text =
-    (meta &&
-      petNoticeText({
-        event: meta.event,
-        petName: petDisplayName(meta.petName, filterProfanity),
-        stage: meta.stage,
-        actorIsSelf: selfId !== undefined && actorId === selfId,
-        actorName,
-        peerName,
-      })) ||
-    (filterProfanity ? maskProfanity(message.content) : message.content);
-  const art = meta ? petNoticeArt(meta) : ({ stage: 'egg', mood: 'happy' } as const);
+  const { text, art } = petNoticeLine({
+    message,
+    selfId,
+    peerId: peer?.id ?? null,
+    peerName,
+    authorName,
+    nameOf: (id) => usersById[id]?.displayName ?? usersById[id]?.username,
+    filterProfanity,
+  });
   return (
     <div
       data-message-id={message.id}

@@ -25,6 +25,8 @@ import { StaffName, UserTag } from '../lib/UserTag';
 import { Search, X, Calendar, Clock, Users, Bookmark, Lock, Plus } from '../lib/icons';
 import { ChannelMenu } from './ChannelMenu';
 import { useGoneMessages, withoutGone } from '../lib/useGoneMessages';
+import { isPetNotice, petNoticeLine, petNoticePeer } from '../lib/zekkPet';
+import { ZekkPetArt } from '../lib/ZekkPetArt';
 
 export function DMList({ activeChannelId }: { activeChannelId: string | undefined }) {
   // Granular subscriptions (was `useAppState()`). Only the DM list + loaded
@@ -251,20 +253,24 @@ function DMSearch({ onClose }: { onClose: () => void }) {
           </p>
         ) : (
           <ul className="py-1">
-            {results.map((m) => (
-              <DMSearchResult
-                key={m.id}
-                message={m}
-                onClick={() => {
-                  // Navigate to the DM at this message. We append the
-                  // message id as a hash so the MessageView can scroll
-                  // to it once loaded (existing convention for jump-
-                  // to-message links).
-                  navigate(`/channels/@me/${m.channelId}#m-${m.id}`);
-                  onClose();
-                }}
-              />
-            ))}
+            {results.map((m) => {
+              // Navigate to the DM at this message. We append the
+              // message id as a hash so the MessageView can scroll
+              // to it once loaded (existing convention for jump-
+              // to-message links).
+              const open = () => {
+                navigate(`/channels/@me/${m.channelId}#m-${m.id}`);
+                onClose();
+              };
+              // A Zekk Pet notice is nobody's message (the daily check
+              // files 'asleep' / 'ran_away' under user A), so it reads as
+              // the pet's, worded for the viewer like the chat row.
+              return isPetNotice(m) ? (
+                <DMSearchPetResult key={m.id} message={m} onClick={open} />
+              ) : (
+                <DMSearchResult key={m.id} message={m} onClick={open} />
+              );
+            })}
           </ul>
         )}
       </div>
@@ -304,6 +310,55 @@ function DMSearchResult({ message, onClick }: { message: Message; onClick: () =>
           <div className="text-xs text-ink-2 truncate">
             {preview || <span className="italic text-ink-3">(no text — attachment)</span>}
           </div>
+        </div>
+      </button>
+    </li>
+  );
+}
+
+/** A Zekk Pet notice in DM search: the small pet in place of an avatar,
+    "Zekk Pet" in place of a name, and the line the chat shows (MessageItem's
+    PetNotice) — "You" for the viewer, never the person the server filed the
+    notice under. */
+function DMSearchPetResult({ message, onClick }: { message: Message; onClick: () => void }) {
+  const usersById = useAppStateSelector((v) => v.state.usersById);
+  const channel = useAppStateSelector((v) => v.state.dmChannels.find((c) => c.id === message.channelId));
+  const filterProfanity = useAppStateSelector(
+    (v) => v.state.supervision?.restrictions?.filterProfanity ?? false,
+  );
+  const { user } = useAuth();
+  const selfId = user?.id;
+  const peer = petNoticePeer(channel, message, selfId);
+  const peerNick = useDmNickname(peer?.id);
+  const peerName = peerNick ?? peer?.displayName ?? peer?.username ?? 'them';
+  const author = (message.authorId ? usersById[message.authorId] : undefined) ?? message.author;
+  const { text, art } = petNoticeLine({
+    message,
+    selfId,
+    peerId: peer?.id ?? null,
+    peerName,
+    authorName: author?.displayName ?? author?.username ?? 'Someone',
+    nameOf: (id) => usersById[id]?.displayName ?? usersById[id]?.username,
+    filterProfanity,
+  });
+  const preview = text.replace(/\s+/g, ' ').slice(0, 120);
+  const ts = new Date(message.createdAt).toLocaleDateString();
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onClick}
+        className="w-full text-left px-3 py-2 hover:bg-bg-3 transition-colors flex items-start gap-2"
+      >
+        <div className="w-7 h-7 flex items-center justify-center shrink-0">
+          <ZekkPetArt stage={art.stage} mood={art.mood} size={16} animated={false} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-sm font-medium text-ink-1 truncate">Zekk Pet</span>
+            <span className="text-[0.65rem] text-ink-3 shrink-0">{ts}</span>
+          </div>
+          <div className="text-xs text-ink-2 truncate">{preview}</div>
         </div>
       </button>
     </li>
