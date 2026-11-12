@@ -15,6 +15,7 @@ import {
 } from '@zekktris/client';
 import {
   appendScrollKind,
+  blockSubjectId,
   isPetNotice,
   nextUtcMidnightRefreshAt,
   petArtProgress,
@@ -1086,6 +1087,33 @@ describe('pet notices and unread', () => {
       expect(appendScrollKind([ownMsg('90'), peerMsg('100'), caused('110', PEER)], '90', SELF)).toBe('other');
       // A gone previous tail (a confirmed local send) falls back to "any message".
       expect(appendScrollKind([peerMsg('100'), sweep('200')], 'local-1', SELF)).toBe('other');
+    });
+  });
+
+  // "Blocked message — click to show" goes by whose row it is. PEER is the
+  // person the viewer blocked, and the sweep's author (user A).
+  describe('blocked-author mask', () => {
+    const by = (m: Message, id: string) => ({ ...m, author: { id } as Message['author'] });
+
+    it("the daily check's notices are no one's, so they always show", () => {
+      // Authored by user A with no actor: masking them would show B, who
+      // blocked A, the pet's news as a hidden message from A.
+      expect(blockSubjectId(by(notice('200', PEER), PEER))).toBeNull();
+      const ranAway = row('201', PEER, {
+        type: 'system_pet',
+        metadata: { kind: 'pet', event: 'ran_away', petName: 'Zekk', stage: 'baby', actorId: null },
+      });
+      expect(blockSubjectId(by(ranAway, PEER))).toBeNull();
+    });
+
+    it("a notice the peer caused is theirs, like their messages", () => {
+      expect(blockSubjectId(by(notice('200', PEER, PEER), PEER))).toBe(PEER);
+      expect(blockSubjectId(by(row('100', PEER), PEER))).toBe(PEER);
+    });
+
+    it('a notice without its metadata falls back to its author', () => {
+      expect(blockSubjectId(by({ ...notice('200', PEER), metadata: null }, PEER))).toBe(PEER);
+      expect(blockSubjectId(row('100', PEER))).toBeNull();
     });
   });
 });

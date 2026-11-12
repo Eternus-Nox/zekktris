@@ -891,16 +891,17 @@ export function MessageView({
             )}
             {/* Zekk Pet next to the streak (an egg while the invite is open). */}
             {pet && <DmPetButton pet={pet} onOpen={() => setPetOpen(true)} />}
-            {/* Disappearing-messages indicator while the timer is on. On a
-                phone the pet takes its place: with the streak, the pet, the
-                timer and four actions the row overflows a 360px screen and
-                the Conversation settings gear (which also reaches the timer
-                screen) is cut off. */}
+            {/* Disappearing-messages indicator while the timer is on. Next
+                to a pet it's only the stopwatch on a phone: with the streak,
+                the pet, the timer text and four actions the row overflows a
+                360px screen and the Conversation settings gear is cut off.
+                It never hides — it's the DM's only cue that messages
+                disappear. */}
             {isDM && typeof dmTimer === 'number' && dmTimer > 0 && (
               <DisappearingPill
                 seconds={dmTimer}
                 onClick={isDM1to1 ? () => setDisappearingOpen(true) : undefined}
-                className={pet ? 'hidden sm:inline-flex' : ''}
+                compact={!!pet}
               />
             )}
             {channel.topic && (
@@ -3323,18 +3324,20 @@ function conversationVisible(): boolean {
 function DisappearingPill({
   seconds,
   onClick,
-  className: extra = '',
+  compact = false,
 }: {
   seconds: number;
   onClick?: () => void;
-  className?: string;
+  /** Only the stopwatch below `sm` (the label and tooltip keep the timer). */
+  compact?: boolean;
 }) {
   const label = `Disappearing messages: ${formatLong(seconds)}`;
-  const className = `inline-flex items-center self-center gap-0.5 whitespace-nowrap rounded-md px-1.5 pt-[2.5px] pb-[1.5px] text-[10px] font-semibold leading-none border border-line bg-bg-2 text-ink-2 shrink-0 ${extra}`;
+  const className =
+    'inline-flex items-center self-center gap-0.5 whitespace-nowrap rounded-md px-1.5 pt-[2.5px] pb-[1.5px] text-[10px] font-semibold leading-none border border-line bg-bg-2 text-ink-2 shrink-0';
   const body = (
     <>
       <Timer size={10} className="shrink-0 relative -top-[0.5px]" />
-      {formatShort(seconds)}
+      {compact ? <span className="hidden sm:inline">{formatShort(seconds)}</span> : formatShort(seconds)}
     </>
   );
   return onClick ? (

@@ -224,6 +224,18 @@ export function petNoticeMeta(m: Pick<Message, 'metadata'>): PetNoticeMeta | nul
   return m.metadata?.kind === 'pet' ? m.metadata : null;
 }
 
+/** Whose block hides a row behind "Blocked message — click to show": its
+    author's, except a pet notice, which is its actor's (as in
+    appendScrollKind). The daily check's 'asleep' / 'ran_away' carry user A
+    as author and no actor, so they give null and are never hidden: otherwise
+    whoever blocked user A would see the pet's news as a hidden message from
+    A, while whoever blocked user B would see it plainly. A notice without
+    its metadata falls back to its author. */
+export function blockSubjectId(m: Pick<Message, 'type' | 'metadata' | 'author'>): string | null {
+  const meta = isPetNotice(m) ? petNoticeMeta(m) : null;
+  return meta ? (meta.actorId ?? null) : (m.author?.id ?? null);
+}
+
 /**
  * What rows that just landed at the bottom of the chat do to its scroll.
  * 'own': the viewer's, so the view follows them down. 'other': someone

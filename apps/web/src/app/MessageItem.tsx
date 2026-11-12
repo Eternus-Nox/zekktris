@@ -37,7 +37,7 @@ import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark, Timer } from '../lib/icons';
 import { disappearingHint, isDisappearingNotice, noticeText } from '../lib/disappearing';
-import { isPetNotice, petDisplayName, petNoticeArt, petNoticeMeta, petNoticeText } from '../lib/zekkPet';
+import { blockSubjectId, isPetNotice, petDisplayName, petNoticeArt, petNoticeMeta, petNoticeText } from '../lib/zekkPet';
 import { ZekkPetArt } from '../lib/ZekkPetArt';
 import { useE2eeLinkPreviews, resolveE2eeLinkPreviews, cachedUnfurl } from '../lib/e2eeLinkPreviews';
 import { e2eeSupported, E2EE_INSECURE_SHORT } from '../lib/e2eeSupport';
@@ -291,11 +291,13 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
 
   // Block enforcement: precomputed here, applied at render time below
   // (after all hooks are declared so the hook order stays stable
-  // across the blocked → revealed → unblocked transitions).
+  // across the blocked → revealed → unblocked transitions). A pet notice
+  // goes by its actor: the daily check's notices (no actor) always show.
+  const blockedId = blockSubjectId(message);
   const blockedHidden =
-    !!author &&
+    blockedId !== null &&
     !isOwn &&
-    isUserBlocked(relationships, author.id) &&
+    isUserBlocked(relationships, blockedId) &&
     !revealed;
 
   // (renderCtx — the lookup context handed to renderMessageContent — is built
