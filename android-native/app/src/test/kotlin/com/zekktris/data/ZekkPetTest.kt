@@ -349,6 +349,57 @@ class ZekkPetTest {
         assertFalse(ZekkPet.bannerNeedsStreak(null))
     }
 
+    // ── The store's merge (AppStore.setDmPet / loadDmPet) ───────────────────
+
+    @Test fun anEventLeavesAnEntryEvenForNoPet() {
+        // Not fetched yet: no bar, and an invite takes the minimum streak.
+        assertEquals(DmPetState(pet = null, eligible = false, streak = 0, minStreak = 3), ZekkPet.withPet(null, null))
+        val invite = pet(status = "invited", invitedBy = "2", level = 0, stage = "egg")
+        assertEquals(DmPetState(pet = invite, eligible = false, streak = 3, minStreak = 3), ZekkPet.withPet(null, invite))
+        // Fetched already: only the pet changes.
+        val fetched = DmPetState(pet = null, eligible = true, streak = 6, minStreak = 3)
+        assertEquals(fetched.copy(pet = invite), ZekkPet.withPet(fetched, invite))
+        assertEquals(fetched, ZekkPet.withPet(fetched.copy(pet = invite), null))
+    }
+
+    @Test fun anInviteCancelledBeforeTheFirstFetchAnswersStaysGone() {
+        // Alice opens the DM (no entry yet) and GET /pet leaves; Sam cancels
+        // his invite and DM_PET_UPDATE null lands before the answer, which
+        // still saw the invite (so the server said "not eligible").
+        val invite = pet(status = "invited", invitedBy = "2", level = 0, stage = "egg")
+        val answer = DmPetState(pet = invite, eligible = false, streak = 5, minStreak = 3, canAct = true)
+        val afterEvent = ZekkPet.withPet(null, null)
+        val next = ZekkPet.afterFetch(afterEvent, answer, keepPet = true)
+        assertNull(next.pet)
+        assertEquals(answer.canAct && answer.streak >= answer.minStreak, next.eligible)
+        assertEquals(5, next.streak)
+        assertEquals(BannerKind.Adopt, ZekkPet.banner(next, "1", "Sam")?.kind)
+        // Without an entry at all, the newer "no pet" still wins.
+        assertEquals(next, ZekkPet.afterFetch(null, answer, keepPet = true))
+        // Under the minimum, or a DM we can't act in: no Adopt.
+        assertFalse(ZekkPet.afterFetch(afterEvent, answer.copy(streak = 2), keepPet = true).eligible)
+        assertFalse(ZekkPet.afterFetch(afterEvent, answer.copy(canAct = false), keepPet = true).eligible)
+    }
+
+    @Test fun aFetchKeepsANewerPetAndTakesTheRest() {
+        val invite = pet(status = "invited", invitedBy = "2", level = 0, stage = "egg")
+        val hatched = pet()
+        val answer = DmPetState(pet = invite, eligible = false, streak = 4, minStreak = 3)
+        // Nothing came in meanwhile: the answer as it is.
+        assertEquals(answer, ZekkPet.afterFetch(DmPetState(pet = hatched), answer, keepPet = false))
+        assertEquals(answer, ZekkPet.afterFetch(null, answer, keepPet = false))
+        // Accepted meanwhile: the newer pet stays, the answer's streak goes in.
+        assertEquals(answer.copy(pet = hatched), ZekkPet.afterFetch(DmPetState(pet = hatched), answer, keepPet = true))
+        // The answer saw no pet either: the server's eligibility stands.
+        val none = DmPetState(pet = null, eligible = true, streak = 4, minStreak = 3)
+        assertEquals(none, ZekkPet.afterFetch(ZekkPet.withPet(null, null), none, keepPet = true))
+        // An invite came in meanwhile over an answer with no pet: the invite
+        // stays and its bar shows (eligibility only matters with no pet).
+        val kept = ZekkPet.afterFetch(ZekkPet.withPet(null, invite), none, keepPet = true)
+        assertEquals(invite, kept.pet)
+        assertEquals(BannerKind.Invited, ZekkPet.banner(kept, "1", "Sam")?.kind)
+    }
+
     @Test fun dismissalIsPerDmAndPerKind() {
         assertEquals("100:Adopt", ZekkPet.bannerKey("100", BannerKind.Adopt))
         assertNotEquals(ZekkPet.bannerKey("100", BannerKind.Adopt), ZekkPet.bannerKey("100", BannerKind.Invited))

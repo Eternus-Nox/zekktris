@@ -1712,11 +1712,12 @@ class AppStore(
     suspend fun loadDmPet(channelId: String): com.zekktris.data.model.DmPetState? {
         val gen = dmPetGen[channelId] ?: 0
         val s = runCatching { api.getDmPet(channelId) }.getOrNull() ?: return null
-        // A DM_PET_UPDATE (or our own change) since the request left is newer.
+        // A DM_PET_UPDATE (or our own change) since the request left is
+        // newer, even on a DM's first fetch ([ZekkPet.afterFetch]).
         val keepPet = (dmPetGen[channelId] ?: 0) != gen
         _state.update { st ->
             val prev = st.dmPets[channelId]
-            val next = if (keepPet && prev != null) s.copy(pet = prev.pet) else s
+            val next = ZekkPet.afterFetch(prev, s, keepPet)
             if (prev == next) st else st.copy(dmPets = st.dmPets + (channelId to next))
         }
         return s
@@ -1730,22 +1731,13 @@ class AppStore(
     }
 
     /** A DM's pet from DM_PET_UPDATE or our own change (null = no pet any
-     *  more). Not fetched yet: whether the DM may adopt is unknown until GET
-     *  /pet answers, so it reads as not eligible (no bar) rather than a guess.
-     *  An invite is only ever sent on a streak of at least the minimum, so
-     *  one takes that until the fetch says otherwise (Accept doesn't flash
-     *  "keep a streak going" while the DM opens). */
+     *  more), as [ZekkPet.withPet] leaves it: an entry even for no pet. */
     private fun setDmPet(channelId: String, pet: com.zekktris.data.model.PetDTO?) {
         dmPetGen.merge(channelId, 1, Int::plus)
         _state.update { st ->
             val prev = st.dmPets[channelId]
-                ?: com.zekktris.data.model.DmPetState(
-                    pet = null,
-                    eligible = false,
-                    streak = if (pet?.status == "invited") ZekkPet.MIN_STREAK else 0,
-                    minStreak = ZekkPet.MIN_STREAK,
-                )
-            if (prev.pet == pet) st else st.copy(dmPets = st.dmPets + (channelId to prev.copy(pet = pet)))
+            val next = ZekkPet.withPet(prev, pet)
+            if (prev == next) st else st.copy(dmPets = st.dmPets + (channelId to next))
         }
     }
 

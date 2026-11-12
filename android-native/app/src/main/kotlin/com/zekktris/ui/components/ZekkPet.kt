@@ -24,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -54,6 +55,7 @@ import com.zekktris.ui.theme.ZkPalette
 import com.zekktris.ui.theme.ZkTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** The tap heart's box in the 100-unit space ([ZekkPetArt.heartShapes]:
  *  circles reaching 6.5 units either side and 3.5 above, the point 9 below),
@@ -67,12 +69,17 @@ private val EASE_IN_OUT = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
 private val EASE_OUT = CubicBezierEasing(0f, 0f, 0.58f, 1f)
 private val easeInOut: (Float) -> Float = EASE_IN_OUT::transform
 
+/** Real time for an animation, whatever the system's duration scale. */
+private val UNSCALED = object : MotionDurationScale {
+    override val scaleFactor: Float get() = 1f
+}
+
 /**
  * Whether the system lets apps animate: off when the user removed
  * animations (Settings → Accessibility) or set the animator duration scale
  * to 0 (Developer options). Android's reduced-motion switch — the pet then
- * stays still (no bob, breathe, wobble or squash), as web does under
- * `prefers-reduced-motion`.
+ * stays still (no bob, breathe, wobble or squash) and a tap's heart fades in
+ * place, as web does under `prefers-reduced-motion`.
  */
 @Composable
 private fun rememberMotionEnabled(): Boolean = remember { android.animation.ValueAnimator.areAnimatorsEnabled() }
@@ -151,7 +158,7 @@ private fun DrawScope.drawPrepared(p: Prepared, inks: List<Color>) {
  * to the [ZekkPetArt] it should show on.
  */
 @Stable
-class PetTapState internal constructor(private val scope: CoroutineScope, private val motion: Boolean) {
+class PetTapState internal constructor(private val scope: CoroutineScope, internal val motion: Boolean) {
     /** 0 → 1 through the squash (1 = at rest again). */
     internal val squash = Animatable(1f)
 
@@ -159,8 +166,11 @@ class PetTapState internal constructor(private val scope: CoroutineScope, privat
     internal val hearts = mutableStateListOf<Animatable<Float, AnimationVector1D>>()
 
     fun tap() {
-        // Reduced motion keeps the pet still; the heart is a fade, and with
-        // animations off it ends at once.
+        // Reduced motion keeps the pet still and the heart fades in place
+        // over its 0.8 s, as on web and iOS. With animations off the
+        // window's duration scale is 0, which would end the heart at once
+        // (nothing shown), so it runs at its own pace then; with them on it
+        // follows the system scale.
         if (motion) {
             scope.launch {
                 squash.snapTo(0f)
@@ -171,7 +181,11 @@ class PetTapState internal constructor(private val scope: CoroutineScope, privat
         hearts += heart
         scope.launch {
             try {
-                heart.animateTo(1f, tween(ZekkPetArt.HEART_MS, easing = EASE_OUT))
+                if (motion) {
+                    heart.animateTo(1f, tween(ZekkPetArt.HEART_MS, easing = EASE_OUT))
+                } else {
+                    withContext(UNSCALED) { heart.animateTo(1f, tween(ZekkPetArt.HEART_MS, easing = EASE_OUT)) }
+                }
             } finally {
                 hearts.remove(heart)
             }
@@ -259,10 +273,12 @@ fun ZekkPetArt(
             }
             // Each heart fades as one layer, as web fades its group: its
             // circles and triangle overlap, and faded one by one their
-            // alphas stacked into darker seams where they meet.
+            // alphas stacked into darker seams where they meet. Under
+            // reduced motion it fades in place, without the rise.
+            val rise = if (tap?.motion == false) 0f else ZekkPetArt.HEART_RISE
             tap?.hearts?.forEach { h ->
                 val f = h.value
-                translate(top = -ZekkPetArt.HEART_RISE * f) {
+                translate(top = -rise * f) {
                     heartPaint.alpha = 1f - f
                     drawIntoCanvas { it.saveLayer(HEART_BOUNDS, heartPaint) }
                     heart.forEach { drawPrepared(it, inks) }
@@ -278,22 +294,26 @@ fun ZekkPetArt(
  * on the theme's chip surface (an egg while the invite is open, the asleep
  * face when asleep). Opens the pet card. [name]: the pet's name as the
  * viewer sees it, for its spoken label (masked for a supervised child with
- * "Blur swear words" on).
+ * "Blur swear words" on). Only the chip (and its ripple) is rounded: the pet
+ * draws over it unclipped, as on iOS, so a sleeping pet's top Z — up by the
+ * chip's corner, and further out as it breathes — isn't shaved off.
  */
 @Composable
 fun DmPetButton(pet: PetDTO, onClick: () -> Unit, name: String = pet.name) {
     val p = ZkTheme.palette
     val label = ZekkPet.headerLabel(pet, name)
-    Box(
-        Modifier
-            .size(30.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(p.bg2)
-            .border(1.dp, p.line, RoundedCornerShape(6.dp))
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = label },
-        contentAlignment = Alignment.Center,
-    ) {
+    val shape = RoundedCornerShape(6.dp)
+    Box(Modifier.size(30.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .clip(shape)
+                .background(p.bg2)
+                .border(1.dp, p.line, shape)
+                .clickable(onClick = onClick)
+                .semantics { contentDescription = label },
+        )
+        // No pointer input of its own, so a tap on it reaches the chip.
         ZekkPetArt(
             stage = ZekkPet.displayStage(pet),
             mood = ZekkPet.Mood.of(pet.mood),

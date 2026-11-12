@@ -489,6 +489,47 @@ object ZekkPet {
         return day.plusDays(1).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli() + REFRESH_SLACK_MS
     }
 
+    // ── Store ─────────────────────────────────────────────────────────────
+
+    /**
+     * A DM's state once DM_PET_UPDATE (or our own change) says its pet is
+     * [pet] (null = no pet any more), over [prev]. Not fetched yet: whether
+     * the DM may adopt is unknown until GET /pet answers, so it reads as not
+     * eligible (no bar) rather than a guess. An invite is only ever sent on a
+     * streak of at least the minimum, so one takes that until the fetch says
+     * otherwise (Accept doesn't flash "keep a streak going" while the DM
+     * opens). Always an entry, no pet included, as on web and iOS: the DM
+     * then counts as loaded, so a later "gone" refetches.
+     */
+    fun withPet(prev: DmPetState?, pet: PetDTO?): DmPetState =
+        (prev ?: DmPetState(
+            pet = null,
+            eligible = false,
+            streak = if (pet?.status == "invited") MIN_STREAK else 0,
+            minStreak = MIN_STREAK,
+        )).copy(pet = pet)
+
+    /**
+     * What GET /pet's answer [fetched] leaves over [prev]. [keepPet]: a
+     * DM_PET_UPDATE (or our own change) came in while the request was out,
+     * so the pet it left ([prev]'s, none without an entry) is newer and only
+     * the answer's eligibility, streak and gate go in. When that pet went
+     * away (cancelled, expired, ran away) but the answer still saw it, the
+     * server's "not eligible" was about that pet: work it out as the server
+     * does for no pet, from the answer's live streak and gate, as web and
+     * iOS do — otherwise the Adopt bar stays hidden and nothing refetches.
+     */
+    fun afterFetch(prev: DmPetState?, fetched: DmPetState, keepPet: Boolean): DmPetState {
+        if (!keepPet) return fetched
+        val kept = prev?.pet
+        val eligible = if (kept == null && fetched.pet != null) {
+            fetched.canAct && fetched.streak >= fetched.minStreak
+        } else {
+            fetched.eligible
+        }
+        return fetched.copy(pet = kept, eligible = eligible)
+    }
+
     // ── Gateway payload ───────────────────────────────────────────────────
 
     /** DM_PET_UPDATE: camelCase { channelId, pet } like DM_SETTINGS_UPDATE.

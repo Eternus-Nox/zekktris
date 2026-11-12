@@ -283,22 +283,24 @@ fun PetSheet(store: AppStore, state: AppState, channelId: String, peerName: Stri
     }
 }
 
-/** The big pet on its round stage. A tap squashes it and floats a heart up —
- *  purely local, nothing is sent. Only the stage (and its ripple) is round:
- *  the pet draws over it unclipped, so a sleeping pet's top Z — out by the
- *  stage's edge, and further out as it breathes — isn't cut off. [name]: the
+/** The big pet on its stage, a rounded square as on web and iOS, so a
+ *  sleeping pet's top Z — up by the stage's corner, and further out as it
+ *  breathes — stays on it, clear of the corner's curve. A tap squashes it
+ *  and floats a heart up — purely local, nothing is sent. Only the stage
+ *  (and its ripple) is clipped: the pet draws over it unclipped. [name]: the
  *  pet's name as the viewer sees it ([petDisplayName]). */
 @Composable
 private fun PetStage(pet: PetDTO, name: String) {
     val p = ZkTheme.palette
     val tap = rememberPetTapState()
+    val shape = RoundedCornerShape(16.dp)
     Box(Modifier.size(176.dp), contentAlignment = Alignment.Center) {
         Box(
             Modifier
                 .matchParentSize()
-                .clip(CircleShape)
+                .clip(shape)
                 .background(p.bg2)
-                .border(1.dp, p.line, CircleShape)
+                .border(1.dp, p.line, shape)
                 .clickable { tap.tap() }
                 .semantics { contentDescription = "Pet $name" },
         )
