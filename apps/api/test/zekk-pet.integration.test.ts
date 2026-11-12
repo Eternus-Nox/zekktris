@@ -23,7 +23,8 @@ import {
 } from '../src/services/pets';
 import { recordDmMessage } from '../src/services/streaks';
 import { purgeAccount } from '../src/services/purge';
-import { rollbackChannelWatermarks } from '../src/services/messages';
+import { rollbackChannelWatermarks, searchDirectMessages, searchMessages } from '../src/services/messages';
+import { disableE2eeAndPurge, enableE2ee } from '../src/services/dms';
 import { unreadBadgeCounts } from '../src/services/readStates';
 import {
   PET_TASKS,
@@ -1084,6 +1085,55 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     expect(streak!.lastDayA).toBe(day(1));
   });
 
+  it("a late hi still feeds the day its streak credited when a next-day poke got the pet's lock first", async () => {
+    const poke = PET_TASKS.find((t) => t.key === 'poke')!.bit;
+    // p: A said hi on D0, and B's hi at D0 23:59:59.950 commits the streak's
+    // credit for D0. q: the same, but the sweep puts q to sleep first. r: only
+    // A's late hi, which the streak never credited (B was silent on D0).
+    const [p, q, r] = [await adopted(), await adopted(), await adopted()];
+    const late = new Date(`${D0}T23:59:59.950Z`);
+    for (const s of [p, q]) {
+      await recordDmMessage({ channelId: s.dm, authorId: s.lo, recipientId: s.hi, at: now });
+      await msg(s.dm, s.lo);
+      await recordDmMessage({ channelId: s.dm, authorId: s.hi, recipientId: s.lo, at: late });
+    }
+    await recordDmMessage({ channelId: r.dm, authorId: r.lo, recipientId: r.hi, at: late });
+    at(`${day(1)}T00:00:00.020Z`);
+    // A's poke (no streak lock) reaches the pet before B's send: day 1 starts.
+    await recordActivity({ channelId: p.dm, authorId: p.lo, kind: 'poke', at: now });
+    expect(await petRow(p.dm)).toMatchObject({ taskDay: day(1), tasksDone: poke, points: 5, lastFedDay: day(-1) });
+    await recordActivity({ channelId: p.dm, authorId: p.hi, kind: 'message', at: late });
+    // D0 is fed and paid; day 1's counters and tasks stay as they were.
+    const fed = (await petRow(p.dm))!;
+    expect(fed).toMatchObject({
+      status: 'active',
+      lastFedDay: D0,
+      points: 15,
+      taskDay: day(1),
+      countA: 0,
+      countB: 0,
+      tasksDone: poke,
+    });
+    expect((await petOf(p.a, p.dm)).mood).toBe('hungry');
+    // Paid once.
+    await recordActivity({ channelId: p.dm, authorId: p.hi, kind: ['message', 'photo'], at: late });
+    expect(await petRow(p.dm)).toEqual(fed);
+
+    await sweepPets();
+    expect(await petRow(p.dm)).toMatchObject({ status: 'active', lastFedDay: D0 });
+    expect(await events(p.dm)).toEqual(['invited', 'adopted']);
+    // q fell asleep before its late hi got there: the hi wakes it.
+    expect(await petRow(q.dm)).toMatchObject({ status: 'asleep' });
+    await recordActivity({ channelId: q.dm, authorId: q.lo, kind: 'poke', at: now });
+    await recordActivity({ channelId: q.dm, authorId: q.hi, kind: 'message', at: late });
+    expect(await petRow(q.dm)).toMatchObject({ status: 'active', lastFedDay: D0, points: 15, tasksDone: poke });
+    expect(await events(q.dm)).toEqual(['invited', 'adopted', 'asleep', 'awake']);
+    // r's late hi fed nothing on D0: it stays dropped.
+    await recordActivity({ channelId: r.dm, authorId: r.lo, kind: 'poke', at: now });
+    await recordActivity({ channelId: r.dm, authorId: r.lo, kind: 'message', at: late });
+    expect(await petRow(r.dm)).toMatchObject({ status: 'asleep', lastFedDay: day(-1), points: 5, countA: 0 });
+  });
+
   it("a send racing the accept is counted, even when the accept's seed missed it", async () => {
     const p = await pair();
     // B said hi today; A last messaged yesterday. A invited, B accepts while
@@ -1180,6 +1230,45 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     for (const n of [adoptedNotice, pa, qa]) expect(unsafe(n.content), n.content).toBe(false);
     expect(pa.metadata).toMatchObject({ event: 'asleep', petName: '[x](https://e.io)' });
     expect(qa.metadata).toMatchObject({ event: 'asleep', petName: '<@1> <#2> \\<@&3>' });
+  });
+
+  it("a name shaped like E2EE ciphertext can't make a notice read as encrypted, and turning E2EE off purges no notice", async () => {
+    const p = await adopted();
+    await setName(p.a, 'zkE2EE/3:Ari');
+    expect((await rename(p.a, p.dm, 'zkE2EE/3:Mochi')).status).toBe(200);
+    await setRow(p.dm, { points: 20 });
+    await msg(p.dm, p.lo);
+    await msg(p.dm, p.hi);
+    const all = await notices(p.dm);
+    expect(all.map((n) => (n.metadata as { event: string }).event)).toEqual(['invited', 'adopted', 'renamed', 'hatched']);
+    for (const n of all) expect(n.content, n.content).not.toMatch(/^zkE2EE\//);
+    const hatched = all.at(-1)!;
+    expect(hatched.content).toBe('zkE2EE⁠/3:Mochi hatched! 🐣');
+    expect(hatched.metadata).toMatchObject({ petName: 'zkE2EE/3:Mochi' });
+    // A notice posted before names were defused is still never ciphertext.
+    await db.update(schema.messages).set({ content: 'zkE2EE/3:Mochi hatched! 🐣' }).where(eq(schema.messages.id, hatched.id));
+    const cipher = await createMessage(p.dm, { authorId: p.a, content: 'zkE2EE/3:Y2lwaGVy' });
+    const verifier = 'Q29ycmVjdFZlcmlmaWVyMDAwMDAwMDAwMDAwMDAwMD0=';
+    await enableE2ee(p.dm, 'c2FsdHNhbHRzYWx0c2FsdA==', verifier);
+    const off = await disableE2eeAndPurge(p.dm, verifier);
+    expect(off).toEqual({ status: 'disabled', purgedMessageIds: [cipher] });
+    expect((await notices(p.dm)).map((n) => n.id)).toEqual(all.map((n) => n.id));
+  });
+
+  it('search leaves pet notices out, whoever is their nominal author', async () => {
+    const p = await adopted();
+    const said = await createMessage(p.dm, { authorId: p.lo, content: 'our pet fell asleep on the sofa' });
+    // The sweep's notice is authored by A (p.lo), whose own words match too.
+    at(`${day(1)}T12:00:00Z`);
+    await sweepPets();
+    expect(await events(p.dm)).toEqual(['invited', 'adopted', 'asleep']);
+    for (const u of [p.a, p.b]) {
+      expect((await searchDirectMessages(u, 'asleep')).map((m) => m.id)).toEqual([said]);
+      expect((await searchDirectMessages(u, '', 50, { authorId: p.lo })).map((m) => m.id)).toEqual([said]);
+    }
+    expect((await searchMessages(p.dm, 'Zekk')).length).toBe(0);
+    expect((await searchMessages(p.dm, '', 50, { authorId: p.lo })).map((m) => m.id)).toEqual([said]);
+    expect((await searchMessages(p.dm, '', 50, { authorId: p.hi })).length).toBe(0);
   });
 
   it('a rename runs the parental watch-word scan, flagged against its notice', async () => {
@@ -1521,7 +1610,12 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     expect(petNoticeText('adopted', odd)).toBe('x\\⁠]⁠ and @⁠everyone_* adopted a Zekk Pet! 🥚');
     // With no backslash-escapes, a name reads unchanged where `content` is shown
     // as is (installed Android, the web, iOS search): the joiners are invisible.
-    for (const name of ['[AFK] Ari', 'Mochi [v2]', '¯\\_(ツ)_/¯', '\\(^o^)/', 'a\\\\b']) {
+    // Nor can a name make it start like E2EE ciphertext (`zkE2EE/<v>:`).
+    const wire = { ...p, petName: 'zkE2EE/3:Mochi', actorName: 'zkE2EE/1:Ari', otherName: 'zkE2EE/2:Bo' };
+    for (const e of ['invited', 'adopted', 'hatched', 'evolved', 'asleep', 'awake', 'ran_away', 'renamed'] as const) {
+      expect(petNoticeText(e, wire)).not.toMatch(/zkE2EE\//);
+    }
+    for (const name of ['[AFK] Ari', 'Mochi [v2]', '¯\\_(ツ)_/¯', '\\(^o^)/', 'a\\\\b', 'zkE2EE/3:Mochi']) {
       const shown = (e: 'hatched' | 'renamed') =>
         petNoticeText(e, { ...p, petName: name, actorName: name }).replace(/\u2060/g, '');
       expect(shown('hatched')).toBe(`${name} hatched! 🐣`);

@@ -275,9 +275,7 @@ function applyActivity(
     status = 'active';
     events.push('awake');
   }
-  const stageBefore = petStageForLevel(row.level);
-  const stageAfter = petStageForLevel(level);
-  if (stageAfter !== stageBefore) events.push(stageBefore === 'egg' ? 'hatched' : 'evolved');
+  events.push(...stageEvents(row.level, level));
   return {
     next: {
       ...row,
@@ -292,6 +290,37 @@ function applyActivity(
     },
     events,
   };
+}
+
+/** The notice a level change earns: 'hatched' / 'evolved' on a new stage. */
+function stageEvents(levelBefore: number, levelAfter: number): PetNoticeEvent[] {
+  const stageBefore = petStageForLevel(levelBefore);
+  return petStageForLevel(levelAfter) === stageBefore ? [] : [stageBefore === 'egg' ? 'hatched' : 'evolved'];
+}
+
+/**
+ * A message from `today` that only reaches the row after a later day began
+ * on it (that day's send or poke got the pet lock first), on a day the
+ * streak credited. Both people did say hi on `today`, but the counters that
+ * would show it belong to the newer day now. So only the feed is credited —
+ * last_fed_day, both_hi's points (a level, maybe a stage), waking a sleeping
+ * pet — and the newer day's counters and tasks stay as they are. The caller
+ * checks `today`'s both_hi was never paid (last_fed_day < today). A day
+ * before the adoption's earns no points: had the accept seen this streak
+ * credit, its seed would only have set last_fed_day from it. Pure.
+ */
+function applyLateFeed(row: PetRow, today: string): { next: PetRow; events: PetNoticeEvent[] } {
+  const earned = row.adoptedAt !== null && utcDay(row.adoptedAt) <= today;
+  const points = row.points + (earned ? BOTH_HI.points : 0);
+  const level = petLevelForPoints(points);
+  const events: PetNoticeEvent[] = [];
+  let status = row.status;
+  if (status === 'asleep') {
+    status = 'active';
+    events.push('awake');
+  }
+  events.push(...stageEvents(row.level, level));
+  return { next: { ...row, status, points, level, lastFedDay: today }, events };
 }
 
 function rowChanged(a: PetRow, b: PetRow): boolean {
@@ -330,6 +359,9 @@ function sameDTO(a: PetDTO, b: PetDTO): boolean {
  *  - The same joiner goes after every `<` and after the `@` of @everyone /
  *    @here, so no autolink, inline HTML or mention token (`<@id>`, `<@&id>`,
  *    `<#id>`) can form on either app.
+ *  - It also goes before the `/` of `zkE2EE/`, so no notice starts like the
+ *    E2EE wire format (`zkE2EE/<v>:`): old apps would show it as a message
+ *    they can't decrypt, and turning E2EE off purges rows that look like it.
  * Emphasis characters stay: at worst they style the name itself, and an
  * escape would print as a backslash on Android (`cool\_guy`). The metadata
  * keeps the raw name; new clients show it as plain text.
@@ -338,7 +370,8 @@ export function escapeNoticeInline(s: string): string {
   return s
     .replace(/[\\\]]/g, '$&⁠')
     .replace(/</g, '<⁠')
-    .replace(/@(everyone|here)/g, '@⁠$1');
+    .replace(/@(everyone|here)/g, '@⁠$1')
+    .replace(/zkE2EE\//g, 'zkE2EE⁠/');
 }
 
 /**
@@ -548,6 +581,17 @@ async function liveStreak(exec: DbHandle, channelId: bigint, today: string) {
     .limit(1);
   const alive = !!row && (row.lastCountedDay === today || row.lastCountedDay === addDays(today, -1));
   return { row: row ?? null, streak: alive ? Math.min(row!.streak, STREAK_CAP) : 0 };
+}
+
+/** Did the DM's streak credit `day` (both people messaged on it)? The
+ *  stored count is the run of credited days ending on last_counted_day. */
+async function streakCredited(exec: DbHandle, channelId: bigint, day: string): Promise<boolean> {
+  const { row } = await liveStreak(exec, channelId, day);
+  return (
+    !!row?.lastCountedDay &&
+    row.lastCountedDay >= day &&
+    addDays(row.lastCountedDay, 1 - row.streak) <= day
+  );
 }
 
 /** The DM's pet, or null (none, or an invite that lapsed). */
@@ -853,24 +897,35 @@ export async function recordActivity(args: {
     await lockPet(tx, args.channelId);
     const row = await loadRow(tx, args.channelId);
     if (!row || row.status === 'invited' || dueToRunAway(row, today)) return null;
-    // A later day already started on the row (an activity of that day got the
-    // lock first): never rewind it, or todayCounters would zero that day and
-    // its tasks would pay out twice. A late activity is dropped; no per-day
-    // history is kept.
-    if (row.taskDay !== null && row.taskDay > today) return null;
     const side = args.authorId === row.userAId ? 'a' : args.authorId === row.userBId ? 'b' : null;
     if (side === null) return null;
-    // A send from before the adoption, on the adoption day, that only gets
-    // here now (it raced the accept): the accept seeded that side's count
-    // with one for "said hi today" from dm_streaks, which may or may not have
-    // seen this send's streak commit. Either way it is that one message, so
-    // it counts at most once.
-    const seeded =
-      args.at !== undefined &&
-      row.adoptedAt !== null &&
-      args.at < row.adoptedAt &&
-      utcDay(row.adoptedAt) === today;
-    const { next, events } = applyActivity(row, today, side, kinds, seeded);
+    let applied: { next: PetRow; events: PetNoticeEvent[] };
+    if (row.taskDay !== null && row.taskDay > today) {
+      // A later day already started on the row (an activity of that day got
+      // the lock first): never rewind it, or todayCounters would zero that day
+      // and its tasks would pay out twice. A late activity is dropped (no
+      // per-day history is kept), except the feed it may have completed: the
+      // pet lock and the streak's are separate, so a next-day poke or send can
+      // win this one while the streak still credits this message's day. The
+      // send hook commits this message's streak update before calling here.
+      if (!kinds.includes('message')) return null;
+      if (row.lastFedDay !== null && row.lastFedDay >= today) return null;
+      if (!(await streakCredited(tx, args.channelId, today))) return null;
+      applied = applyLateFeed(row, today);
+    } else {
+      // A send from before the adoption, on the adoption day, that only gets
+      // here now (it raced the accept): the accept seeded that side's count
+      // with one for "said hi today" from dm_streaks, which may or may not
+      // have seen this send's streak commit. Either way it is that one
+      // message, so it counts at most once.
+      const seeded =
+        args.at !== undefined &&
+        row.adoptedAt !== null &&
+        args.at < row.adoptedAt &&
+        utcDay(row.adoptedAt) === today;
+      applied = applyActivity(row, today, side, kinds, seeded);
+    }
+    const { next, events } = applied;
     if (!rowChanged(row, next)) return null;
     const [saved] = await tx
       .update(schema.dmPets)

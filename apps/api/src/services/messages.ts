@@ -15,7 +15,7 @@
  * in the route layer; this service trusts its caller.
  */
 
-import { and, asc, desc, eq, exists, gt, gte, inArray, isNull, lt, lte, sql, type SQL } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, gt, gte, inArray, isNull, lt, lte, ne, sql, type SQL } from 'drizzle-orm';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { nextSnowflake } from '../snowflake';
@@ -1281,10 +1281,16 @@ export async function searchMessages(
   // couldn't decorate. The builder binds params correctly and returns typed
   // camelCase rows. The FTS predicate stays raw `sql` so it matches the GIN
   // expression index from migration 0002 (`to_tsvector('english', content)`).
+  //
+  // Zekk Pet notices ('system_pet') are left out: their author is only
+  // nominal (user A for the sweep's), so "from: X" would list notices X never
+  // caused, and their content is the old-app fallback, not something anyone
+  // wrote.
   const conds: SQL[] = [
     eq(schema.messages.channelId, channelId),
     isNull(schema.messages.deletedAt),
     notExpired(),
+    ne(schema.messages.type, 'system_pet'),
   ];
   if (trimmed.length > 0) {
     conds.push(
@@ -1344,10 +1350,12 @@ export async function searchDirectMessages(
   // hydrateMessages couldn't read). Base predicate: not soft-deleted AND the
   // caller is a recipient of the message's DM channel (correlated EXISTS,
   // index-friendly via dm_recipients_user_idx). FTS stays raw `sql` to match
-  // the migration-0002 GIN index.
+  // the migration-0002 GIN index. Pet notices are left out, as in
+  // searchMessages.
   const conds: SQL[] = [
     isNull(schema.messages.deletedAt),
     notExpired(),
+    ne(schema.messages.type, 'system_pet'),
     exists(
       db
         .select({ one: sql`1` })
