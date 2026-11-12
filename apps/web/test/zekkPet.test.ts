@@ -16,9 +16,11 @@ import {
 import {
   appendScrollKind,
   isPetNotice,
+  nextUtcMidnightRefreshAt,
   petArtProgress,
   petBanner,
   petCanAct,
+  petDisplayName,
   petLevelLine,
   petLevelProgress,
   petMoodView,
@@ -30,6 +32,13 @@ import {
   utcWeekday,
 } from '../src/lib/zekkPet';
 import { PetInviteActions } from '../src/app/ZekkPet';
+import { refocusIfDropped, restoreFocus } from '../src/app/ZekkPetModal';
+import {
+  clearPetBannerDismissals,
+  dismissPetBanner,
+  isPetBannerDismissed,
+  subscribePetBannerDismissals,
+} from '../src/lib/petBannerDismissals';
 import {
   PET_COLORS,
   PET_INK,
@@ -123,6 +132,14 @@ describe('shared strings reach the web unchanged', () => {
     expect(normalizePetName('x'.repeat(24))).toBe('x'.repeat(24));
     expect(normalizePetName('x'.repeat(25))).toBeNull();
     expect(normalizePetName('a\u0007b')).toBeNull();
+  });
+
+  it("masks a swear-word name for a supervised child, like a message body", () => {
+    // The other person picks the name, so the parental mask has to reach it
+    // (header pet, card, notices) as it reaches their messages.
+    expect(petDisplayName('Shit Lord', true)).toBe('S••• Lord');
+    expect(petDisplayName('Shit Lord', false)).toBe('Shit Lord');
+    expect(petDisplayName('Mochi', true)).toBe('Mochi');
   });
 });
 
@@ -222,6 +239,33 @@ describe('adopt bar', () => {
     });
   });
 
+  it('locks Accept on their invite once the streak is under the minimum', () => {
+    // A invited on a 4-day streak, then a day was missed: the invite stays
+    // up to 7 days, but the server refuses to accept it on a broken streak.
+    const invited = pet({ status: 'invited', level: 0, stage: 'egg', tasks: [], invitedBy: PEER });
+    const broken: DmPetState = { pet: invited, eligible: false, streak: 0, minStreak: 3 };
+    expect(petBanner(broken, SELF, 'Sam')).toEqual({
+      kind: 'invited',
+      text: 'Sam wants to raise a Zekk Pet with you. Keep a 3-day streak going to accept.',
+      locked: true,
+    });
+    expect(petBanner({ ...broken, streak: 2 }, SELF, 'Sam')?.locked).toBe(true);
+    expect(petBanner({ ...broken, streak: 3 }, SELF, 'Sam')).toEqual({
+      kind: 'invited',
+      text: 'Sam wants to raise a Zekk Pet with you.',
+    });
+    // Our own waiting invite keeps its Cancel whatever the streak.
+    expect(petBanner({ ...broken, pet: { ...invited, invitedBy: SELF } }, SELF, 'Sam')).toEqual({
+      kind: 'waiting',
+      text: 'Waiting for Sam to accept your Zekk Pet.',
+    });
+    const html = renderToStaticMarkup(
+      createElement(PetInviteActions, { kind: 'invited', busy: null, onRun: () => {}, locked: true }),
+    );
+    expect(html).not.toContain('Accept');
+    expect(html).toContain('Not now');
+  });
+
   it('is gone once the egg is adopted, and before anything loaded', () => {
     expect(petBanner(state(pet()), SELF, 'Sam')).toBeNull();
     expect(petBanner(undefined, SELF, 'Sam')).toBeNull();
@@ -244,6 +288,28 @@ describe('adopt bar', () => {
     expect(html('adopt')).toContain('Adopt');
     expect(html('adopt', false)).toBe('');
     expect(html('waiting', false)).toContain('Cancel');
+  });
+
+  it('forgets dismissed bars when the signed-in account changes', () => {
+    // Two people sharing a tab: A hides the adopt bar and signs out; B signs
+    // in without a reload and must still see it.
+    let notified = 0;
+    const off = subscribePetBannerDismissals(() => notified++);
+    try {
+      dismissPetBanner('9:adopt');
+      expect(isPetBannerDismissed('9:adopt')).toBe(true);
+      expect(isPetBannerDismissed('9:invited')).toBe(false);
+      expect(notified).toBe(1);
+      clearPetBannerDismissals();
+      expect(isPetBannerDismissed('9:adopt')).toBe(false);
+      expect(notified).toBe(2);
+    } finally {
+      off();
+      clearPetBannerDismissals();
+    }
+    // AppState clears them next to its sign-out / account-switch RESET.
+    const appState = readFileSync(new URL('../src/state/AppState.tsx', import.meta.url), 'utf8');
+    expect(appState).toMatch(/dispatch\(\{ type: 'RESET' \}\);\s*(\/\/[^\n]*\n\s*)*clearPetBannerDismissals\(\);/);
   });
 });
 
@@ -295,6 +361,24 @@ describe('in-chat notices', () => {
 });
 
 describe('clock-driven refetch', () => {
+  it('refetches an Adopt / Accept bar at midnight UTC, when a streak can break', () => {
+    expect(nextUtcMidnightRefreshAt(Date.parse('2026-11-11T09:00:00Z'))).toBe(Date.parse('2026-11-12T00:00:05Z'));
+    expect(nextUtcMidnightRefreshAt(Date.parse('2026-11-11T23:59:59Z'))).toBe(Date.parse('2026-11-12T00:00:05Z'));
+    // A re-render inside the slack keeps the pending timer…
+    expect(nextUtcMidnightRefreshAt(Date.parse('2026-11-12T00:00:02Z'))).toBe(Date.parse('2026-11-12T00:00:05Z'));
+    // …and once it has fired the next midnight takes over (no refetch loop).
+    expect(nextUtcMidnightRefreshAt(Date.parse('2026-11-12T00:00:05Z'))).toBe(Date.parse('2026-11-13T00:00:05Z'));
+    // Month and year ends roll over.
+    expect(nextUtcMidnightRefreshAt(Date.parse('2026-12-31T12:00:00Z'))).toBe(Date.parse('2027-01-01T00:00:05Z'));
+    // In server time: a device 30 s fast (offset −30 s) at its 00:00:10 is
+    // server 23:59:40, so it still waits for the server's midnight.
+    const offset = -30_000;
+    const device = Date.parse('2026-11-12T00:00:10Z');
+    const at = nextUtcMidnightRefreshAt(serverNow(offset, device));
+    expect(at).toBe(Date.parse('2026-11-12T00:00:05Z'));
+    expect(timeoutUntil(at, offset, device)).toBeGreaterThanOrEqual(25_000);
+  });
+
   const p = pet({ today: '2026-11-11', dayEndsAt: '2026-11-12T00:00:00.000Z' });
   it('wakes at 18:00 UTC, then at midnight UTC', () => {
     expect(petNextRefreshAt(p, Date.parse('2026-11-11T09:00:00Z'))).toBe(Date.parse('2026-11-11T18:00:05Z'));
@@ -586,6 +670,20 @@ describe('art: colours follow the theme', () => {
   it('turns motion off for reduced-motion users', () => {
     expect(css).toMatch(/prefers-reduced-motion: reduce\)\s*\{\s*\.zk-pet-bob,\s*\.zk-pet-breathe,\s*\.zk-pet-wobble/);
   });
+
+  it('still shows the tap heart under reduced motion, fading in place', () => {
+    // The global reduced-motion rule cuts every animation to 0.01 ms, which
+    // left the heart (fill-mode forwards) invisible at once: a tap showed
+    // nothing. The pet's own rule must win (!important on a class beats `*`)
+    // and keep HEART_MS.
+    const block = css.slice(css.indexOf('@keyframes zk-pet-heart-fade'));
+    expect(block).toMatch(/@keyframes zk-pet-heart-fade \{\s*from \{ opacity: 1; \}\s*to \{ opacity: 0; \}/);
+    expect(block).toMatch(
+      /prefers-reduced-motion: reduce\)\s*\{[^@]*\.zk-pet-heart \{\s*animation: zk-pet-heart-fade 0\.8s ease-out forwards !important;/,
+    );
+    const modal = readFileSync(new URL('../src/app/ZekkPetModal.tsx', import.meta.url), 'utf8');
+    expect(modal).toContain('const HEART_MS = 800;');
+  });
 });
 
 describe('art: motion and the rendered SVG', () => {
@@ -635,6 +733,83 @@ describe('art: motion and the rendered SVG', () => {
   });
 });
 
+describe('pet card', () => {
+  it('keeps the asleep Zs on its stage at the breathe and squash peaks', () => {
+    // ZekkPetModal's stage: w-44 (11rem at the 15px root = 165px), rounded-2xl
+    // (1rem = 15px), a 1px border, the art 140px and centred. A disc that
+    // size cut the top Z, whose corner of the art lies outside it.
+    const modal = readFileSync(new URL('../src/app/ZekkPetModal.tsx', import.meta.url), 'utf8');
+    expect(modal).toContain('w-44 h-44 shrink-0 rounded-2xl border');
+    expect(modal).toContain('size={140}');
+    const box = 165;
+    const art = 140;
+    const origin = (box - art) / 2;
+    const k = art / 100;
+    // Breathe (1.03) and the tap squash (1.04 × 0.94) inside it, both about
+    // (50, 88); the Zs' stroke is 2 units with round caps.
+    const scales: Array<[number, number]> = [[1, 1], [1.03, 1.03], [1.03 * 1.04, 1.03 * 0.94]];
+    const margin = 1 + 1 * 1.03 * 1.04 * k;
+    const inRoundedSquare = (x: number, y: number, r: number) => {
+      const qx = Math.min(Math.max(x, r), box - r);
+      const qy = Math.min(Math.max(y, r), box - r);
+      return Math.hypot(x - qx, y - qy) <= r - margin;
+    };
+    const zs = petShapes({ stage: 'legendary', mood: 'asleep' }).filter((s) => s.part === 'zzz');
+    expect(zs).toHaveLength(3);
+    let fitsDisc = true;
+    for (const z of zs) {
+      const pts = String(z.attrs.points).split(' ').map((xy) => xy.split(',').map(Number) as [number, number]);
+      for (const [x, y] of pts) {
+        for (const [sx, sy] of scales) {
+          const px = origin + k * (50 + sx * (x - 50));
+          const py = origin + k * (88 + sy * (y - 88));
+          expect(inRoundedSquare(px, py, 15)).toBe(true);
+          if (!inRoundedSquare(px, py, box / 2)) fitsDisc = false;
+        }
+      }
+    }
+    expect(fitsDisc).toBe(false);
+  });
+
+  it('gives focus back to the opener, or to the fallback once the opener is gone', () => {
+    // Cancel / Not now in the card removes the header pet that opened it.
+    const calls: string[] = [];
+    const el = (isConnected: boolean) => ({ isConnected, focus: () => calls.push(`opener:${isConnected}`) });
+    const fallback = () => calls.push('fallback');
+    restoreFocus(el(true) as unknown as HTMLElement, fallback);
+    restoreFocus(el(false) as unknown as HTMLElement, fallback);
+    restoreFocus(null, fallback);
+    restoreFocus(el(false) as unknown as HTMLElement, undefined);
+    expect(calls).toEqual(['opener:true', 'fallback', 'fallback']);
+  });
+
+  it('keeps focus in the open card when the focused control goes away', () => {
+    // Saving or cancelling a rename unmounts the field, and Accept swaps the
+    // invite view for the card: focus falls to <body> while the card stays
+    // open. It goes to the pencil / the dialog then — and only then.
+    const calls: string[] = [];
+    const body = { isConnected: true } as unknown as HTMLElement;
+    const target = { focus: () => calls.push('target') } as unknown as HTMLElement;
+    const other = { isConnected: true } as unknown as HTMLElement;
+    const gone = { isConnected: false } as unknown as HTMLElement;
+    refocusIfDropped(target, { activeElement: body, body: body as HTMLBodyElement });
+    refocusIfDropped(target, { activeElement: null, body: body as HTMLBodyElement });
+    refocusIfDropped(target, { activeElement: gone, body: body as HTMLBodyElement });
+    expect(calls).toEqual(['target', 'target', 'target']);
+    // Focus still on something real (the ✕, the pet): leave it there.
+    refocusIfDropped(target, { activeElement: other, body: body as HTMLBodyElement });
+    refocusIfDropped(null, { activeElement: body, body: body as HTMLBodyElement });
+    expect(calls).toHaveLength(3);
+    // The card wires it to the rename pencil (or the name), the name input
+    // after a failed save, and the dialog after the invite view goes.
+    const modal = readFileSync(new URL('../src/app/ZekkPetModal.tsx', import.meta.url), 'utf8');
+    expect(modal).toContain('refocusIfDropped(pencilRef.current ?? nameRef.current)');
+    expect(modal).toContain('refocusIfDropped(inputRef.current)');
+    expect(modal).toMatch(/lastStatus\.current === 'invited' && status && status !== 'invited'\) refocusIfDropped\(dialogRef\.current\)/);
+    expect(modal).toContain('aria-describedby={hintId}');
+  });
+});
+
 // ── State ───────────────────────────────────────────────────────────────
 
 describe('AppState pet map', () => {
@@ -675,6 +850,62 @@ describe('AppState pet map', () => {
   it('assumes "not eligible" for a live update before any fetch', () => {
     const s = run({ type: 'DM_PET_SET', channelId: '9', pet: null });
     expect(s.dmPets['9']).toEqual({ pet: null, eligible: false, streak: 0, minStreak: 3 });
+  });
+
+  it('takes an invite that arrives before any fetch as acceptable until the fetch says', () => {
+    // An invite needs a 3-day streak to be sent, so opening the DM doesn't
+    // flash "keep a streak going" in place of Accept while getDmPet runs.
+    const invite = pet({ status: 'invited', level: 0, stage: 'egg', tasks: [], invitedBy: PEER });
+    const s = run({ type: 'DM_PET_SET', channelId: '9', pet: invite });
+    expect(s.dmPets['9']).toMatchObject({ eligible: false, streak: 3, minStreak: 3 });
+    expect(petBanner(s.dmPets['9'], SELF, 'Sam')).toEqual({
+      kind: 'invited',
+      text: 'Sam wants to raise a Zekk Pet with you.',
+    });
+    // The fetch is the truth: the streak broke.
+    const after = appStateReducer(s, {
+      type: 'DM_PET_STATE_SET',
+      channelId: '9',
+      petState: { pet: invite, eligible: false, streak: 0, minStreak: 3 },
+    });
+    expect(petBanner(after.dmPets['9'], SELF, 'Sam')?.locked).toBe(true);
+  });
+
+  it('works out the eligibility again when the pet went away during the first fetch', () => {
+    // Opening the DM fetches; Sam cancels his invite before the answer,
+    // which still saw it (so "not eligible", as with any pet). The event
+    // lands first, then the stale answer: the Adopt bar must show.
+    const invite = pet({ status: 'invited', level: 0, stage: 'egg', tasks: [], invitedBy: PEER });
+    const stale = (extra: Partial<DmPetState> = {}): Action => ({
+      type: 'DM_PET_STATE_SET',
+      channelId: '9',
+      petState: { pet: invite, eligible: false, streak: 5, minStreak: 3, canAct: true, ...extra },
+      keepPet: true,
+    });
+    const gone: Action = { type: 'DM_PET_SET', channelId: '9', pet: null };
+    const s = run(gone, stale());
+    expect(s.dmPets['9']).toMatchObject({ pet: null, eligible: true, streak: 5 });
+    expect(petBanner(s.dmPets['9'], SELF, 'Sam')).toEqual({
+      kind: 'adopt',
+      text: '🥚 5-day streak! Adopt a Zekk Pet with Sam.',
+    });
+    // Same gates as the server: a live streak of the minimum, and canAct
+    // (absent from older servers means yes).
+    expect(run(gone, stale({ streak: 2 })).dmPets['9']!.eligible).toBe(false);
+    expect(run(gone, stale({ streak: 0 })).dmPets['9']!.eligible).toBe(false);
+    expect(run(gone, stale({ canAct: false })).dmPets['9']!.eligible).toBe(false);
+    expect(run(gone, stale({ canAct: undefined })).dmPets['9']!.eligible).toBe(true);
+    // A fresh answer (not raced) is taken as it is.
+    const fresh = run(gone, { ...stale(), keepPet: false } as Action);
+    expect(fresh.dmPets['9']).toMatchObject({ pet: { status: 'invited' }, eligible: false });
+    // And a raced answer that also saw no pet keeps the server's word.
+    const none = run(gone, {
+      type: 'DM_PET_STATE_SET',
+      channelId: '9',
+      petState: { pet: null, eligible: false, streak: 5, minStreak: 3, canAct: true },
+      keepPet: true,
+    });
+    expect(none.dmPets['9']!.eligible).toBe(false);
   });
 });
 

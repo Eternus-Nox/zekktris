@@ -23,7 +23,7 @@
  * Hosted by MessageView, which closes it on a channel switch.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { PET_NAME_MAX_LENGTH, normalizePetName, type PetDTO } from '@zekktris/client';
 import { Portal } from '../lib/Portal';
 import { ModalHeader } from '../lib/ModalHeader';
@@ -40,22 +40,46 @@ import {
   petTaskRows,
 } from '../lib/zekkPet';
 import { useAppStateSelector } from '../state/AppState';
-import { PetInviteActions, usePetActions } from './ZekkPet';
+import { PetInviteActions, usePetActions, usePetDisplayName } from './ZekkPet';
 
 /** How long one tap heart floats (matches zk-pet-heart in index.css). */
 const HEART_MS = 800;
+
+/** Focus back to the card's opener, or — when it has left the page (the
+    header chip goes with a withdrawn invite or a pet that ran away) — to the
+    host's fallback, so focus doesn't drop to <body>. */
+export function restoreFocus(opener: HTMLElement | null, fallback: (() => void) | undefined): void {
+  if (opener?.isConnected) opener.focus();
+  else fallback?.();
+}
+
+/** The focused control left the card while the card stays open (the rename
+    field closed, the invite view became the pet card, the name input was
+    disabled while saving): focus fell to <body>, so put it on `target`. Left
+    alone when focus is still somewhere on the page. */
+export function refocusIfDropped(
+  target: HTMLElement | null,
+  doc: Pick<Document, 'activeElement' | 'body'> = document,
+): void {
+  const active = doc.activeElement;
+  if (active && active !== doc.body && active.isConnected) return;
+  target?.focus();
+}
 
 export function ZekkPetModal({
   channelId,
   peerName,
   selfId,
   onClose,
+  returnFocus,
 }: {
   channelId: string;
   /** The other person (their DM nickname when set). */
   peerName: string;
   selfId: string;
   onClose: () => void;
+  /** Focuses something that stays on the page, for when the opener is gone. */
+  returnFocus?: () => void;
 }) {
   const petState = useAppStateSelector((v) => v.state.dmPets[channelId]);
   const pet = petState?.pet ?? null;
@@ -79,8 +103,30 @@ export function ZekkPetModal({
   const openerRef = useRef<HTMLElement | null>(
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
-  useEffect(() => () => openerRef.current?.focus(), []);
-  const focusDialog = useCallback((el: HTMLDivElement | null) => el?.focus(), []);
+  // Read through a ref: the cleanup below must see the latest callback.
+  const returnFocusRef = useRef(returnFocus);
+  returnFocusRef.current = returnFocus;
+  useEffect(() => () => restoreFocus(openerRef.current, returnFocusRef.current), []);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const focusDialog = useCallback((el: HTMLDivElement | null) => {
+    dialogRef.current = el;
+    el?.focus();
+  }, []);
+  // The invite view turning into the pet card (Accept here, or the other
+  // person accepting ours) takes the focused button with it.
+  const status = pet?.status;
+  const lastStatus = useRef(status);
+  useEffect(() => {
+    if (lastStatus.current === 'invited' && status && status !== 'invited') refocusIfDropped(dialogRef.current);
+    lastStatus.current = status;
+  }, [status]);
+  // The same when an Accept / Not now / Cancel failed: the view stays, but
+  // its buttons were disabled while it ran, which drops focus.
+  const wasBusy = useRef(busy);
+  useEffect(() => {
+    if (wasBusy.current && !busy) refocusIfDropped(dialogRef.current);
+    wasBusy.current = busy;
+  }, [busy]);
 
   // Escape: out of the rename field first, then close. The field cancels its
   // own Escape and marks it handled (preventDefault). React may already have
@@ -128,6 +174,7 @@ export function ZekkPetModal({
                       kind={banner.kind}
                       busy={busy}
                       canAct={canAct}
+                      locked={banner.locked}
                       onRun={(c) => void run(c)}
                     />
                   </div>
@@ -151,9 +198,12 @@ export function ZekkPetModal({
   );
 }
 
-/** The big pet on its round stage. Tapping it squashes it and floats a
-    heart up — purely local, nothing is sent. */
+/** The big pet on its stage. Tapping it squashes it and floats a heart up
+    — purely local, nothing is sent. The stage is a rounded square, not a
+    circle: the asleep Zs sit in the art's top-right corner, which a disc
+    this size would cut (the top Z reaches past its rim and border). */
 function PetStageArt({ pet }: { pet: PetDTO }) {
+  const name = usePetDisplayName(pet.name);
   const [squash, setSquash] = useState(0);
   const [hearts, setHearts] = useState<number[]>([]);
   const nextId = useRef(1);
@@ -173,9 +223,9 @@ function PetStageArt({ pet }: { pet: PetDTO }) {
     <button
       type="button"
       onClick={tap}
-      className="w-44 h-44 shrink-0 rounded-full border border-line bg-bg-2 flex items-center justify-center hover:bg-bg-3 transition-colors"
-      aria-label={`Pet ${pet.name}`}
-      title={`Pet ${pet.name}`}
+      className="w-44 h-44 shrink-0 rounded-2xl border border-line bg-bg-2 flex items-center justify-center hover:bg-bg-3 transition-colors"
+      aria-label={`Pet ${name}`}
+      title={`Pet ${name}`}
     >
       <ZekkPetArt
         stage={pet.status === 'invited' ? 'egg' : pet.stage}
@@ -206,17 +256,30 @@ function PetCard({
   canRename: boolean;
   onRename: (name: string) => Promise<boolean>;
 }) {
+  const name = usePetDisplayName(pet.name);
   const mood = petMoodView(pet);
   const level = petLevelProgress(pet);
   const tasks = petTaskRows(pet, selfId);
   const path = petStagePath(pet.stage);
+
+  // Saving, cancelling (Escape, ✕) or a block hiding the field unmounts it
+  // with focus inside: put focus on the pencil it came from (or the name,
+  // when renaming isn't allowed any more) rather than <body>.
+  const fieldOpen = editing && canRename;
+  const wasOpen = useRef(fieldOpen);
+  const pencilRef = useRef<HTMLButtonElement>(null);
+  const nameRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (wasOpen.current && !fieldOpen) refocusIfDropped(pencilRef.current ?? nameRef.current);
+    wasOpen.current = fieldOpen;
+  }, [fieldOpen]);
 
   return (
     <div className="flex flex-col items-center gap-4">
       <PetStageArt pet={pet} />
 
       <div className="w-full flex flex-col items-center gap-1 text-center">
-        {editing && canRename ? (
+        {fieldOpen ? (
           <RenameField
             current={pet.name}
             saving={renaming}
@@ -227,9 +290,12 @@ function PetCard({
           />
         ) : (
           <div className="flex items-center gap-1.5 min-w-0 max-w-full">
-            <h3 className="text-lg font-semibold text-ink-1 truncate">{pet.name}</h3>
+            <h3 ref={nameRef} tabIndex={-1} className="text-lg font-semibold text-ink-1 truncate outline-none">
+              {name}
+            </h3>
             {canRename && (
               <button
+                ref={pencilRef}
                 type="button"
                 onClick={() => setEditing(true)}
                 className="shrink-0 w-7 h-7 flex items-center justify-center rounded text-ink-3 hover:text-ink-1 hover:bg-bg-3 transition-colors"
@@ -339,6 +405,15 @@ function RenameField({
   const name = normalizePetName(draft);
   const canSave = name !== null && name !== current && !saving;
   const invalid = draft.trim().length > 0 && name === null;
+  const hintId = useId();
+  // The input is disabled while saving, which drops its focus; a save that
+  // failed leaves the field open, so give it back.
+  const inputRef = useRef<HTMLInputElement>(null);
+  const wasSaving = useRef(saving);
+  useEffect(() => {
+    if (wasSaving.current && !saving) refocusIfDropped(inputRef.current);
+    wasSaving.current = saving;
+  }, [saving]);
 
   return (
     <form
@@ -350,6 +425,7 @@ function RenameField({
     >
       <div className="flex items-center gap-1">
         <input
+          ref={inputRef}
           autoFocus
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -362,6 +438,7 @@ function RenameField({
           disabled={saving}
           aria-label="Pet name"
           aria-invalid={invalid}
+          aria-describedby={hintId}
           // text-base (16px) keeps iOS from zooming the page on focus.
           className="flex-1 min-w-0 bg-bg-2 border border-line rounded-md px-3 py-1.5 text-base text-ink-1 outline-none focus:border-accent/60 disabled:opacity-60"
         />
@@ -384,7 +461,7 @@ function RenameField({
           <X size={18} />
         </button>
       </div>
-      <p className={`mt-1 text-xs ${invalid ? 'text-red-300' : 'text-ink-3'}`}>
+      <p id={hintId} className={`mt-1 text-xs ${invalid ? 'text-red-300' : 'text-ink-3'}`}>
         {invalid
           ? `Names are 1–${PET_NAME_MAX_LENGTH} characters, with no control characters.`
           : `Up to ${PET_NAME_MAX_LENGTH} characters. You'll both see the new name.`}

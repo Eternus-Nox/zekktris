@@ -96,6 +96,7 @@ import {
 } from '../lib/disappearing';
 import { newestConfirmedId } from '../lib/readAck';
 import { isPetNotice } from '../lib/zekkPet';
+import { clearPetBannerDismissals } from '../lib/petBannerDismissals';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
 
@@ -537,7 +538,8 @@ type Action =
   | { type: 'DM_TIMER_SET'; channelId: string; seconds: number | null }
   /** getDmPet's answer. `keepPet`: a DM_PET_UPDATE or our own change landed
       while it was in flight, so its `pet` is older than ours — keep ours and
-      take only the eligibility and streak. */
+      take only the eligibility and streak (eligibility recomputed when ours
+      is gone but the answer's wasn't). */
   | { type: 'DM_PET_STATE_SET'; channelId: string; petState: DmPetState; keepPet?: boolean }
   /** A DM's pet from DM_PET_UPDATE or our own invite / accept / decline /
       rename (null = no pet any more). */
@@ -2005,16 +2007,29 @@ function reducer(state: State, action: Action): State {
     }
     case 'DM_PET_STATE_SET': {
       const prev = state.dmPets[action.channelId];
-      const next = action.keepPet && prev ? { ...action.petState, pet: prev.pet } : action.petState;
+      let next = action.keepPet && prev ? { ...action.petState, pet: prev.pet } : action.petState;
+      // The pet went away while the fetch was in flight (cancelled, expired,
+      // ran away), but the answer still saw it — and the server says "not
+      // eligible" whenever a pet exists. Work it out as the server would for
+      // no pet, from the answer's live streak and gate; otherwise the Adopt
+      // bar stays hidden and nothing refetches (the pet-gone refetch only
+      // runs for a DM that had already loaded).
+      if (next !== action.petState && next.pet === null && action.petState.pet !== null) {
+        const { streak, minStreak, canAct } = action.petState;
+        next = { ...next, eligible: canAct !== false && streak >= minStreak };
+      }
       return { ...state, dmPets: { ...state.dmPets, [action.channelId]: next } };
     }
     case 'DM_PET_SET': {
       // Not fetched yet: whether the DM may adopt is unknown until getDmPet
-      // answers, so assume not (no banner) rather than guess.
+      // answers, so assume not (no banner) rather than guess. An invite is
+      // only ever sent on a streak of at least the minimum, so take that for
+      // one until the fetch says otherwise (Accept doesn't flash "keep a
+      // streak going" while the DM opens).
       const prev = state.dmPets[action.channelId] ?? {
         pet: null,
         eligible: false,
-        streak: 0,
+        streak: action.pet?.status === 'invited' ? PET_MIN_STREAK : 0,
         minStreak: PET_MIN_STREAK,
       };
       return { ...state, dmPets: { ...state.dmPets, [action.channelId]: { ...prev, pet: action.pet } } };
@@ -2784,6 +2799,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     if (lastIdentityRef.current === identity) return;
     lastIdentityRef.current = identity;
     dispatch({ type: 'RESET' });
+    // Hidden Zekk Pet bars live outside the reducer; the next account on
+    // this tab starts with none hidden.
+    clearPetBannerDismissals();
   }, [user?.id]);
   // Mirror state into a ref so async callbacks can guard against re-
   // entrancy without the closure pinning a stale value. React doesn't
@@ -4382,11 +4400,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       gateway.on<{ channel_id: string; streak: number }>(GatewayEvent.DM_STREAK_UPDATE, (d) => {
         dispatch({ type: 'DM_STREAK_SET', channelId: d.channel_id, streak: d.streak });
         // A DM without a pet may just have become able to adopt one (or the
-        // banner's streak count moved). The pet event doesn't cover that, so
-        // refetch the eligibility of a DM we've already loaded.
+        // banner's streak count moved), and an open invite may be acceptable
+        // again (its streak was rebuilt). The pet event doesn't cover that,
+        // so refetch the eligibility and streak of a DM we've already loaded.
         const fresh = stateRef.current;
         const petState = fresh.dmPets[d.channel_id];
-        if (fresh.zekkPetEnabled && petState && !petState.pet) {
+        if (fresh.zekkPetEnabled && petState && (!petState.pet || petState.pet.status === 'invited')) {
           void loadDmPet(d.channel_id).catch(() => undefined);
         }
       }),

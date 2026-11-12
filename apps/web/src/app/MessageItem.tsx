@@ -37,7 +37,7 @@ import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark, Timer } from '../lib/icons';
 import { disappearingHint, isDisappearingNotice, noticeText } from '../lib/disappearing';
-import { isPetNotice, petNoticeArt, petNoticeMeta, petNoticeText } from '../lib/zekkPet';
+import { isPetNotice, petDisplayName, petNoticeArt, petNoticeMeta, petNoticeText } from '../lib/zekkPet';
 import { ZekkPetArt } from '../lib/ZekkPetArt';
 import { useE2eeLinkPreviews, resolveE2eeLinkPreviews, cachedUnfurl } from '../lib/e2eeLinkPreviews';
 import { e2eeSupported, E2EE_INSECURE_SHORT } from '../lib/e2eeSupport';
@@ -798,7 +798,15 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // like the timer notice above (no actions, no grouping, never the receipt
   // anchor). Built from metadata so it reads "You…" for the viewer.
   if (isPetNotice(message)) {
-    return <PetNotice message={message} channel={channel} selfId={selfId} authorName={displayName} />;
+    return (
+      <PetNotice
+        message={message}
+        channel={channel}
+        selfId={selfId}
+        authorName={displayName}
+        filterProfanity={filterProfanity}
+      />
+    );
   }
 
   // System call messages — render as a compact inline notice rather
@@ -1352,12 +1360,16 @@ function PetNotice({
   channel,
   selfId,
   authorName,
+  filterProfanity,
 }: {
   message: Message;
   channel?: Channel;
   selfId: string | undefined;
   /** The row author's display name (nickname-aware), from the parent. */
   authorName: string;
+  /** A supervised child's profanity mask: the pet's name (chosen by either
+      person) and the fallback content are masked like message bodies. */
+  filterProfanity: boolean;
 }) {
   const usersById = useAppStateSelector((v) => v.state.usersById);
   const meta = petNoticeMeta(message);
@@ -1378,13 +1390,13 @@ function PetNotice({
     (meta &&
       petNoticeText({
         event: meta.event,
-        petName: meta.petName,
+        petName: petDisplayName(meta.petName, filterProfanity),
         stage: meta.stage,
         actorIsSelf: selfId !== undefined && actorId === selfId,
         actorName,
         peerName,
       })) ||
-    message.content;
+    (filterProfanity ? maskProfanity(message.content) : message.content);
   const art = meta ? petNoticeArt(meta) : ({ stage: 'egg', mood: 'happy' } as const);
   return (
     <div

@@ -9,7 +9,8 @@
  *   - PetAdoptBanner: the slim bar under the header — "Adopt" when the DM
  *     may adopt, "Cancel" on our open invite, "Accept" / "Not now" on theirs.
  *     Dismissible for the session (per DM and per kind of bar, so hiding the
- *     adopt prompt doesn't also hide a later invite).
+ *     adopt prompt doesn't also hide a later invite; cleared on sign-out —
+ *     lib/petBannerDismissals).
  *   - PetInviteActions + usePetActions: the bar's buttons, reused by the pet
  *     card (ZekkPetModal) while the invite is pending.
  *
@@ -17,19 +18,38 @@
  * lib/zekkPet so the web reads like the native apps.
  */
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, type PetDTO } from '@zekktris/client';
 import { ZekkPetArt } from '../lib/ZekkPetArt';
 import { X } from '../lib/icons';
-import { petArtProgress, petCanAct, petMoodView, type PetBanner, type PetBannerKind } from '../lib/zekkPet';
+import { dismissPetBanner, usePetBannerDismissed } from '../lib/petBannerDismissals';
+import {
+  petArtProgress,
+  petCanAct,
+  petDisplayName,
+  petMoodView,
+  type PetBanner,
+  type PetBannerKind,
+} from '../lib/zekkPet';
 import { useAppStateSelector, type DmPetChange } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
+
+/** The pet's name as the viewer sees it: masked for a supervised child with
+    the profanity filter on (petDisplayName). Wherever the name is shown;
+    only the rename field keeps the real name, since it edits it. */
+export function usePetDisplayName(name: string): string {
+  const filterProfanity = useAppStateSelector(
+    (v) => v.state.supervision?.restrictions?.filterProfanity ?? false,
+  );
+  return petDisplayName(name, filterProfanity);
+}
 
 /** The header pet. Same 28 px as the DM avatar, on the theme's chip surface. */
 export function DmPetButton({ pet, onOpen }: { pet: PetDTO; onOpen: () => void }) {
   const mood = petMoodView(pet);
+  const name = usePetDisplayName(pet.name);
   const label =
-    pet.status === 'invited' ? `Zekk Pet: ${pet.name} (invite pending)` : `Zekk Pet: ${pet.name}, ${mood.label}`;
+    pet.status === 'invited' ? `Zekk Pet: ${name} (invite pending)` : `Zekk Pet: ${name}, ${mood.label}`;
   return (
     <button
       type="button"
@@ -45,32 +65,6 @@ export function DmPetButton({ pet, onOpen }: { pet: PetDTO; onOpen: () => void }
         size={28}
       />
     </button>
-  );
-}
-
-// ── Session dismissal ────────────────────────────────────────────────────
-// A dismissed bar stays hidden until the app reloads — per DM and per kind.
-
-const dismissed = new Set<string>();
-const dismissListeners = new Set<() => void>();
-
-function subscribeDismissed(cb: () => void) {
-  dismissListeners.add(cb);
-  return () => {
-    dismissListeners.delete(cb);
-  };
-}
-
-function dismissBanner(key: string) {
-  dismissed.add(key);
-  for (const cb of dismissListeners) cb();
-}
-
-function useBannerDismissed(key: string): boolean {
-  return useSyncExternalStore(
-    subscribeDismissed,
-    () => dismissed.has(key),
-    () => dismissed.has(key),
   );
 }
 
@@ -127,17 +121,20 @@ const SECONDARY =
 /** [Adopt] · [Cancel] · [Accept] [Not now] — "Not now" declines the invite
     (no notice for either person); the inviter can invite again later.
     Without `canAct` (a block, a mute, supervision, or the other person left)
-    Adopt and Accept hide: they would only fail. */
+    Adopt and Accept hide: they would only fail. So does Accept on a
+    `locked` invite (the streak is under the minimum: PetBanner.locked). */
 export function PetInviteActions({
   kind,
   busy,
   onRun,
   canAct = true,
+  locked = false,
 }: {
   kind: PetBannerKind;
   busy: DmPetChange['kind'] | null;
   onRun: (change: DmPetChange) => void;
   canAct?: boolean;
+  locked?: boolean;
 }) {
   if (kind === 'adopt') {
     if (!canAct) return null;
@@ -156,7 +153,7 @@ export function PetInviteActions({
   }
   return (
     <>
-      {canAct && (
+      {canAct && !locked && (
         <button type="button" className={PRIMARY} disabled={busy !== null} onClick={() => onRun({ kind: 'accept' })}>
           {busy === 'accept' ? 'Accepting…' : 'Accept'}
         </button>
@@ -172,7 +169,7 @@ export function PetInviteActions({
     switch never carries a pending action over to another DM. */
 export function PetAdoptBanner({ channelId, banner }: { channelId: string; banner: PetBanner }) {
   const key = `${channelId}:${banner.kind}`;
-  const hidden = useBannerDismissed(key);
+  const hidden = usePetBannerDismissed(key);
   const { busy, run } = usePetActions(channelId);
   const canAct = useAppStateSelector((v) => petCanAct(v.state.dmPets[channelId]));
   if (hidden) return null;
@@ -183,10 +180,16 @@ export function PetAdoptBanner({ channelId, banner }: { channelId: string; banne
       style={{ borderBottomColor: 'var(--zk-line-soft)' }}
     >
       <span className="flex-1 min-w-0 text-ink-2 leading-snug">{banner.text}</span>
-      <PetInviteActions kind={banner.kind} busy={busy} canAct={canAct} onRun={(c) => void run(c)} />
+      <PetInviteActions
+        kind={banner.kind}
+        busy={busy}
+        canAct={canAct}
+        locked={banner.locked}
+        onRun={(c) => void run(c)}
+      />
       <button
         type="button"
-        onClick={() => dismissBanner(key)}
+        onClick={() => dismissPetBanner(key)}
         className="shrink-0 -mr-1 w-7 h-7 flex items-center justify-center rounded text-ink-3 hover:text-ink-1 hover:bg-bg-3 transition-colors"
         aria-label="Dismiss"
         title="Dismiss"

@@ -25,6 +25,7 @@ import {
   type PetStage,
   type PetTaskKey,
 } from '@zekktris/client';
+import { maskProfanity } from './profanity';
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -43,6 +44,13 @@ function addDays(day: string, n: number): string | null {
   const t = Date.parse(`${day}T00:00:00Z`);
   if (Number.isNaN(t)) return null;
   return new Date(t + n * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** The pet's name as this viewer sees it. Either person in the DM can rename
+    it, so a supervised child whose guardian turned on the profanity mask sees
+    swear words masked here, the same as in message bodies. */
+export function petDisplayName(name: string, filterProfanity: boolean): string {
+  return filterProfanity ? maskProfanity(name) : name;
 }
 
 // ── Mood ──────────────────────────────────────────────────────────────────
@@ -151,6 +159,9 @@ export type PetBannerKind = 'adopt' | 'waiting' | 'invited';
 export interface PetBanner {
   kind: PetBannerKind;
   text: string;
+  /** 'invited' only: the streak broke or is under minStreak, so accepting
+      would only fail. Accept hides until the streak is back (Not now stays). */
+  locked?: true;
 }
 
 /**
@@ -158,6 +169,7 @@ export interface PetBanner {
  *   - no pet, and the DM may adopt → "🥚 5-day streak! Adopt a Zekk Pet with Sam." [Adopt]
  *   - our invite is waiting → "Waiting for Sam to accept your Zekk Pet." [Cancel]
  *   - their invite to us → "Sam wants to raise a Zekk Pet with you." [Accept] [Not now]
+ *     (the streak is under minStreak → "… Keep a 3-day streak going to accept." [Not now])
  * null otherwise (not loaded, not eligible, or a pet that's hatched already).
  */
 export function petBanner(
@@ -172,9 +184,20 @@ export function petBanner(
     return { kind: 'adopt', text: `🥚 ${state.streak}-day streak! Adopt a Zekk Pet with ${peerName}.` };
   }
   if (pet.status !== 'invited') return null;
-  return pet.invitedBy === selfId
-    ? { kind: 'waiting', text: `Waiting for ${peerName} to accept your Zekk Pet.` }
-    : { kind: 'invited', text: `${peerName} wants to raise a Zekk Pet with you.` };
+  if (pet.invitedBy === selfId) {
+    return { kind: 'waiting', text: `Waiting for ${peerName} to accept your Zekk Pet.` };
+  }
+  const text = `${peerName} wants to raise a Zekk Pet with you.`;
+  // The invite outlives a broken streak (it lapses after 7 days), but the
+  // server only lets it be accepted on a live streak of minStreak or more.
+  if (state.streak < state.minStreak) {
+    return {
+      kind: 'invited',
+      text: `${text} Keep a ${state.minStreak}-day streak going to accept.`,
+      locked: true,
+    };
+  }
+  return { kind: 'invited', text };
 }
 
 /** Whether the viewer may invite, accept or rename right now. The server
@@ -314,4 +337,16 @@ export function petNextRefreshAt(pet: Pick<PetDTO, 'today' | 'dayEndsAt'>, now: 
   if (!Number.isNaN(dayEnd)) candidates.push(dayEnd);
   const next = candidates.filter((t) => t + REFRESH_SLACK_MS > now).sort((a, b) => a - b)[0];
   return next === undefined ? null : next + REFRESH_SLACK_MS;
+}
+
+/**
+ * When the open DM should refetch because its streak may break: at the next
+ * midnight UTC (epoch ms, a few seconds past it). Adopt and Accept are only
+ * offered on a live streak, and no event says when one ends. Like
+ * petNextRefreshAt, a midnight counts until its slack is over, so a re-render
+ * in those seconds returns the same time and the pending timer stands.
+ */
+export function nextUtcMidnightRefreshAt(now: number): number {
+  const d = new Date(now - REFRESH_SLACK_MS);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) + REFRESH_SLACK_MS;
 }

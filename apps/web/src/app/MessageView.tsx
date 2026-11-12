@@ -39,7 +39,7 @@ import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { DmStreakPill } from './DMList';
 import { DmPetButton, PetAdoptBanner } from './ZekkPet';
-import { appendScrollKind, isPetNotice, petBanner, petNextRefreshAt } from '../lib/zekkPet';
+import { appendScrollKind, isPetNotice, nextUtcMidnightRefreshAt, petBanner, petNextRefreshAt } from '../lib/zekkPet';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
   import('./DmSettingsPanel').then((m) => ({ default: m.DmSettingsPanel })),
@@ -639,8 +639,9 @@ export function MessageView({
   // 1:1 DMs only, and only when the server's READY advertised the feature.
   // Fetched on open and when the tab comes back (an event can be lost with
   // a silently dead socket); DM_PET_UPDATE keeps it live. The mood also
-  // turns on the clock (18:00 UTC, midnight UTC) with no event, so the open
-  // DM refetches at the next of those.
+  // turns on the clock (18:00 UTC, midnight UTC) with no event, and so does
+  // the streak Adopt and Accept need, so the open DM refetches at the next
+  // of those.
   const petsHere = isDM1to1 && zekkPetEnabled;
   const pet = petsHere ? (petState?.pet ?? null) : null;
   const [petOpen, setPetOpen] = useState(false);
@@ -659,8 +660,16 @@ export function MessageView({
   const clockOffsetMs = useAppStateSelector((v) =>
     effectiveOffset(v.state.serverClockOffsetMs, v.state.dateClockOffsetMs),
   );
+  // With no adopted pet, the bar's Adopt (and Accept on their invite) need a
+  // live streak, which breaks at midnight UTC with no event either.
+  const petBarNeedsStreak =
+    petBannerView?.kind === 'adopt' || (petBannerView?.kind === 'invited' && !petBannerView.locked);
   const petRefreshAt =
-    pet && pet.status !== 'invited' ? petNextRefreshAt(pet, serverNow(clockOffsetMs)) : null;
+    pet && pet.status !== 'invited'
+      ? petNextRefreshAt(pet, serverNow(clockOffsetMs))
+      : petBarNeedsStreak
+        ? nextUtcMidnightRefreshAt(serverNow(clockOffsetMs))
+        : null;
   useEffect(() => {
     if (!petsHere || petRefreshAt === null) return;
     const t = window.setTimeout(
@@ -688,6 +697,9 @@ export function MessageView({
   // mousedown listener (closes), then the button's onClick toggles
   // (reopens) — net effect: panel never closes.
   const dmSettingsToggleRef = useRef<HTMLButtonElement | null>(null);
+  // Where the pet card sends focus when its opener (the header pet) is gone:
+  // the gear stays in every 1:1 DM's header.
+  const focusDmSettingsToggle = useCallback(() => dmSettingsToggleRef.current?.focus(), []);
 
   // ── Thread archive/unarchive state ─────────────────────────────────────
   // Single busy flag for both directions (the button is only visible for
@@ -1074,6 +1086,7 @@ export function MessageView({
               peerName={headerLabel}
               selfId={user.id}
               onClose={closePet}
+              returnFocus={focusDmSettingsToggle}
             />
           </Suspense>
         )}
