@@ -679,10 +679,16 @@ export interface PetDTO {
 export interface DmPetState {
   pet: PetDTO | null;
   /** The streak is alive and at least `minStreak` days, so either person may
-   *  invite (only meaningful while `pet` is null). */
+   *  invite (only meaningful while `pet` is null). False while `canAct` is. */
   eligible: boolean;
   streak: number;
   minStreak: number;
+  /** The viewer may invite, accept or rename right now. False while either
+   *  person blocks the other, the viewer is muted or supervision-restricted,
+   *  or the other person has left the DM: those writes would only fail, so
+   *  hide Adopt / Accept (decline and cancel stay allowed). Absent from older
+   *  servers: treat as true. */
+  canAct?: boolean;
 }
 
 /** DM_PET_UPDATE payload (camelCase). `pet` null = no pet any more (invite

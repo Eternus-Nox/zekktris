@@ -27,7 +27,8 @@ object ZekkPetArt {
     // Fixed inks, 0xRRGGBB.
     const val EYE = 0x1D1D2B
     const val HIGHLIGHT = 0xFFFFFF
-    /** hsl(350, 85%, 75%), drawn at [CHEEK_ALPHA]. */
+    /** hsl(350, 85%, 75%), drawn at [CHEEK_ALPHA] (the cheek circles carry
+     *  that alpha; the ink itself is opaque). */
     const val CHEEK = 0xF5899B
     const val MOUTH = 0x8A2A3A
     /** Tear and drool. */
@@ -374,9 +375,11 @@ object ZekkPetArt {
         g.crown?.let { out += PetShape.Polygon(Part.Crown, it, Ink.Gold, Ink.GoldDark, 1.5f) }
         for (s in g.sparkles) out += PetShape.Polygon(Part.Sparkle, sparklePoints(s.x, s.y, s.r), Ink.Sparkle)
         if (mood == Mood.Asleep) {
-            out += PetShape.Lines(Part.Zzz, zPoints(66f, 30f, 6f), Ink.Outline, 2f)
-            out += PetShape.Lines(Part.Zzz, zPoints(74f, 20f, 8f), Ink.Outline, 2f)
-            out += PetShape.Lines(Part.Zzz, zPoints(84f, 8f, 10f), Ink.Outline, 2f)
+            // Up and to the right, clear of every antenna, star, crown and
+            // sparkle; in the belly colour so they read on the dark card.
+            out += PetShape.Lines(Part.Zzz, zPoints(74f, 26f, 6f), Ink.Belly, 2f)
+            out += PetShape.Lines(Part.Zzz, zPoints(80f, 14f, 8f), Ink.Belly, 2f)
+            out += PetShape.Lines(Part.Zzz, zPoints(88f, 2f, 10f), Ink.Belly, 2f)
         }
         return out
     }

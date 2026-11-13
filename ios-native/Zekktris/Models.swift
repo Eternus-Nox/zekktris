@@ -954,15 +954,22 @@ struct DmPetState: Decodable, Hashable {
     var eligible: Bool
     var streak: Int
     var minStreak: Int
+    /// The viewer may invite, accept or rename right now. False while either
+    /// person blocks the other, the viewer is muted or supervision-restricted,
+    /// or the other person left the DM: those writes would only fail, so
+    /// Adopt / Accept / Rename hide (Not now and Cancel stay). Older servers
+    /// don't send it: true.
+    var canAct: Bool
 
-    init(pet: PetDTO?, eligible: Bool, streak: Int, minStreak: Int) {
+    init(pet: PetDTO?, eligible: Bool, streak: Int, minStreak: Int, canAct: Bool = true) {
         self.pet = pet
         self.eligible = eligible
         self.streak = streak
         self.minStreak = minStreak
+        self.canAct = canAct
     }
 
-    private enum CodingKeys: String, CodingKey { case pet, eligible, streak, minStreak }
+    private enum CodingKeys: String, CodingKey { case pet, eligible, streak, minStreak, canAct }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -972,6 +979,7 @@ struct DmPetState: Decodable, Hashable {
         eligible = (try? c.decode(Bool.self, forKey: .eligible)) ?? false
         streak = (try? c.decode(Int.self, forKey: .streak)) ?? 0
         minStreak = (try? c.decode(Int.self, forKey: .minStreak)) ?? ZekkPet.minStreak
+        canAct = (try? c.decode(Bool.self, forKey: .canAct)) ?? true
     }
 }
 
@@ -1040,13 +1048,32 @@ enum ZekkPet {
         }
     }
 
-    /// normalizePetName: trim, collapse runs of whitespace to one space. nil
-    /// when the result is empty, longer than `nameMaxLength` code points, or
-    /// holds a control character (U+0000–001F, U+007F–009F).
+    /// The invisible and bidi-formatting characters the shared rule drops
+    /// first: zero-width space, word joiner and invisible operators, the BOM,
+    /// the LRM / RLM / ALM marks, and the embeddings, overrides and isolates.
+    private static func isStrippedFormat(_ s: Unicode.Scalar) -> Bool {
+        switch s.value {
+        case 0x200B, 0x2060...0x2064, 0xFEFF, 0x200E, 0x200F, 0x061C, 0x202A...0x202E, 0x2066...0x2069:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// normalizePetName: drop invisible and bidi-formatting characters
+    /// (isStrippedFormat), then trim and collapse runs of whitespace to one
+    /// space. ZWNJ / ZWJ (U+200C / U+200D) stay, for emoji sequences and the
+    /// scripts that need them, but a name of nothing else is empty. nil when
+    /// the result is empty, longer than `nameMaxLength` code points, or holds
+    /// a control character (U+0000–001F, U+007F–009F).
     static func normalizeName(_ raw: String) -> String? {
         var out = String.UnicodeScalarView()
         var pendingSpace = false
         for s in raw.unicodeScalars {
+            // Before the whitespace test: U+FEFF is JS whitespace too, but
+            // it's dropped ("a\u{FEFF}b" is "ab"), and a dropped character
+            // doesn't split a run of whitespace.
+            if isStrippedFormat(s) { continue }
             if isJSWhitespace(s) {
                 pendingSpace = !out.isEmpty
                 continue
@@ -1055,7 +1082,9 @@ enum ZekkPet {
             pendingSpace = false
             out.append(s)
         }
-        guard !out.isEmpty, out.count <= nameMaxLength else { return nil }
+        // Only spaces left once ZWNJ / ZWJ are set aside: empty.
+        guard out.contains(where: { $0.value != 0x20 && $0.value != 0x200C && $0.value != 0x200D }),
+              out.count <= nameMaxLength else { return nil }
         if out.contains(where: { $0.value <= 0x1F || (0x7F...0x9F).contains($0.value) }) { return nil }
         return String(out)
     }
@@ -1144,15 +1173,45 @@ enum ZekkPet {
         }
     }
 
+    /// Slack after a boundary, so the re-read lands on the far side of it.
+    static let refreshSlack: TimeInterval = 5
+
     /// When the open DM should re-read its pet even if no event comes: two
     /// of the mood's rules turn on the clock alone — 18:00 UTC (a pet fed
     /// yesterday turns grumpy) and the end of the UTC day (today's tasks
-    /// reset). The next of those after `now`, a few seconds past it.
+    /// reset). The next of those, a few seconds past it. A boundary counts
+    /// until its slack is over too, so a re-arm inside those seconds (any
+    /// pet update) returns the same time instead of skipping to the next.
     static func nextRefreshAt(_ pet: PetDTO, now: Date) -> Date? {
         var candidates: [Date] = []
         if let today = utcDay(pet.today) { candidates.append(today.addingTimeInterval(18 * 3_600)) }
         if let end = messageDate(pet.dayEndsAt) { candidates.append(end) }
-        return candidates.filter { $0 > now }.min()?.addingTimeInterval(5)
+        return candidates
+            .filter { $0.addingTimeInterval(refreshSlack) > now }
+            .min()?.addingTimeInterval(refreshSlack)
+    }
+
+    /// The next midnight UTC after `now`, a few seconds past it: when a
+    /// streak can break with no event. Like nextRefreshAt, a midnight counts
+    /// until its slack is over.
+    static func nextUtcMidnightRefreshAt(now: Date) -> Date {
+        let day: TimeInterval = 86_400
+        let start = ((now.timeIntervalSince1970 - refreshSlack) / day).rounded(.down) * day
+        return Date(timeIntervalSince1970: start + day + refreshSlack)
+    }
+
+    /// When the open DM should re-read its pet state with no event: the
+    /// pet's clock boundaries (nextRefreshAt), and the next midnight UTC
+    /// while the bar offers Adopt or Accept, which need a live streak that
+    /// can break then (bannerNeedsStreak). The earlier of those; nil when
+    /// neither applies.
+    static func refreshAt(_ state: DmPetState, selfId: String?, now: Date) -> Date? {
+        var times: [Date] = []
+        if let pet = state.pet, let at = nextRefreshAt(pet, now: now) { times.append(at) }
+        if bannerNeedsStreak(banner(state, selfId: selfId, peerName: "")) {
+            times.append(nextUtcMidnightRefreshAt(now: now))
+        }
+        return times.min()
     }
 
     // MARK: The adopt banner
@@ -1169,6 +1228,10 @@ enum ZekkPet {
     struct Banner: Equatable {
         let kind: BannerKind
         let text: String
+        /// `.invited` only: the streak broke or is under minStreak, so
+        /// accepting would only fail. Accept hides until the streak is back
+        /// (Not now stays).
+        var locked: Bool = false
     }
 
     /// The slim bar under the DM header; nil when the state isn't loaded, the
@@ -1180,9 +1243,27 @@ enum ZekkPet {
             return Banner(kind: .adopt, text: "🥚 \(state.streak)-day streak! Adopt a Zekk Pet with \(peerName).")
         }
         guard pet.status == .invited else { return nil }
-        return pet.invitedBy == selfId
-            ? Banner(kind: .waiting, text: "Waiting for \(peerName) to accept your Zekk Pet.")
-            : Banner(kind: .invited, text: "\(peerName) wants to raise a Zekk Pet with you.")
+        if pet.invitedBy == selfId {
+            return Banner(kind: .waiting, text: "Waiting for \(peerName) to accept your Zekk Pet.")
+        }
+        let text = "\(peerName) wants to raise a Zekk Pet with you."
+        // The invite outlives a broken streak (it lapses after 7 days), but
+        // the server only lets it be accepted on a live streak of minStreak
+        // or more.
+        if state.streak < state.minStreak {
+            return Banner(kind: .invited,
+                          text: "\(text) Keep a \(state.minStreak)-day streak going to accept.",
+                          locked: true)
+        }
+        return Banner(kind: .invited, text: text)
+    }
+
+    /// Whether the bar's action hangs on a live streak, which breaks at
+    /// midnight UTC with no event: Adopt, and Accept on their invite (unless
+    /// it's locked already).
+    static func bannerNeedsStreak(_ banner: Banner?) -> Bool {
+        guard let banner else { return false }
+        return banner.kind == .adopt || (banner.kind == .invited && !banner.locked)
     }
 
     // MARK: The in-chat notice

@@ -28,13 +28,17 @@ function prevUtcDay(day: string): string {
   return utcDay(d);
 }
 
-/** Record a message from `authorId` in a 1:1 DM and update the streak. */
+/** Record a message from `authorId` in a 1:1 DM and update the streak. `at`
+ *  (default now) fixes the UTC day it counts for: the send route passes the
+ *  message's createdAt, and the same instant to the Zekk Pet, so a message
+ *  sent a few ms before midnight is credited to one day by both. */
 export async function recordDmMessage(args: {
   channelId: bigint;
   authorId: bigint;
   recipientId: bigint;
+  at?: Date;
 }): Promise<{ streak: number; changed: boolean }> {
-  const today = utcDay();
+  const today = utcDay(args.at);
   const [a, b] = args.authorId < args.recipientId
     ? [args.authorId, args.recipientId]
     : [args.recipientId, args.authorId];
@@ -61,16 +65,36 @@ export async function recordDmMessage(args: {
 
     let lastDayA = row?.lastDayA ?? null;
     let lastDayB = row?.lastDayB ?? null;
+    let prevDayA = row?.prevDayA ?? null;
+    let prevDayB = row?.prevDayB ?? null;
     let lastCountedDay = row?.lastCountedDay ?? null;
     let streak = row?.streak ?? 0;
     let bestStreak = row?.bestStreak ?? 0;
     const prevStreak = streak;
 
-    if (authorIsA) lastDayA = today;
-    else lastDayB = today;
+    // Each side keeps its last message day and the one before it. With `at`,
+    // a send from just before midnight can get here after a next-day send of
+    // either person: the stamp never rewinds, and the late day is kept as
+    // the side's previous day instead, so it can still be credited below.
+    const stamp = (last: string | null, prev: string | null): [string, string | null] => {
+      if (last === null || last < today) return [today, last];
+      if (last === today) return [last, prev];
+      return [last, prev !== null && prev > today ? prev : today];
+    };
+    if (authorIsA) [lastDayA, prevDayA] = stamp(lastDayA, prevDayA);
+    else [lastDayB, prevDayB] = stamp(lastDayB, prevDayB);
+    const messagedToday = (isAuthor: boolean, last: string | null, prev: string | null) =>
+      isAuthor || last === today || prev === today;
 
-    // Credit today once both sides have messaged today.
-    if (lastDayA === today && lastDayB === today && lastCountedDay !== today) {
+    // Credit today once both sides have messaged on it — either side's
+    // evidence may be its previous day, when a next-day send already moved
+    // its stamp on. Never a day before the last credited one: the chain
+    // only grows forward.
+    if (
+      messagedToday(authorIsA, lastDayA, prevDayA) &&
+      messagedToday(!authorIsA, lastDayB, prevDayB) &&
+      (lastCountedDay === null || lastCountedDay < today)
+    ) {
       if (lastCountedDay === prevUtcDay(today)) {
         streak = Math.min(streak + 1, CAP);
       } else {
@@ -88,6 +112,8 @@ export async function recordDmMessage(args: {
         userBId: b,
         lastDayA,
         lastDayB,
+        prevDayA,
+        prevDayB,
         lastCountedDay,
         streak,
         bestStreak,
@@ -95,7 +121,16 @@ export async function recordDmMessage(args: {
       })
       .onConflictDoUpdate({
         target: schema.dmStreaks.channelId,
-        set: { lastDayA, lastDayB, lastCountedDay, streak, bestStreak, updatedAt: new Date() },
+        set: {
+          lastDayA,
+          lastDayB,
+          prevDayA,
+          prevDayB,
+          lastCountedDay,
+          streak,
+          bestStreak,
+          updatedAt: new Date(),
+        },
       });
 
     // `streak` is the live display value (the chain is alive — someone just

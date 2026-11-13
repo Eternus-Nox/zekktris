@@ -345,6 +345,11 @@ class DisappearingTest {
         // Never past where it was.
         assertEquals("300", Disappearing.lastAfterRemoval("300", setOf("300"), listOf(msg("400"))))
         assertNull(Disappearing.lastAfterRemoval(null, setOf("300"), rest))
+        // Pet notices never become it, as on the server: past the notice at
+        // 250 back to 200, and with only notices left it stays.
+        val notice = msg("250", type = "system_pet")
+        assertEquals("200", Disappearing.lastAfterRemoval("300", setOf("300"), listOf(msg("200"), notice)))
+        assertEquals("300", Disappearing.lastAfterRemoval("300", setOf("300"), listOf(notice)))
     }
 
     @Test fun aCacheThatMayStopShortOfTheTailKeepsTheConversationsNewest() {

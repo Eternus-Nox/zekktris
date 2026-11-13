@@ -1,5 +1,6 @@
 package com.zekktris.data
 
+import com.zekktris.data.model.Channel
 import com.zekktris.data.model.DmPetState
 import com.zekktris.data.model.Message
 import com.zekktris.data.model.PetDTO
@@ -121,17 +122,30 @@ object ZekkPet {
      *  server rejects, and leaves out the BOM). */
     private val JS_WHITESPACE_RUN = Regex("[\\t\\n\\u000B\\f\\r \\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]+")
 
+    /** Invisible and bidi-formatting characters the server drops from a name
+     *  before anything else: zero-width space, word joiner and the invisible
+     *  operators, the BOM, the LRM / RLM / ALM marks and the bidi embeddings,
+     *  overrides and isolates. */
+    private val NAME_INVISIBLE = Regex("[\\u200B\\u2060-\\u2064\\uFEFF\\u200E\\u200F\\u061C\\u202A-\\u202E\\u2066-\\u2069]")
+
+    /** ZWNJ and ZWJ: kept inside a name (they shape scripts and join emoji),
+     *  but a name of nothing else is empty. */
+    private val NAME_JOINERS = Regex("[\\u200C\\u200D]")
+
     /**
-     * Normalise a proposed pet name exactly like the server: collapse runs of
-     * whitespace to one space and trim. Null when the result is empty, longer
-     * than [NAME_MAX_LENGTH] (counted in code points), or contains a control
-     * character (U+0000–U+001F, U+007F–U+009F).
+     * Normalise a proposed pet name exactly like the server: drop invisible
+     * and bidi-formatting characters ([NAME_INVISIBLE]), collapse runs of
+     * whitespace to one space and trim. Null when the result is empty or
+     * nothing but ZWNJ / ZWJ, longer than [NAME_MAX_LENGTH] (counted in code
+     * points), or contains a control character (U+0000–U+001F,
+     * U+007F–U+009F).
      */
     fun normalizeName(raw: String): String? {
+        // The strip comes first, so a BOM goes rather than becoming a space.
         // After the collapse a plain space is the only whitespace left that
         // JavaScript's trim() would strip.
-        val name = raw.replace(JS_WHITESPACE_RUN, " ").trim(' ')
-        if (name.isEmpty()) return null
+        val name = raw.replace(NAME_INVISIBLE, "").replace(JS_WHITESPACE_RUN, " ").trim(' ')
+        if (name.replace(NAME_JOINERS, "").trim(' ').isEmpty()) return null
         if (name.codePointCount(0, name.length) > NAME_MAX_LENGTH) return null
         if (name.any { it.code <= 0x1F || it.code in 0x7F..0x9F }) return null
         return name
@@ -243,22 +257,75 @@ object ZekkPet {
     /** Progress towards the next level, for the art (the egg cracks near the end). */
     fun artProgress(pet: PetDTO): Float = levelProgress(pet).fraction
 
-    /** The header pet's spoken label. */
-    fun headerLabel(pet: PetDTO): String =
-        if (pet.status == "invited") "Zekk Pet: ${pet.name} (invite pending)"
-        else "Zekk Pet: ${pet.name}, ${Mood.of(pet.mood).label}"
+    /** Which chips the DM header's title line shows beside the name. */
+    data class HeaderChips(val streak: Boolean, val timer: Boolean, val pet: Boolean)
+
+    /**
+     * Fit the DM header's title line: the name, then the streak pill, the
+     * pet and the disappearing-timer pill. Each chip's width includes its
+     * leading gap (0 = not there); [room] is the line's width after the name
+     * tag, in the same unit. A chip shows whole or not at all, never
+     * squeezed (the pet would be drawn off-centre in a sliver), and the
+     * name, which truncates, takes what they leave. The room goes to the pet
+     * first, as it is the only way into the pet card, then to the streak
+     * (also in the DM list), then to the timer (also on Conversation
+     * settings); they are still placed in line order, and a chip is left out
+     * only when it can't fit at all. Next to a pet the timer isn't on this
+     * line: it's the avatar's badge there ([headerTimerCue]).
+     */
+    fun fitHeaderChips(room: Int, streak: Int, timer: Int, pet: Int): HeaderChips {
+        var left = room
+        fun take(width: Int): Boolean = (width in 1..left).also { if (it) left -= width }
+        val p = take(pet)
+        val s = take(streak)
+        val t = take(timer)
+        return HeaderChips(streak = s, timer = t, pet = p)
+    }
+
+    /** How the DM header shows a disappearing timer that's on. */
+    enum class TimerCue {
+        /** The pill on the title line: the stopwatch and "1d". */
+        Pill,
+        /** A small disc with the stopwatch on the avatar's bottom-start
+         *  corner, as on iOS. */
+        Badge,
+    }
+
+    /**
+     * How the DM header shows the disappearing timer: null when it's off.
+     * Next to a pet ([petShown]) it's the avatar's badge, which takes no
+     * room on the title line, so it never hides there: beside the pet and
+     * the streak most phones have no room left for the pill, and it's the
+     * open DM's only cue that messages disappear (web shrinks it to its
+     * stopwatch there). Otherwise it's the pill, as before the pet.
+     */
+    fun headerTimerCue(timerSeconds: Int?, petShown: Boolean): TimerCue? = when {
+        timerSeconds == null || timerSeconds <= 0 -> null
+        petShown -> TimerCue.Badge
+        else -> TimerCue.Pill
+    }
+
+    /** The header pet's spoken label. [name]: the pet's name as this viewer
+     *  sees it (masked for a supervised child with "Blur swear words" on). */
+    fun headerLabel(pet: PetDTO, name: String = pet.name): String =
+        if (pet.status == "invited") "Zekk Pet: $name (invite pending)"
+        else "Zekk Pet: $name, ${Mood.of(pet.mood).label}"
 
     // ── Adopt banner ──────────────────────────────────────────────────────
 
     enum class BannerKind { Adopt, Waiting, Invited }
 
-    data class Banner(val kind: BannerKind, val text: String)
+    /** [locked]: [BannerKind.Invited] only — the streak broke or is under
+     *  the minimum, so accepting would only fail. Accept hides until the
+     *  streak is back (Not now stays). */
+    data class Banner(val kind: BannerKind, val text: String, val locked: Boolean = false)
 
     /**
      * The slim bar under the DM header:
      *   - no pet, and the DM may adopt → "🥚 5-day streak! Adopt a Zekk Pet with Sam." [Adopt]
      *   - our invite is waiting → "Waiting for Sam to accept your Zekk Pet." [Cancel]
      *   - their invite to us → "Sam wants to raise a Zekk Pet with you." [Accept] [Not now]
+     *     (the streak is under minStreak → "… Keep a 3-day streak going to accept." [Not now], [Banner.locked])
      * Null otherwise (not loaded, not eligible, or a pet that's hatched already).
      */
     fun banner(state: DmPetState?, selfId: String?, peerName: String): Banner? {
@@ -269,9 +336,23 @@ object ZekkPet {
             return Banner(BannerKind.Adopt, "🥚 ${state.streak}-day streak! Adopt a Zekk Pet with $peerName.")
         }
         if (pet.status != "invited") return null
-        return if (pet.invitedBy == selfId) Banner(BannerKind.Waiting, "Waiting for $peerName to accept your Zekk Pet.")
-        else Banner(BannerKind.Invited, "$peerName wants to raise a Zekk Pet with you.")
+        if (pet.invitedBy == selfId) return Banner(BannerKind.Waiting, "Waiting for $peerName to accept your Zekk Pet.")
+        val text = "$peerName wants to raise a Zekk Pet with you."
+        // The invite outlives a broken streak (it lapses after 7 days), but
+        // the server only lets it be accepted on a live streak of minStreak
+        // or more.
+        if (state.streak < state.minStreak) {
+            return Banner(BannerKind.Invited, "$text Keep a ${state.minStreak}-day streak going to accept.", locked = true)
+        }
+        return Banner(BannerKind.Invited, text)
     }
+
+    /** Whether the bar's action hangs on a live streak, which breaks at
+     *  midnight UTC with no event: Adopt, and Accept on their invite (unless
+     *  it's [Banner.locked] already). The open DM refetches then
+     *  ([nextUtcMidnightRefreshAt]). */
+    fun bannerNeedsStreak(banner: Banner?): Boolean =
+        banner != null && (banner.kind == BannerKind.Adopt || (banner.kind == BannerKind.Invited && !banner.locked))
 
     /** A dismissed bar stays hidden for the session, per DM and per kind (so
      *  hiding the adopt prompt doesn't also hide a later invite). */
@@ -301,6 +382,18 @@ object ZekkPet {
     /** A Zekk Pet notice: type 'system_pet', or (defensively) any row
      *  carrying the 'pet' metadata. */
     fun isNotice(m: Message): Boolean = m.type == "system_pet" || m.metadata?.kind == "pet"
+
+    /** A pet notice [selfId] didn't cause. The sweep's 'asleep' and
+     *  'ran_away' (actorId null) are authored by the DM's user A only
+     *  nominally, so for A too it is not their own message: it doesn't move
+     *  their read marker past what the other person sent, or end their
+     *  typing. */
+    fun isNoticeNotBy(m: Message, selfId: String?): Boolean = isNotice(m) && m.metadata?.actorId != selfId
+
+    /** Whose row [m] counts as for following it down: a pet notice is its
+     *  actor's (no one's for the sweep's 'asleep' / 'ran_away', though user
+     *  A is their author), anything else its author's. */
+    fun ownerId(m: Message): String? = if (isNotice(m)) m.metadata?.actorId else m.authorId ?: m.author?.id
 
     /** "a Kid", "an Adult". */
     private fun withArticle(word: String): String =
@@ -340,10 +433,20 @@ object ZekkPet {
      * viewer ([selfId]), the other person ([peerId], read as [peerName]), the
      * row's author ([authorName]) or else "Someone". Falls back to the row's
      * third-person `content` without the metadata or for an unknown event.
+     * [mask] is the viewer's profanity mask (a supervised child's "Blur swear
+     * words"): either person picks the pet's name, so it goes over the name
+     * and the fallback content, as over message bodies.
      */
-    fun noticeLine(m: Message, selfId: String?, peerId: String?, peerName: String, authorName: String?): String {
-        val md = m.metadata?.takeIf { it.kind == "pet" } ?: return m.content
-        val petName = md.petName ?: return m.content
+    fun noticeLine(
+        m: Message,
+        selfId: String?,
+        peerId: String?,
+        peerName: String,
+        authorName: String?,
+        mask: (String) -> String = { it },
+    ): String {
+        val md = m.metadata?.takeIf { it.kind == "pet" } ?: return mask(m.content)
+        val petName = md.petName ?: return mask(m.content)
         val actorId = md.actorId
         val actorName = when {
             actorId == null -> null
@@ -353,12 +456,12 @@ object ZekkPet {
         }
         return noticeText(
             event = md.event.orEmpty(),
-            petName = petName,
+            petName = mask(petName),
             stage = Stage.of(md.stage),
             actorIsSelf = selfId != null && actorId == selfId,
             actorName = actorName,
             peerName = peerName,
-        ) ?: m.content
+        ) ?: mask(m.content)
     }
 
     /** The small pet drawn beside a notice: the stage it reached, asleep for
@@ -382,16 +485,85 @@ object ZekkPet {
      * When the open DM should refetch its pet even if no event comes: the
      * mood is worked out when the server answers, and two of its rules turn
      * on the clock alone — 18:00 UTC (a pet fed yesterday turns grumpy) and
-     * the end of the UTC day (today's tasks reset). The next of those after
-     * [nowMs] (epoch ms, plus [REFRESH_SLACK_MS]), or null when the DTO has
-     * neither.
+     * the end of the UTC day (today's tasks reset). The next of those (epoch
+     * ms, plus [REFRESH_SLACK_MS]) that is still ahead of [nowMs], or null
+     * when the DTO has neither. A boundary counts until its slack is over
+     * too, so a call inside those seconds returns the same time and the
+     * pending refetch stands.
      */
     fun nextRefreshAt(pet: PetDTO, nowMs: Long): Long? {
         val evening = parseDay(pet.today)?.atTime(18, 0)?.toInstant(java.time.ZoneOffset.UTC)?.toEpochMilli()
         val dayEnd = runCatching { java.time.Instant.parse(pet.dayEndsAt).toEpochMilli() }.getOrNull()
-        val next = listOfNotNull(evening, dayEnd).filter { it > nowMs }.minOrNull() ?: return null
+        val next = listOfNotNull(evening, dayEnd).filter { it + REFRESH_SLACK_MS > nowMs }.minOrNull() ?: return null
         return next + REFRESH_SLACK_MS
     }
+
+    /**
+     * When the open DM should refetch because its streak may break: the next
+     * midnight UTC after [nowMs] (epoch ms), plus [REFRESH_SLACK_MS]. Adopt
+     * and Accept are only offered on a live streak ([bannerNeedsStreak]), and
+     * no event says when one ends. Like [nextRefreshAt], a midnight counts
+     * until its slack is over, so a call in those seconds returns the same
+     * time and the pending refetch stands.
+     */
+    fun nextUtcMidnightRefreshAt(nowMs: Long): Long {
+        val day = java.time.Instant.ofEpochMilli(nowMs - REFRESH_SLACK_MS).atZone(java.time.ZoneOffset.UTC).toLocalDate()
+        return day.plusDays(1).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli() + REFRESH_SLACK_MS
+    }
+
+    // ── Store ─────────────────────────────────────────────────────────────
+
+    /**
+     * A DM's state once DM_PET_UPDATE (or our own change) says its pet is
+     * [pet] (null = no pet any more), over [prev]. Not fetched yet: whether
+     * the DM may adopt is unknown until GET /pet answers, so it reads as not
+     * eligible (no bar) rather than a guess. An invite is only ever sent on a
+     * streak of at least the minimum, so one takes that until the fetch says
+     * otherwise (Accept doesn't flash "keep a streak going" while the DM
+     * opens). Always an entry, no pet included, as on web and iOS: the DM
+     * then counts as loaded, so a later "gone" refetches.
+     */
+    fun withPet(prev: DmPetState?, pet: PetDTO?): DmPetState =
+        (prev ?: DmPetState(
+            pet = null,
+            eligible = false,
+            streak = if (pet?.status == "invited") MIN_STREAK else 0,
+            minStreak = MIN_STREAK,
+        )).copy(pet = pet)
+
+    /**
+     * What GET /pet's answer [fetched] leaves over [prev]. [keepPet]: a
+     * DM_PET_UPDATE (or our own change) came in while the request was out,
+     * so the pet it left ([prev]'s, none without an entry) is newer and only
+     * the answer's eligibility, streak and gate go in. When that pet went
+     * away (cancelled, expired, ran away) but the answer still saw it, the
+     * server's "not eligible" was about that pet: work it out as the server
+     * does for no pet, from the answer's live streak and gate, as web and
+     * iOS do — otherwise the Adopt bar stays hidden and nothing refetches.
+     */
+    fun afterFetch(prev: DmPetState?, fetched: DmPetState, keepPet: Boolean): DmPetState {
+        if (!keepPet) return fetched
+        val kept = prev?.pet
+        val eligible = if (kept == null && fetched.pet != null) {
+            fetched.canAct && fetched.streak >= fetched.minStreak
+        } else {
+            fetched.eligible
+        }
+        return fetched.copy(pet = kept, eligible = eligible)
+    }
+
+    /**
+     * The 1:1 DMs in [dms] with [userId] whose pet is loaded in [dmPets].
+     * Whether their pet may be adopted, accepted or renamed (GET's canAct,
+     * and eligible, which needs it) follows a block or unblock between the
+     * two of them, and a friendship starting or ending too (a friends-only
+     * supervision DM policy opens or closes it), and no pet event says so,
+     * so the store re-reads these (web's petDmIdsWithUser). A DM not loaded
+     * yet fetches when it opens.
+     */
+    fun dmIdsWithUser(dms: List<Channel>, dmPets: Map<String, DmPetState>, userId: String): List<String> =
+        dms.filter { ch -> ch.type == "dm" && ch.id in dmPets && ch.recipients.orEmpty().any { it.id == userId } }
+            .map { it.id }
 
     // ── Gateway payload ───────────────────────────────────────────────────
 

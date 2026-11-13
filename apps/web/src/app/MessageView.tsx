@@ -31,7 +31,7 @@ import { PinPanel } from './PinPanel';
 import { SearchPanel } from './SearchPanel';
 import { useNavigate } from 'react-router-dom';
 import { Hash, Paperclip, Camera, Pin, Search, CornerUpLeft, X, MessageSquare, Smile, BarChart, StickerSquare, Mic, Trash, Settings as SettingsIcon, Phone, PhoneOff, Archive, ArrowDown, ArrowUp, Calendar, ChevronDown, ChevronLeft, ChevronRight, CheckCircle, Lock, Timer, Users as UsersIcon } from '../lib/icons';
-import { formatLong, formatShort, isDisappearingNotice, showsUnstartedTimer } from '../lib/disappearing';
+import { effectiveOffset, formatLong, formatShort, isDisappearingNotice, serverNow, showsUnstartedTimer, timeoutUntil } from '../lib/disappearing';
 import { newestConfirmedId, planReadAck } from '../lib/readAck';
 import { isNative } from '../lib/native';
 import { SchedulePickerModal } from './SchedulePickerModal';
@@ -39,7 +39,14 @@ import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { DmStreakPill } from './DMList';
 import { DmPetButton, PetAdoptBanner } from './ZekkPet';
-import { isPetNotice, petBanner, petNextRefreshAt } from '../lib/zekkPet';
+import {
+  appendScrollKind,
+  fetchPetWithRetry,
+  isPetNotice,
+  nextUtcMidnightRefreshAt,
+  petBanner,
+  petNextRefreshAt,
+} from '../lib/zekkPet';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
   import('./DmSettingsPanel').then((m) => ({ default: m.DmSettingsPanel })),
@@ -639,8 +646,9 @@ export function MessageView({
   // 1:1 DMs only, and only when the server's READY advertised the feature.
   // Fetched on open and when the tab comes back (an event can be lost with
   // a silently dead socket); DM_PET_UPDATE keeps it live. The mood also
-  // turns on the clock (18:00 UTC, midnight UTC) with no event, so the open
-  // DM refetches at the next of those.
+  // turns on the clock (18:00 UTC, midnight UTC) with no event, and so does
+  // the streak Adopt and Accept need, so the open DM refetches at the next
+  // of those.
   const petsHere = isDM1to1 && zekkPetEnabled;
   const pet = petsHere ? (petState?.pet ?? null) : null;
   const [petOpen, setPetOpen] = useState(false);
@@ -649,20 +657,39 @@ export function MessageView({
     setPetOpen(false);
   }, [channel.id]);
   const petBannerView = petsHere ? petBanner(petState, user?.id, headerLabel) : null;
+  // Read by the retries below, which outlive the render that scheduled them.
+  const petMissingRef = useRef(petState === undefined);
+  petMissingRef.current = petState === undefined;
   useEffect(() => {
     if (!petsHere || document.visibilityState !== 'visible') return;
-    void loadDmPet(channel.id).catch(() => undefined);
+    // A failed fetch with no pet loaded yet is retried (backed off): nothing
+    // else re-reads a DM that has no entry. A switch away cancels it.
+    return fetchPetWithRetry(() => loadDmPet(channel.id), () => petMissingRef.current);
   }, [channel.id, petsHere, loadDmPet, wake]);
-  const petRefreshAt = pet && pet.status !== 'invited' ? petNextRefreshAt(pet, Date.now()) : null;
+  // The boundaries are the server's, so count in server time: a device clock
+  // that runs fast would refetch before the day turned there, get the same
+  // DTO back and then have no boundary left to wait for.
+  const clockOffsetMs = useAppStateSelector((v) =>
+    effectiveOffset(v.state.serverClockOffsetMs, v.state.dateClockOffsetMs),
+  );
+  // With no adopted pet, the bar's Adopt (and Accept on their invite) need a
+  // live streak, which breaks at midnight UTC with no event either.
+  const petBarNeedsStreak =
+    petBannerView?.kind === 'adopt' || (petBannerView?.kind === 'invited' && !petBannerView.locked);
+  const petRefreshAt =
+    pet && pet.status !== 'invited'
+      ? petNextRefreshAt(pet, serverNow(clockOffsetMs))
+      : petBarNeedsStreak
+        ? nextUtcMidnightRefreshAt(serverNow(clockOffsetMs))
+        : null;
   useEffect(() => {
     if (!petsHere || petRefreshAt === null) return;
-    // setTimeout fires at once past ~24.8 days; this is at most a day out.
     const t = window.setTimeout(
       () => void loadDmPet(channel.id).catch(() => undefined),
-      Math.max(0, petRefreshAt - Date.now()),
+      timeoutUntil(petRefreshAt, clockOffsetMs),
     );
     return () => window.clearTimeout(t);
-  }, [channel.id, petsHere, petRefreshAt, loadDmPet]);
+  }, [channel.id, petsHere, petRefreshAt, clockOffsetMs, loadDmPet]);
   // Shared-media gallery visibility. Hosted at the MessageView level (a
   // stable parent) so the full-screen, body-portaled modal isn't a child of
   // the click-outside-trapped DmSettingsPanel.
@@ -682,6 +709,9 @@ export function MessageView({
   // mousedown listener (closes), then the button's onClick toggles
   // (reopens) — net effect: panel never closes.
   const dmSettingsToggleRef = useRef<HTMLButtonElement | null>(null);
+  // Where the pet card sends focus when its opener (the header pet) is gone:
+  // the gear stays in every 1:1 DM's header.
+  const focusDmSettingsToggle = useCallback(() => dmSettingsToggleRef.current?.focus(), []);
 
   // ── Thread archive/unarchive state ─────────────────────────────────────
   // Single busy flag for both directions (the button is only visible for
@@ -873,11 +903,17 @@ export function MessageView({
             )}
             {/* Zekk Pet next to the streak (an egg while the invite is open). */}
             {pet && <DmPetButton pet={pet} onOpen={() => setPetOpen(true)} />}
-            {/* Disappearing-messages indicator while the timer is on. */}
+            {/* Disappearing-messages indicator while the timer is on. Next
+                to a pet it's only the stopwatch on a phone: with the streak,
+                the pet, the timer text and four actions the row overflows a
+                360px screen and the Conversation settings gear is cut off.
+                It never hides — it's the DM's only cue that messages
+                disappear. */}
             {isDM && typeof dmTimer === 'number' && dmTimer > 0 && (
               <DisappearingPill
                 seconds={dmTimer}
                 onClick={isDM1to1 ? () => setDisappearingOpen(true) : undefined}
+                compact={!!pet}
               />
             )}
             {channel.topic && (
@@ -1063,14 +1099,21 @@ export function MessageView({
               peerName={headerLabel}
               selfId={user.id}
               onClose={closePet}
+              returnFocus={focusDmSettingsToggle}
             />
           </Suspense>
         )}
       </header>
       {/* Zekk Pet adopt / invite bar. Keyed by channel so a pending action
-          never carries over to another DM. */}
+          never carries over to another DM. When it goes while focused,
+          focus moves to the gear, as it does from the pet card. */}
       {petsHere && petBannerView && (
-        <PetAdoptBanner key={channel.id} channelId={channel.id} banner={petBannerView} />
+        <PetAdoptBanner
+          key={channel.id}
+          channelId={channel.id}
+          banner={petBannerView}
+          returnFocus={focusDmSettingsToggle}
+        />
       )}
 
       <div className="flex-1 min-h-0 flex relative">
@@ -1797,9 +1840,12 @@ function Scroller({
     // Append detection — newest id changed (and it isn't a prepend).
     const newLast = messages?.[messages.length - 1]?.id ?? null;
     const isAppend = !!newLast && newLast !== prevLastIdRef.current && !isPrepend;
-    const newTailAuthorId =
-      isAppend && messages ? messages[messages.length - 1]?.author?.id : null;
-    const isOwnAppend = isAppend && !!selfId && newTailAuthorId === selfId;
+    // A pet notice counts as its actor's: the daily check's 'asleep' /
+    // 'ran_away' name user A as author but were caused by no one, and alone
+    // they never raise the pill (see appendScrollKind).
+    const appendKind =
+      isAppend && messages ? appendScrollKind(messages, prevLastIdRef.current, selfId) : null;
+    const isOwnAppend = appendKind === 'own';
     prevLastIdRef.current = newLast;
 
     // First append after a switch: land at bottom regardless of stale pin.
@@ -1827,7 +1873,7 @@ function Scroller({
     if (wasPinnedRef.current && !isPrepend) {
       vref.current?.scrollToIndex(lastIndex, { align: 'end' });
       setUnreadBelow(false);
-    } else if (isAppend) {
+    } else if (isAppend && appendKind !== 'quiet') {
       setUnreadBelow(true);
     }
   }, [channelId, messages, selfId, lastIndex]);
@@ -3293,14 +3339,23 @@ function conversationVisible(): boolean {
  * sit as a matched pair, but neutral — it's a setting, not an achievement.
  * Opens the Disappearing Messages screen when `onClick` is given (1:1 DMs).
  */
-function DisappearingPill({ seconds, onClick }: { seconds: number; onClick?: () => void }) {
+function DisappearingPill({
+  seconds,
+  onClick,
+  compact = false,
+}: {
+  seconds: number;
+  onClick?: () => void;
+  /** Only the stopwatch below `sm` (the label and tooltip keep the timer). */
+  compact?: boolean;
+}) {
   const label = `Disappearing messages: ${formatLong(seconds)}`;
   const className =
     'inline-flex items-center self-center gap-0.5 whitespace-nowrap rounded-md px-1.5 pt-[2.5px] pb-[1.5px] text-[10px] font-semibold leading-none border border-line bg-bg-2 text-ink-2 shrink-0';
   const body = (
     <>
       <Timer size={10} className="shrink-0 relative -top-[0.5px]" />
-      {formatShort(seconds)}
+      {compact ? <span className="hidden sm:inline">{formatShort(seconds)}</span> : formatShort(seconds)}
     </>
   );
   return onClick ? (

@@ -16,6 +16,7 @@ import {
   PET_STAGES,
   PET_TASKS,
   petStageLabel,
+  type Channel,
   type DmPetState,
   type Message,
   type MessageMetadata,
@@ -24,7 +25,9 @@ import {
   type PetNoticeEvent,
   type PetStage,
   type PetTaskKey,
+  type PublicUser,
 } from '@zekktris/client';
+import { maskProfanity } from './profanity';
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -43,6 +46,13 @@ function addDays(day: string, n: number): string | null {
   const t = Date.parse(`${day}T00:00:00Z`);
   if (Number.isNaN(t)) return null;
   return new Date(t + n * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** The pet's name as this viewer sees it. Either person in the DM can rename
+    it, so a supervised child whose guardian turned on the profanity mask sees
+    swear words masked here, the same as in message bodies. */
+export function petDisplayName(name: string, filterProfanity: boolean): string {
+  return filterProfanity ? maskProfanity(name) : name;
 }
 
 // ── Mood ──────────────────────────────────────────────────────────────────
@@ -151,6 +161,9 @@ export type PetBannerKind = 'adopt' | 'waiting' | 'invited';
 export interface PetBanner {
   kind: PetBannerKind;
   text: string;
+  /** 'invited' only: the streak broke or is under minStreak, so accepting
+      would only fail. Accept hides until the streak is back (Not now stays). */
+  locked?: true;
 }
 
 /**
@@ -158,6 +171,7 @@ export interface PetBanner {
  *   - no pet, and the DM may adopt → "🥚 5-day streak! Adopt a Zekk Pet with Sam." [Adopt]
  *   - our invite is waiting → "Waiting for Sam to accept your Zekk Pet." [Cancel]
  *   - their invite to us → "Sam wants to raise a Zekk Pet with you." [Accept] [Not now]
+ *     (the streak is under minStreak → "… Keep a 3-day streak going to accept." [Not now])
  * null otherwise (not loaded, not eligible, or a pet that's hatched already).
  */
 export function petBanner(
@@ -172,9 +186,29 @@ export function petBanner(
     return { kind: 'adopt', text: `🥚 ${state.streak}-day streak! Adopt a Zekk Pet with ${peerName}.` };
   }
   if (pet.status !== 'invited') return null;
-  return pet.invitedBy === selfId
-    ? { kind: 'waiting', text: `Waiting for ${peerName} to accept your Zekk Pet.` }
-    : { kind: 'invited', text: `${peerName} wants to raise a Zekk Pet with you.` };
+  if (pet.invitedBy === selfId) {
+    return { kind: 'waiting', text: `Waiting for ${peerName} to accept your Zekk Pet.` };
+  }
+  const text = `${peerName} wants to raise a Zekk Pet with you.`;
+  // The invite outlives a broken streak (it lapses after 7 days), but the
+  // server only lets it be accepted on a live streak of minStreak or more.
+  if (state.streak < state.minStreak) {
+    return {
+      kind: 'invited',
+      text: `${text} Keep a ${state.minStreak}-day streak going to accept.`,
+      locked: true,
+    };
+  }
+  return { kind: 'invited', text };
+}
+
+/** Whether the viewer may invite, accept or rename right now. The server
+    says no while either person blocks the other, the viewer is muted or
+    supervision-restricted, or the other person left the DM: Accept and
+    Rename would only fail, so they hide (Not now / Cancel stay). Older
+    servers don't send it: treat as yes. */
+export function petCanAct(state: DmPetState | undefined): boolean {
+  return state?.canAct !== false;
 }
 
 // ── The in-chat notice ────────────────────────────────────────────────────
@@ -190,6 +224,46 @@ export function isPetNotice(m: { type: string; metadata?: { kind: string } | nul
 /** The notice's metadata, when the row has it. */
 export function petNoticeMeta(m: Pick<Message, 'metadata'>): PetNoticeMeta | null {
   return m.metadata?.kind === 'pet' ? m.metadata : null;
+}
+
+/** Whose block hides a row behind "Blocked message — click to show": its
+    author's, except a pet notice, which is its actor's (as in
+    appendScrollKind). The daily check's 'asleep' / 'ran_away' carry user A
+    as author and no actor, so they give null and are never hidden: otherwise
+    whoever blocked user A would see the pet's news as a hidden message from
+    A, while whoever blocked user B would see it plainly. A notice without
+    its metadata falls back to its author. */
+export function blockSubjectId(m: Pick<Message, 'type' | 'metadata' | 'author'>): string | null {
+  const meta = isPetNotice(m) ? petNoticeMeta(m) : null;
+  return meta ? (meta.actorId ?? null) : (m.author?.id ?? null);
+}
+
+/**
+ * What rows that just landed at the bottom of the chat do to its scroll.
+ * 'own': the viewer's, so the view follows them down. 'other': someone
+ * else's, so a scrolled-up viewer gets the 'New messages' pill. 'quiet': only
+ * pet notices the viewer didn't cause, which raise nothing (a quiet notice
+ * never pings). A pet notice is its actor's, not its author's: the daily
+ * check's 'asleep' / 'ran_away' carry user A as author and no actor.
+ * The tail decides 'own'; every row after `prevLastId` counts for the pill,
+ * so a message that lands with a notice in the same render still raises it.
+ * When that row is gone (a confirmed local send) any real row does.
+ */
+export function appendScrollKind(
+  rows: ReadonlyArray<Pick<Message, 'id' | 'type' | 'metadata' | 'author'>>,
+  prevLastId: string | null,
+  selfId: string | null | undefined,
+): 'own' | 'other' | 'quiet' {
+  const tail = rows[rows.length - 1];
+  if (!tail) return 'quiet';
+  const ownerId = isPetNotice(tail) ? (petNoticeMeta(tail)?.actorId ?? null) : (tail.author?.id ?? null);
+  if (selfId && ownerId === selfId) return 'own';
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = rows[i]!;
+    if (m.id === prevLastId) break;
+    if (!isPetNotice(m)) return 'other';
+  }
+  return 'quiet';
 }
 
 /** "a Kid", "an Adult". */
@@ -252,6 +326,75 @@ export function petNoticeArt(meta: Pick<PetNoticeMeta, 'event' | 'stage'>): { st
   return { stage, mood };
 }
 
+/** The other person in the 1:1 DM a pet notice sits in: the channel's
+    recipients (which never include the viewer), else the row's author when
+    that isn't the viewer. The fallback is for DM search, whose results can
+    come from a DM the viewer closed (no longer in their DM list). */
+export function petNoticePeer(
+  channel: Pick<Channel, 'recipients'> | undefined,
+  message: Pick<Message, 'author'>,
+  selfId: string | undefined,
+): PublicUser | null {
+  const fromChannel = channel?.recipients?.find((u) => u.id !== selfId);
+  if (fromChannel) return fromChannel;
+  return message.author && message.author.id !== selfId ? message.author : null;
+}
+
+/**
+ * A pet notice's line and glyph, the same on every surface that shows one
+ * (the chat row, DM search): built from metadata so it reads "You" for the
+ * viewer and the other person's (nicknamed) name otherwise — never as a
+ * message from whichever person the server filed it under (the daily check
+ * files 'asleep' / 'ran_away' under user A). The server's third-person
+ * `content` is the fallback for an event this client doesn't know or a row
+ * without its metadata. A supervised child's profanity mask covers the pet's
+ * name and that fallback.
+ */
+export function petNoticeLine({
+  message,
+  selfId,
+  peerId,
+  peerName,
+  authorName,
+  nameOf,
+  filterProfanity,
+}: {
+  message: Pick<Message, 'content' | 'metadata' | 'authorId'>;
+  selfId: string | undefined;
+  /** The other person in the DM, and their (nicknamed) name. */
+  peerId: string | null;
+  peerName: string;
+  /** The row author's name, for an actor who is the author but not the peer. */
+  authorName: string;
+  /** Any other user's name, when known. */
+  nameOf: (id: string) => string | null | undefined;
+  filterProfanity: boolean;
+}): { text: string; art: { stage: PetStage; mood: PetMood } } {
+  const meta = petNoticeMeta(message);
+  const actorId = meta?.actorId ?? null;
+  const actorName =
+    actorId === null
+      ? null
+      : actorId === peerId
+        ? peerName
+        : actorId === message.authorId
+          ? authorName
+          : (nameOf(actorId) ?? 'Someone');
+  const text =
+    (meta &&
+      petNoticeText({
+        event: meta.event,
+        petName: petDisplayName(meta.petName, filterProfanity),
+        stage: meta.stage,
+        actorIsSelf: selfId !== undefined && actorId === selfId,
+        actorName,
+        peerName,
+      })) ||
+    (filterProfanity ? maskProfanity(message.content) : message.content);
+  const art = meta ? petNoticeArt(meta) : ({ stage: 'egg', mood: 'happy' } as const);
+  return { text, art };
+}
+
 /** Progress towards the next level for the art (the egg cracks near the end). */
 export function petArtProgress(pet: Pick<PetDTO, 'points' | 'level' | 'levelFloor' | 'nextLevelAt'>): number {
   return petLevelProgress(pet).fraction;
@@ -264,8 +407,10 @@ const REFRESH_SLACK_MS = 5_000;
  * When the open DM should refetch its pet even if no event comes: the mood
  * is worked out when the server answers, and two of its rules turn on the
  * clock alone — 18:00 UTC (a pet fed yesterday turns grumpy) and the end of
- * the UTC day (today's tasks reset). Returns the next of those after `now`
- * (epoch ms, a few seconds past it), or null when the DTO has neither.
+ * the UTC day (today's tasks reset). Returns the next of those (epoch ms, a
+ * few seconds past it) that is still ahead of `now`, or null when the DTO
+ * has neither. A boundary counts until its slack is over too, so a re-render
+ * inside those seconds returns the same time and the pending timer stands.
  */
 export function petNextRefreshAt(pet: Pick<PetDTO, 'today' | 'dayEndsAt'>, now: number): number | null {
   const candidates: number[] = [];
@@ -273,6 +418,54 @@ export function petNextRefreshAt(pet: Pick<PetDTO, 'today' | 'dayEndsAt'>, now: 
   if (!Number.isNaN(evening)) candidates.push(evening);
   const dayEnd = Date.parse(pet.dayEndsAt);
   if (!Number.isNaN(dayEnd)) candidates.push(dayEnd);
-  const next = candidates.filter((t) => t > now).sort((a, b) => a - b)[0];
+  const next = candidates.filter((t) => t + REFRESH_SLACK_MS > now).sort((a, b) => a - b)[0];
   return next === undefined ? null : next + REFRESH_SLACK_MS;
+}
+
+/**
+ * When the open DM should refetch because its streak may break: at the next
+ * midnight UTC (epoch ms, a few seconds past it). Adopt and Accept are only
+ * offered on a live streak, and no event says when one ends. Like
+ * petNextRefreshAt, a midnight counts until its slack is over, so a re-render
+ * in those seconds returns the same time and the pending timer stands.
+ */
+export function nextUtcMidnightRefreshAt(now: number): number {
+  const d = new Date(now - REFRESH_SLACK_MS);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) + REFRESH_SLACK_MS;
+}
+
+/** The waits before each retry of a failed pet fetch (fetchPetWithRetry). */
+export const PET_FETCH_RETRY_MS: readonly number[] = [3_000, 10_000, 30_000];
+
+/**
+ * Fetches a DM's pet when it opens and, if that fails, tries again after each
+ * of `delays` while `stillMissing()` holds (the DM still has no pet entry). A
+ * failed first fetch leaves no entry, and every other refetch (the pet and
+ * streak events, the clock, supervision, a block) needs one, so without this
+ * a short API outage or network blip would keep the bar and the header pet
+ * away until the tab lost and regained focus. Returns a cancel for the
+ * effect's cleanup, which also drops a pending retry: a switch to another
+ * channel never retries this one.
+ */
+export function fetchPetWithRetry(
+  load: () => Promise<unknown>,
+  stillMissing: () => boolean,
+  delays: readonly number[] = PET_FETCH_RETRY_MS,
+): () => void {
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const attempt = (tries: number) => {
+    void load().catch(() => {
+      if (cancelled || tries >= delays.length) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        if (!cancelled && stillMissing()) attempt(tries + 1);
+      }, delays[tries]);
+    });
+  };
+  attempt(0);
+  return () => {
+    cancelled = true;
+    if (timer !== undefined) clearTimeout(timer);
+  };
 }

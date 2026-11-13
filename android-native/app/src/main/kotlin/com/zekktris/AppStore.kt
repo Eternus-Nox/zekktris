@@ -1712,11 +1712,12 @@ class AppStore(
     suspend fun loadDmPet(channelId: String): com.zekktris.data.model.DmPetState? {
         val gen = dmPetGen[channelId] ?: 0
         val s = runCatching { api.getDmPet(channelId) }.getOrNull() ?: return null
-        // A DM_PET_UPDATE (or our own change) since the request left is newer.
+        // A DM_PET_UPDATE (or our own change) since the request left is
+        // newer, even on a DM's first fetch ([ZekkPet.afterFetch]).
         val keepPet = (dmPetGen[channelId] ?: 0) != gen
         _state.update { st ->
             val prev = st.dmPets[channelId]
-            val next = if (keepPet && prev != null) s.copy(pet = prev.pet) else s
+            val next = ZekkPet.afterFetch(prev, s, keepPet)
             if (prev == next) st else st.copy(dmPets = st.dmPets + (channelId to next))
         }
         return s
@@ -1730,14 +1731,13 @@ class AppStore(
     }
 
     /** A DM's pet from DM_PET_UPDATE or our own change (null = no pet any
-     *  more). Not fetched yet: whether the DM may adopt is unknown until GET
-     *  /pet answers, so it reads as not eligible (no bar) rather than a guess. */
+     *  more), as [ZekkPet.withPet] leaves it: an entry even for no pet. */
     private fun setDmPet(channelId: String, pet: com.zekktris.data.model.PetDTO?) {
         dmPetGen.merge(channelId, 1, Int::plus)
         _state.update { st ->
             val prev = st.dmPets[channelId]
-                ?: com.zekktris.data.model.DmPetState(pet = null, eligible = false, streak = 0, minStreak = ZekkPet.MIN_STREAK)
-            if (prev.pet == pet) st else st.copy(dmPets = st.dmPets + (channelId to prev.copy(pet = pet)))
+            val next = ZekkPet.withPet(prev, pet)
+            if (prev == next) st else st.copy(dmPets = st.dmPets + (channelId to next))
         }
     }
 
@@ -1751,6 +1751,7 @@ class AppStore(
      */
     fun changeDmPet(channelId: String, change: ZekkPet.Change, onDone: (String?) -> Unit = {}) {
         scope.launch {
+            val gen = dmPetGen[channelId] ?: 0
             val error = try {
                 val pet = when (change) {
                     ZekkPet.Change.Invite -> api.inviteDmPet(channelId)
@@ -1758,7 +1759,13 @@ class AppStore(
                     ZekkPet.Change.Decline -> api.declineDmPet(channelId)
                     is ZekkPet.Change.Rename -> api.renameDmPet(channelId, change.name)
                 }
-                setDmPet(channelId, pet)
+                // A DM_PET_UPDATE came in meanwhile: the server publishes the
+                // change's own event before it answers, and the socket keeps
+                // order, so the pet from events is this change's or a newer
+                // one (a send that fed it while we waited). The answer, on
+                // its own connection, may be older; leave it. No event
+                // (socket down, a no-op rename): the answer goes in.
+                if ((dmPetGen[channelId] ?: 0) == gen) setDmPet(channelId, pet)
                 // No pet any more: whether the DM may invite again (and its
                 // streak) only comes with a fetch.
                 if (pet == null) scope.launch { loadDmPet(channelId) }
@@ -2518,7 +2525,8 @@ class AppStore(
      *  MESSAGE_CREATE reconciliation (2294-2295). `batch` is API order
      *  (newest-first). No-op when nothing genuinely newer arrived. */
     private fun reconcilePointer(channelId: String, batch: List<Message>) {
-        val newest = batch.firstOrNull { it.id.all(Char::isDigit) }?.id ?: return
+        // Zekk Pet notices don't count, as on the live path.
+        val newest = batch.firstOrNull { it.id.all(Char::isDigit) && !ZekkPet.isNotice(it) }?.id ?: return
         val cur = _state.value.dms.firstOrNull { it.id == channelId }?.lastMessageId
         if (cur == null || newest > cur) {
             advanceLastMessage(channelId, newest) // self-guards monotonicity
@@ -4200,6 +4208,9 @@ class AppStore(
                 val dms = listOf(ch) + it.dms.filterNot { d -> d.id == ch.id }
                 it.copy(dms = dms, selectedGuildId = null, selectedChannelId = ch.id, guildEmojis = emptyList())
             }
+            // The header's disappearing timer and Zekk Pet, as openDM fetches them.
+            scope.launch { getDmSettings(ch.id) }
+            refreshDmPet(ch.id)
             if (_state.value.messagesByChannel[ch.id] == null) loadMessages(ch.id)
             requestVoice(ch.id)
         }
@@ -4248,12 +4259,20 @@ class AppStore(
     }
 
     fun acceptFriend(targetId: String) {
-        scope.launch { runCatching { api.acceptFriend(targetId) }; loadRelationships() }
+        scope.launch {
+            runCatching { api.acceptFriend(targetId) }
+            refreshPetsWithUser(targetId)
+            loadRelationships()
+        }
     }
 
     /** Remove friend / decline incoming / cancel outgoing — one endpoint. */
     fun removeFriend(targetId: String) {
-        scope.launch { runCatching { api.removeFriend(targetId) }; loadRelationships() }
+        scope.launch {
+            runCatching { api.removeFriend(targetId) }
+            refreshPetsWithUser(targetId)
+            loadRelationships()
+        }
     }
 
     fun blockUser(targetId: String) {
@@ -4262,6 +4281,7 @@ class AppStore(
             // filter excludes this peer whether or not the server ever confirms.
             locallyBlockedIds = locallyBlockedIds + targetId
             runCatching { api.blockUser(targetId) }
+            refreshPetsWithUser(targetId)
             // Blocking someone must also pull them out of the SYSTEM share sheet,
             // where their name + face would otherwise stay published as a direct
             // share target. Explicitly, not via the republish: a republish drops
@@ -4303,11 +4323,23 @@ class AppStore(
         scope.launch {
             runCatching { api.unblockUser(targetId) }
             locallyBlockedIds = locallyBlockedIds - targetId
+            refreshPetsWithUser(targetId)
             // Eligible to be a share target again — but only republish off a
             // list we actually re-fetched, which refreshRelationships does for
             // us on success. On failure the peer stays absent from the sheet.
             refreshRelationships()
         }
+    }
+
+    /** A block or unblock opens or closes the pet actions of our DMs with
+     *  [targetId] (GET's canAct), and so does a friendship starting or
+     *  ending (accept / remove) when either side's DMs are friends-only
+     *  under supervision. No event says so: re-read their pets once the
+     *  request has answered, whether or not it worked — the GET is the
+     *  truth either way. Mirrors web's applyRelationship. */
+    private fun refreshPetsWithUser(targetId: String) {
+        val st = _state.value
+        ZekkPet.dmIdsWithUser(st.dms, st.dmPets, targetId).forEach(::refreshDmPet)
     }
 
     fun loadMentions() {
@@ -4512,16 +4544,27 @@ class AppStore(
                     // listDMs/READY refreshes. Without this, reading a chat and
                     // then a later refresh (or the next message) flips it back to
                     // unread because the read-state was ahead of the stale channel.
-                    advanceLastMessage(m.channelId, m.id)
-                    bumpRecency(m.channelId)
+                    // A Zekk Pet notice moves neither: the server leaves the DM's
+                    // last_message_id alone for one (it never makes the DM unread
+                    // or reorders the list), so a bump would light a dot that only
+                    // the next channel list took back.
+                    if (!ZekkPet.isNotice(m)) {
+                        advanceLastMessage(m.channelId, m.id)
+                        bumpRecency(m.channelId)
+                    }
                     // A disappearing-timer notice carries the new value: keeps
                     // the header right even if DM_SETTINGS_UPDATE was missed.
                     if (Disappearing.isNotice(m)) {
                         Disappearing.noticeTimer(m)?.let { noteDmTimerChange(m.channelId, it) }
                     }
                     val authorId = m.authorId ?: m.author?.id
+                    // A pet notice we didn't cause — the sweep's 'asleep' /
+                    // 'ran_away' is authored by the DM's user A only nominally
+                    // — is not our message: it neither ends our typing nor
+                    // moves our read marker past what the other person sent.
+                    val petNoticeByOther = ZekkPet.isNoticeNotBy(m, _state.value.me?.id)
                     // A user's message supersedes their typing indicator.
-                    authorId?.let { uid -> clearTyping(m.channelId, uid) }
+                    if (!petNoticeByOther) authorId?.let { uid -> clearTyping(m.channelId, uid) }
                     // Our OWN message (sent from THIS or another device) must never
                     // light an unread dot for us. The server advances our read-state
                     // on create but emits NO CHANNEL_ACK, and a CLOSED channel never
@@ -4529,7 +4572,7 @@ class AppStore(
                     // here (mirrors iOS/web). Monotonic string guard so an
                     // out-of-order echo can't regress it; require a numeric id to
                     // skip Android's optimistic "pending-$nonce" ids.
-                    if (authorId != null && authorId == _state.value.me?.id &&
+                    if (authorId != null && authorId == _state.value.me?.id && !petNoticeByOther &&
                         m.id.isNotEmpty() && m.id.all(Char::isDigit)) {
                         _state.update { st ->
                             val prev = st.readStates[m.channelId]?.lastMessageId
@@ -4985,11 +5028,12 @@ class AppStore(
                     st.copy(dms = next)
                 }
                 // A DM without a pet may just have become able to adopt one
-                // (or the adopt bar's streak count moved). DM_PET_UPDATE
-                // doesn't cover that, so refetch the eligibility of a DM
-                // already loaded.
+                // (or the adopt bar's streak count moved), and an open invite
+                // may be acceptable again (its streak was rebuilt).
+                // DM_PET_UPDATE doesn't cover that, so refetch the
+                // eligibility and streak of a DM already loaded.
                 val petState = _state.value.dmPets[cid]
-                if (petState != null && petState.pet == null) refreshDmPet(cid)
+                if (petState != null && (petState.pet == null || petState.pet.status == "invited")) refreshDmPet(cid)
             }
             "FAMILY_REQUEST_CREATE", "FAMILY_FLAG_CREATE" -> {
                 // Parental-controls activity dispatched to the parent's user
@@ -5019,6 +5063,13 @@ class AppStore(
                 // the last good snapshot when that fetch fails, so a revoked
                 // permission can never be re-opened by a failed refresh.
                 loadFamily()
+                // A restriction applied or lifted also opens or closes the
+                // open DM's pet actions (GET's canAct), which no pet event
+                // covers. A DM that isn't open re-reads its pet when it opens.
+                // Mirrors web.
+                _state.value.let { st ->
+                    st.selectedChannelId?.takeIf { it in st.dmPets }?.let(::refreshDmPet)
+                }
             }
         }
     }
@@ -5170,6 +5221,12 @@ class AppStore(
     /** server − device clock: MESSAGE_EXPIRY's precise value, else the last
      *  message page's Date header, else none. */
     private fun clockOffsetMs(): Long = expiryClockOffsetMs ?: api.dateClockOffsetMs ?: 0L
+
+    /** The server's clock now (epoch ms), from this device's and the last
+     *  offset seen ([clockOffsetMs]): what the open DM's pet refetch times
+     *  18:00 and midnight UTC on, so a phone whose clock is off doesn't
+     *  refetch before the server's mood turns and then wait a whole day. */
+    fun serverNowMs(): Long = System.currentTimeMillis() + clockOffsetMs()
 
     /**
      * Ingest filter for every path that writes rows: record the deadlines REST

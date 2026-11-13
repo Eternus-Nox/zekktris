@@ -61,6 +61,7 @@ import com.zekktris.ui.theme.ZkMono
 import com.zekktris.ui.theme.ZkSans
 import com.zekktris.ui.theme.ZkStatus
 import com.zekktris.ui.theme.ZkTheme
+import com.zekktris.util.ProfanityFilter
 
 /**
  * Zekk Pet — the pet two people raise in a 1:1 DM by keeping their streak
@@ -96,6 +97,17 @@ fun petPeerNameFor(store: AppStore, state: AppState, channel: Channel?): String 
     val peer = channel?.recipients?.let { r -> r.firstOrNull { it.id != state.me?.id } ?: r.firstOrNull() }
     return store.dmNickname(peer?.id) ?: peer?.bestName ?: "them"
 }
+
+/** Whether this viewer's pet names are masked: a supervised child whose
+ *  guardian turned on "Blur swear words" ([petDisplayName]). */
+fun petNamesMasked(state: AppState): Boolean = state.family?.restrictions?.filterProfanity == true
+
+/** The pet's name as this viewer sees it. Either person in the DM can rename
+ *  it, so with [masked] ([petNamesMasked]) swear words are masked here, the
+ *  same as in message bodies: wherever the name shows (the header pet, the
+ *  card, the notices). Only the rename dialog keeps the real name, since it
+ *  edits it. */
+fun petDisplayName(name: String, masked: Boolean): String = if (masked) ProfanityFilter.mask(name) else name
 
 /** Runs one change at a time; [busy] is the one in flight. */
 private class PetActions(private val store: AppStore, private val channelId: String, private val ctx: android.content.Context) {
@@ -142,23 +154,29 @@ private fun PetButton(label: String, primary: Boolean, enabled: Boolean, onClick
 }
 
 /** [Adopt] · [Cancel] · [Accept] [Not now]. "Not now" declines the invite
- *  (no notice for either person); the inviter can invite again later. */
+ *  (no notice for either person); the inviter can invite again later.
+ *  Without [canAct] (a block, a mute, supervision, or the other person left)
+ *  Adopt and Accept hide: they would only fail. So does Accept on a [locked]
+ *  invite (the streak is under the minimum: [ZekkPet.Banner.locked]). */
 @Composable
-private fun PetInviteActions(kind: ZekkPet.BannerKind, actions: PetActions) {
+private fun PetInviteActions(kind: ZekkPet.BannerKind, actions: PetActions, canAct: Boolean = true, locked: Boolean = false) {
     val busy = actions.busy
     val idle = busy == null
     when (kind) {
-        ZekkPet.BannerKind.Adopt ->
+        ZekkPet.BannerKind.Adopt -> if (canAct) {
             PetButton(if (busy == ZekkPet.Change.Invite) "Inviting…" else "Adopt", primary = true, enabled = idle) {
                 actions.run(ZekkPet.Change.Invite)
             }
+        }
         ZekkPet.BannerKind.Waiting ->
             PetButton(if (busy == ZekkPet.Change.Decline) "Cancelling…" else "Cancel", primary = false, enabled = idle) {
                 actions.run(ZekkPet.Change.Decline)
             }
         ZekkPet.BannerKind.Invited -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            PetButton(if (busy == ZekkPet.Change.Accept) "Accepting…" else "Accept", primary = true, enabled = idle) {
-                actions.run(ZekkPet.Change.Accept)
+            if (canAct && !locked) {
+                PetButton(if (busy == ZekkPet.Change.Accept) "Accepting…" else "Accept", primary = true, enabled = idle) {
+                    actions.run(ZekkPet.Change.Accept)
+                }
             }
             PetButton("Not now", primary = false, enabled = idle) { actions.run(ZekkPet.Change.Decline) }
         }
@@ -167,7 +185,7 @@ private fun PetInviteActions(kind: ZekkPet.BannerKind, actions: PetActions) {
 
 /** The slim adopt / invite bar under the DM header, with its ✕. */
 @Composable
-fun PetAdoptBanner(store: AppStore, channelId: String, banner: ZekkPet.Banner) {
+fun PetAdoptBanner(store: AppStore, channelId: String, banner: ZekkPet.Banner, canAct: Boolean = true) {
     val p = ZkTheme.palette
     val actions = rememberPetActions(store, channelId)
     Column(Modifier.fillMaxWidth()) {
@@ -182,7 +200,7 @@ fun PetAdoptBanner(store: AppStore, channelId: String, banner: ZekkPet.Banner) {
                 banner.text, color = ZkInk.ink2, fontFamily = ZkSans, fontSize = 13.sp,
                 modifier = Modifier.weight(1f).padding(end = 8.dp),
             )
-            PetInviteActions(banner.kind, actions)
+            PetInviteActions(banner.kind, actions, canAct, banner.locked)
             Icon(
                 Icons.Filled.Close, "Dismiss", tint = ZkInk.ink3,
                 modifier = Modifier
@@ -215,6 +233,11 @@ fun PetSheet(store: AppStore, state: AppState, channelId: String, peerName: Stri
     val pet = petState?.pet
     val actions = rememberPetActions(store, channelId)
     var renaming by remember(channelId) { mutableStateOf(false) }
+    // Accept and Rename hide while the server says they'd only fail; a block
+    // or the other person leaving mid-rename closes the dialog.
+    val canAct = petState?.canAct ?: true
+    LaunchedEffect(canAct) { if (!canAct) renaming = false }
+    val masked = petNamesMasked(state)
     // Fresh numbers whenever the card opens (the mood may have turned).
     LaunchedEffect(channelId) { store.loadDmPet(channelId) }
     // Nothing left to show: the invite was declined / cancelled / expired or
@@ -238,18 +261,19 @@ fun PetSheet(store: AppStore, state: AppState, channelId: String, peerName: Stri
                     modifier = Modifier.padding(vertical = 24.dp),
                 )
                 pet.status == "invited" -> {
-                    PetStage(pet)
+                    PetStage(pet, petDisplayName(pet.name, masked))
                     ZekkPet.banner(petState, state.me?.id, peerName)?.let { banner ->
                         Text(banner.text, color = ZkInk.ink2, fontFamily = ZkSans, fontSize = 14.sp, textAlign = TextAlign.Center)
-                        PetInviteActions(banner.kind, actions)
+                        PetInviteActions(banner.kind, actions, canAct, banner.locked)
                     }
                 }
-                else -> PetCard(pet, state.me?.id, onRename = { renaming = true })
+                else -> PetCard(pet, petDisplayName(pet.name, masked), state.me?.id, onRename = if (canAct) ({ renaming = true }) else null)
             }
         }
     }
 
-    if (renaming && pet != null && pet.status != "invited") {
+    if (renaming && canAct && pet != null && pet.status != "invited") {
+        // The real name, unmasked: this edits it.
         RenamePetDialog(
             current = pet.name,
             saving = actions.busy is ZekkPet.Change.Rename,
@@ -259,22 +283,28 @@ fun PetSheet(store: AppStore, state: AppState, channelId: String, peerName: Stri
     }
 }
 
-/** The big pet on its round stage. A tap squashes it and floats a heart up —
- *  purely local, nothing is sent. */
+/** The big pet on its stage, a rounded square as on web and iOS, so a
+ *  sleeping pet's top Z — up by the stage's corner, and further out as it
+ *  breathes — stays on it, clear of the corner's curve. A tap squashes it
+ *  and floats a heart up — purely local, nothing is sent. Only the stage
+ *  (and its ripple) is clipped: the pet draws over it unclipped. [name]: the
+ *  pet's name as the viewer sees it ([petDisplayName]). */
 @Composable
-private fun PetStage(pet: PetDTO) {
+private fun PetStage(pet: PetDTO, name: String) {
     val p = ZkTheme.palette
     val tap = rememberPetTapState()
-    Box(
-        Modifier
-            .size(176.dp)
-            .clip(CircleShape)
-            .background(p.bg2)
-            .border(1.dp, p.line, CircleShape)
-            .clickable { tap.tap() }
-            .semantics { contentDescription = "Pet ${pet.name}" },
-        contentAlignment = Alignment.Center,
-    ) {
+    val shape = RoundedCornerShape(16.dp)
+    Box(Modifier.size(176.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .clip(shape)
+                .background(p.bg2)
+                .border(1.dp, p.line, shape)
+                .clickable { tap.tap() }
+                .semantics { contentDescription = "Pet $name" },
+        )
+        // No pointer input of its own, so a tap on it reaches the stage.
         ZekkPetArt(
             stage = ZekkPet.displayStage(pet),
             mood = ZekkPet.Mood.of(pet.mood),
@@ -285,25 +315,28 @@ private fun PetStage(pet: PetDTO) {
     }
 }
 
+/** [name]: the pet's name as the viewer sees it ([petDisplayName]). */
 @Composable
-private fun PetCard(pet: PetDTO, selfId: String?, onRename: () -> Unit) {
+private fun PetCard(pet: PetDTO, name: String, selfId: String?, onRename: (() -> Unit)?) {
     val p = ZkTheme.palette
     val mood = ZekkPet.moodView(pet)
     val level = ZekkPet.levelProgress(pet)
 
-    PetStage(pet)
+    PetStage(pet, name)
 
     // Name with the rename pencil, and the level line.
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                pet.name, color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.SemiBold, fontSize = 18.sp,
+                name, color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.SemiBold, fontSize = 18.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 240.dp),
             )
-            Icon(
-                Icons.Filled.Edit, "Rename pet", tint = ZkInk.ink3,
-                modifier = Modifier.padding(start = 2.dp).clip(CircleShape).clickable(onClick = onRename).padding(7.dp).size(15.dp),
-            )
+            if (onRename != null) {
+                Icon(
+                    Icons.Filled.Edit, "Rename pet", tint = ZkInk.ink3,
+                    modifier = Modifier.padding(start = 2.dp).clip(CircleShape).clickable(onClick = onRename).padding(7.dp).size(15.dp),
+                )
+            }
         }
         Text(ZekkPet.levelLine(pet), color = ZkInk.ink2, fontFamily = ZkSans, fontSize = 14.sp)
     }
@@ -370,10 +403,21 @@ private fun PetCard(pet: PetDTO, selfId: String?, onRename: () -> Unit) {
                 ) {
                     if (t.done) Icon(Icons.Filled.Check, null, tint = p.accent, modifier = Modifier.size(12.dp))
                 }
+                // The label is weighted, so it is measured after the progress:
+                // "{me}/10 · {them}/10" keeps its full width (at a large font
+                // size it would otherwise break at the space and drop the
+                // other person's count) and the label wraps into what's left.
                 Row(Modifier.weight(1f).padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(t.label, color = if (t.done) ZkInk.ink1 else ZkInk.ink2, fontFamily = ZkSans, fontSize = 14.sp)
+                    Text(
+                        t.label, color = if (t.done) ZkInk.ink1 else ZkInk.ink2, fontFamily = ZkSans, fontSize = 14.sp,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
                     t.progress?.let {
-                        Text(it, color = ZkInk.ink3, fontFamily = ZkMono, fontSize = 12.sp, maxLines = 1, modifier = Modifier.padding(start = 8.dp))
+                        Text(
+                            it, color = ZkInk.ink3, fontFamily = ZkMono, fontSize = 12.sp,
+                            maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
                     }
                 }
                 Text(
@@ -419,9 +463,10 @@ private fun PetCard(pet: PetDTO, selfId: String?, onRename: () -> Unit) {
     }
 }
 
-/** Rename: the name is normalised like the server does (trimmed, spaces
- *  collapsed, 1–24 characters, no control characters) before it's sent; the
- *  dialog stays open with the draft on a refusal. */
+/** Rename: the name is normalised like the server does (invisible and bidi
+ *  formatting characters dropped, trimmed, spaces collapsed, 1–24
+ *  characters, not only ZWNJ / ZWJ, no control characters) before it's
+ *  sent; the dialog stays open with the draft on a refusal. */
 @Composable
 private fun RenamePetDialog(current: String, saving: Boolean, onSave: (String) -> Unit, onDismiss: () -> Unit) {
     val p = ZkTheme.palette

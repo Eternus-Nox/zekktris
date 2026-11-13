@@ -1267,11 +1267,22 @@ body.is-resizing *::after {
   from { transform: translateY(0); opacity: 1; }
   to { transform: translateY(-20px); opacity: 0; }
 }
+/* Reduced motion: the heart fades in place instead of rising, as on iOS.
+ * !important on a class outranks the global reduced-motion `*` rule, which
+ * would otherwise end it (forwards → invisible) in 0.01 ms, so a tap showed
+ * nothing at all. Same 0.8 s as HEART_MS in ZekkPetModal.tsx. */
+@keyframes zk-pet-heart-fade {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
 @media (prefers-reduced-motion: reduce) {
   .zk-pet-bob,
   .zk-pet-breathe,
   .zk-pet-wobble,
   .zk-pet-squash {
     animation: none;
+  }
+  .zk-pet-heart {
+    animation: zk-pet-heart-fade 0.8s ease-out forwards !important;
   }
 }

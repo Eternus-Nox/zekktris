@@ -4,6 +4,7 @@ import com.zekktris.data.ZekkPet.BannerKind
 import com.zekktris.data.ZekkPet.Mood
 import com.zekktris.data.ZekkPet.Stage
 import com.zekktris.data.ZekkPet.Task
+import com.zekktris.data.model.Channel
 import com.zekktris.data.model.DmPetState
 import com.zekktris.data.model.Message
 import com.zekktris.data.model.MessageMetadata
@@ -141,6 +142,30 @@ class ZekkPetTest {
         }
     }
 
+    @Test fun namesDropInvisibleAndBidiCharactersLikeTheServer() {
+        // apps/api/test/zekk-pet.integration.test.ts: nothing visible is no name …
+        listOf("​", "⁠﻿", "‮", "‍ ‌", "⁦⁩", "‍", "‌‍").forEach {
+            assertNull(it, ZekkPet.normalizeName(it))
+        }
+        // … and the marks go wherever they are.
+        assertEquals("abc", ZekkPet.normalizeName("‮abc"))
+        assertEquals("Mochi", ZekkPet.normalizeName("Mo​chi"))
+        assertEquals("Pip", ZekkPet.normalizeName("⁦Pip⁩ ‎"))
+        assertEquals("kkeZ", ZekkPet.normalizeName("‮kkeZ"))
+        assertEquals("Zekk", ZekkPet.normalizeName("Zekk‎"))
+        // The BOM is dropped, not turned into a space.
+        assertEquals("ab", ZekkPet.normalizeName("a﻿b"))
+        assertEquals("Zekk", ZekkPet.normalizeName("Ze﻿kk"))
+        // A mark an RTL keyboard adds doesn't count towards the 24.
+        assertEquals("x".repeat(24), ZekkPet.normalizeName("x".repeat(24) + "‏"))
+        assertEquals("x".repeat(24), ZekkPet.normalizeName("‎" + "x".repeat(24)))
+        assertEquals("x".repeat(23), ZekkPet.normalizeName("‪" + "x".repeat(23) + "‬"))
+        // ZWJ and ZWNJ stay inside a name: they join emoji and shape scripts.
+        assertEquals("a‍b", ZekkPet.normalizeName("a‍b"))
+        assertEquals("🐣‍🔥", ZekkPet.normalizeName("🐣‍🔥"))
+        assertEquals("👩‍💻", ZekkPet.normalizeName("👩‍💻"))
+    }
+
     // ── The pet card ────────────────────────────────────────────────────────
 
     @Test fun weekdaysAreUtcDays() {
@@ -227,6 +252,55 @@ class ZekkPetTest {
         assertEquals(Stage.Kid, ZekkPet.displayStage(pet(stage = "kid")))
         assertEquals("Zekk Pet: Zekk (invite pending)", ZekkPet.headerLabel(pet(status = "invited")))
         assertEquals("Zekk Pet: Biscuit, Asleep", ZekkPet.headerLabel(pet(name = "Biscuit", status = "asleep", mood = "asleep")))
+        // The name as the viewer sees it (masked for a supervised child).
+        assertEquals("Zekk Pet: S••• Lord, Happy", ZekkPet.headerLabel(pet(name = "Shit Lord"), name = "S••• Lord"))
+        assertEquals("Zekk Pet: S••• Lord (invite pending)", ZekkPet.headerLabel(pet(name = "Shit Lord", status = "invited"), name = "S••• Lord"))
+    }
+
+    @Test fun headerChipsShowWholeOrNotAtAll() {
+        // dp on a 360dp phone, non-E2EE DM: 104 for the name and its chips;
+        // each chip with its 6dp gap: 2-digit streak 41, "1d" timer 42, pet 36.
+        // Next to a pet the timer isn't on the line (it's the avatar's
+        // badge, headerTimerCue), so it defaults to 0 here.
+        fun fit(room: Int, streak: Int = 41, timer: Int = 0, pet: Int = 36) =
+            ZekkPet.fitHeaderChips(room, streak, timer, pet)
+        // The pet keeps its full size (a Row squeezed it to 15dp and the
+        // name to nothing), and the streak sits beside it.
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = false, pet = true), fit(104))
+        // Without a pet the timer pill is on the line, and stays whenever it fits.
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = true, pet = false), fit(104, timer = 42, pet = 0))
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = true, pet = false), fit(83, timer = 42, pet = 0))
+        // Chips that aren't there never show.
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(104, streak = 0))
+        // A chip that can't fit whole is left out, never squeezed; the pet,
+        // the only way into its card, keeps its place before the streak.
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(60))
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = false), fit(30))
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(40, streak = 0))
+        // 360dp with a 2-character clan tag (76dp left), 320dp with no tag
+        // (64dp), a 1-character tag and a 100+ day streak (82dp, a 47dp pill):
+        // the streak gives way, the pet stays.
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(76))
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(64))
+        assertEquals(ZekkPet.HeaderChips(streak = false, timer = false, pet = true), fit(82, streak = 47))
+        // Both show whenever both fit.
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = false, pet = true), fit(77))
+    }
+
+    @Test fun aTimerNextToAPetIsTheAvatarsBadge() {
+        // Off: nothing, pet or not.
+        assertNull(ZekkPet.headerTimerCue(null, petShown = false))
+        assertNull(ZekkPet.headerTimerCue(null, petShown = true))
+        assertNull(ZekkPet.headerTimerCue(0, petShown = true))
+        // On without a pet: the pill on the title line.
+        assertEquals(ZekkPet.TimerCue.Pill, ZekkPet.headerTimerCue(86_400, petShown = false))
+        // On next to a pet: the avatar's badge, which needs no room on the
+        // line. A 360dp phone with a 12-day streak, a pet and a 1-day timer
+        // seats the pet and the streak (104dp: 36 + 41) and still shows the
+        // timer, where the 42dp pill used to give way.
+        assertEquals(ZekkPet.TimerCue.Badge, ZekkPet.headerTimerCue(86_400, petShown = true))
+        assertEquals(ZekkPet.HeaderChips(streak = true, timer = false, pet = true), ZekkPet.fitHeaderChips(104, streak = 41, timer = 0, pet = 36))
+        assertEquals(ZekkPet.TimerCue.Badge, ZekkPet.headerTimerCue(30, petShown = true))
     }
 
     // ── The adopt bar ───────────────────────────────────────────────────────
@@ -241,12 +315,121 @@ class ZekkPetTest {
         val waiting = ZekkPet.banner(DmPetState(pet = pet(status = "invited", invitedBy = "1")), "1", "Sam")
         assertEquals(BannerKind.Waiting, waiting?.kind)
         assertEquals("Waiting for Sam to accept your Zekk Pet.", waiting?.text)
-        val invited = ZekkPet.banner(DmPetState(pet = pet(status = "invited", invitedBy = "2")), "1", "Sam")
+        val invited = ZekkPet.banner(DmPetState(pet = pet(status = "invited", invitedBy = "2"), streak = 3), "1", "Sam")
         assertEquals(BannerKind.Invited, invited?.kind)
         assertEquals("Sam wants to raise a Zekk Pet with you.", invited?.text)
+        assertFalse(invited!!.locked)
         // A pet that's hatched (or asleep) has no bar.
         assertNull(ZekkPet.banner(DmPetState(pet = pet()), "1", "Sam"))
         assertNull(ZekkPet.banner(DmPetState(pet = pet(status = "asleep", mood = "asleep")), "1", "Sam"))
+    }
+
+    @Test fun acceptLocksOnceTheStreakIsUnderTheMinimum() {
+        // Sam invited on a 4-day streak, then a day was missed: the invite
+        // stays up to 7 days, but the server refuses to accept it on a broken
+        // streak (409), so Accept goes and the bar says why.
+        val invite = pet(status = "invited", invitedBy = "2", level = 0, stage = "egg")
+        val broken = DmPetState(pet = invite, eligible = false, streak = 0, minStreak = 3)
+        assertEquals(
+            ZekkPet.Banner(BannerKind.Invited, "Sam wants to raise a Zekk Pet with you. Keep a 3-day streak going to accept.", locked = true),
+            ZekkPet.banner(broken, "1", "Sam"),
+        )
+        assertEquals(
+            ZekkPet.Banner(BannerKind.Invited, "Sam wants to raise a Zekk Pet with you. Keep a 3-day streak going to accept.", locked = true),
+            ZekkPet.banner(broken.copy(streak = 2), "1", "Sam"),
+        )
+        // Back to the minimum (or past it): Accept again, the original words.
+        assertEquals(ZekkPet.Banner(BannerKind.Invited, "Sam wants to raise a Zekk Pet with you."), ZekkPet.banner(broken.copy(streak = 3), "1", "Sam"))
+        assertEquals(ZekkPet.Banner(BannerKind.Invited, "Sam wants to raise a Zekk Pet with you."), ZekkPet.banner(broken.copy(streak = 9), "1", "Sam"))
+        // Our own waiting invite keeps its Cancel whatever the streak.
+        assertEquals(
+            ZekkPet.Banner(BannerKind.Waiting, "Waiting for Sam to accept your Zekk Pet."),
+            ZekkPet.banner(broken.copy(pet = invite.copy(invitedBy = "1")), "1", "Sam"),
+        )
+    }
+
+    @Test fun theBarsThatHangOnALiveStreakRefetchAtMidnight() {
+        val invite = pet(status = "invited", invitedBy = "2", level = 0, stage = "egg")
+        fun needs(s: DmPetState) = ZekkPet.bannerNeedsStreak(ZekkPet.banner(s, "1", "Sam"))
+        assertTrue(needs(DmPetState(pet = null, eligible = true, streak = 5)))
+        assertTrue(needs(DmPetState(pet = invite, streak = 3)))
+        // Locked already, our own invite, a hatched pet or no bar: nothing to lapse.
+        assertFalse(needs(DmPetState(pet = invite, streak = 0)))
+        assertFalse(needs(DmPetState(pet = invite.copy(invitedBy = "1"), streak = 3)))
+        assertFalse(needs(DmPetState(pet = pet(), streak = 3)))
+        assertFalse(needs(DmPetState(pet = null, eligible = false, streak = 2)))
+        assertFalse(ZekkPet.bannerNeedsStreak(null))
+    }
+
+    // ── The store's merge (AppStore.setDmPet / loadDmPet) ───────────────────
+
+    @Test fun anEventLeavesAnEntryEvenForNoPet() {
+        // Not fetched yet: no bar, and an invite takes the minimum streak.
+        assertEquals(DmPetState(pet = null, eligible = false, streak = 0, minStreak = 3), ZekkPet.withPet(null, null))
+        val invite = pet(status = "invited", invitedBy = "2", level = 0, stage = "egg")
+        assertEquals(DmPetState(pet = invite, eligible = false, streak = 3, minStreak = 3), ZekkPet.withPet(null, invite))
+        // Fetched already: only the pet changes.
+        val fetched = DmPetState(pet = null, eligible = true, streak = 6, minStreak = 3)
+        assertEquals(fetched.copy(pet = invite), ZekkPet.withPet(fetched, invite))
+        assertEquals(fetched, ZekkPet.withPet(fetched.copy(pet = invite), null))
+    }
+
+    @Test fun anInviteCancelledBeforeTheFirstFetchAnswersStaysGone() {
+        // Alice opens the DM (no entry yet) and GET /pet leaves; Sam cancels
+        // his invite and DM_PET_UPDATE null lands before the answer, which
+        // still saw the invite (so the server said "not eligible").
+        val invite = pet(status = "invited", invitedBy = "2", level = 0, stage = "egg")
+        val answer = DmPetState(pet = invite, eligible = false, streak = 5, minStreak = 3, canAct = true)
+        val afterEvent = ZekkPet.withPet(null, null)
+        val next = ZekkPet.afterFetch(afterEvent, answer, keepPet = true)
+        assertNull(next.pet)
+        assertEquals(answer.canAct && answer.streak >= answer.minStreak, next.eligible)
+        assertEquals(5, next.streak)
+        assertEquals(BannerKind.Adopt, ZekkPet.banner(next, "1", "Sam")?.kind)
+        // Without an entry at all, the newer "no pet" still wins.
+        assertEquals(next, ZekkPet.afterFetch(null, answer, keepPet = true))
+        // Under the minimum, or a DM we can't act in: no Adopt.
+        assertFalse(ZekkPet.afterFetch(afterEvent, answer.copy(streak = 2), keepPet = true).eligible)
+        assertFalse(ZekkPet.afterFetch(afterEvent, answer.copy(canAct = false), keepPet = true).eligible)
+    }
+
+    @Test fun aFetchKeepsANewerPetAndTakesTheRest() {
+        val invite = pet(status = "invited", invitedBy = "2", level = 0, stage = "egg")
+        val hatched = pet()
+        val answer = DmPetState(pet = invite, eligible = false, streak = 4, minStreak = 3)
+        // Nothing came in meanwhile: the answer as it is.
+        assertEquals(answer, ZekkPet.afterFetch(DmPetState(pet = hatched), answer, keepPet = false))
+        assertEquals(answer, ZekkPet.afterFetch(null, answer, keepPet = false))
+        // Accepted meanwhile: the newer pet stays, the answer's streak goes in.
+        assertEquals(answer.copy(pet = hatched), ZekkPet.afterFetch(DmPetState(pet = hatched), answer, keepPet = true))
+        // The answer saw no pet either: the server's eligibility stands.
+        val none = DmPetState(pet = null, eligible = true, streak = 4, minStreak = 3)
+        assertEquals(none, ZekkPet.afterFetch(ZekkPet.withPet(null, null), none, keepPet = true))
+        // An invite came in meanwhile over an answer with no pet: the invite
+        // stays and its bar shows (eligibility only matters with no pet).
+        val kept = ZekkPet.afterFetch(ZekkPet.withPet(null, invite), none, keepPet = true)
+        assertEquals(invite, kept.pet)
+        assertEquals(BannerKind.Invited, ZekkPet.banner(kept, "1", "Sam")?.kind)
+    }
+
+    @Test fun aBlockOrUnblockReReadsTheLoadedPetsOfDmsWithThatPerson() {
+        val sam = PublicUser(id = "2", username = "sam")
+        val kim = PublicUser(id = "3", username = "kim")
+        val dms = listOf(
+            Channel(id = "100", type = "dm", recipients = listOf(sam)),
+            Channel(id = "101", type = "dm", recipients = listOf(kim)),
+            Channel(id = "102", type = "group_dm", recipients = listOf(sam, kim)),
+            Channel(id = "103", type = "dm", recipients = listOf(sam)),
+            Channel(id = "104", type = "dm", recipients = null),
+        )
+        val loaded = DmPetState(pet = null, eligible = true, streak = 5, minStreak = 3, canAct = true)
+        val pets = mapOf("100" to loaded, "101" to loaded, "102" to loaded, "104" to loaded)
+        // Sam's 1:1 DM with a loaded pet; not the group DM, not one never
+        // fetched (103: it fetches when it opens), not Kim's.
+        assertEquals(listOf("100"), ZekkPet.dmIdsWithUser(dms, pets, "2"))
+        assertEquals(listOf("101"), ZekkPet.dmIdsWithUser(dms, pets, "3"))
+        assertEquals(emptyList<String>(), ZekkPet.dmIdsWithUser(dms, pets, "9"))
+        assertEquals(emptyList<String>(), ZekkPet.dmIdsWithUser(dms, emptyMap(), "2"))
     }
 
     @Test fun dismissalIsPerDmAndPerKind() {
@@ -328,12 +511,58 @@ class ZekkPetTest {
         assertEquals("Fallback text.", line(notice(null, actorId = null, kind = null)))
     }
 
+    @Test fun noticeLineMasksThePetsNameForASupervisedChild() {
+        // The other person picks the name, so the viewer's profanity mask
+        // (ProfanityFilter.mask in the app) goes over it and over the
+        // fallback content, as over message bodies; people's names are left.
+        val mask: (String) -> String = { it.replace("Shit", "S•••") }
+        fun line(m: Message, mask: (String) -> String = { it }) =
+            ZekkPet.noticeLine(m, selfId = "1", peerId = "2", peerName = "Sammy", authorName = "Sam", mask = mask)
+        val renamed = notice("renamed", actorId = "2", petName = "Shit Lord")
+        assertEquals("Sammy renamed the pet to S••• Lord.", line(renamed, mask))
+        assertEquals("Sammy renamed the pet to Shit Lord.", line(renamed))
+        assertEquals("S••• Lord woke up! 🎉", line(notice("awake", actorId = "2", petName = "Shit Lord"), mask))
+        val fallback = "Sam renamed the pet to Shit Lord."
+        assertEquals("Sam renamed the pet to S••• Lord.", line(notice("danced", actorId = "2", content = fallback), mask))
+        assertEquals("Sam renamed the pet to S••• Lord.", line(notice("renamed", actorId = "2", petName = null, content = fallback), mask))
+        assertEquals("Sam renamed the pet to S••• Lord.", line(notice(null, actorId = null, kind = null, content = fallback), mask))
+        assertEquals(fallback, line(notice("danced", actorId = "2", content = fallback)))
+    }
+
     @Test fun noticeRows() {
         assertTrue(ZekkPet.isNotice(notice("hatched", actorId = "1")))
         assertTrue(ZekkPet.isNotice(notice("hatched", actorId = "1").copy(type = "default")))
         assertTrue(ZekkPet.isNotice(notice("hatched", actorId = "1", kind = null)))
         assertFalse(ZekkPet.isNotice(notice("hatched", actorId = "1", kind = "poke").copy(type = "default")))
         assertFalse(ZekkPet.isNotice(Message(id = "1", channelId = "100", createdAt = "2026-11-11T10:00:00Z", type = "system_disappearing")))
+    }
+
+    @Test fun aNoticeTheViewerDidNotCauseIsNotTheirs() {
+        // The sweep's notices are posted in user A's ("1") name but caused by
+        // no one: for A they are not their own message (no read-marker move).
+        assertTrue(ZekkPet.isNoticeNotBy(notice("asleep", actorId = null, authorId = "1"), "1"))
+        assertTrue(ZekkPet.isNoticeNotBy(notice("ran_away", actorId = null, authorId = "1"), "1"))
+        assertTrue(ZekkPet.isNoticeNotBy(notice("hatched", actorId = "2"), "1"))
+        assertTrue(ZekkPet.isNoticeNotBy(notice("asleep", actorId = null, kind = null, authorId = "1"), "1"))
+        // One the viewer caused is theirs, as is anything that isn't a notice.
+        assertFalse(ZekkPet.isNoticeNotBy(notice("renamed", actorId = "1", authorId = "1"), "1"))
+        assertFalse(ZekkPet.isNoticeNotBy(Message(id = "1", channelId = "100", createdAt = "2026-11-11T10:00:00Z", authorId = "1"), "1"))
+    }
+
+    @Test fun aNoticeBelongsToItsActorForTheFollow() {
+        // The sweep's notices are user A's ("1") as author but no one's: they
+        // don't pull A down from history like their own send would.
+        assertNull(ZekkPet.ownerId(notice("asleep", actorId = null, authorId = "1")))
+        assertNull(ZekkPet.ownerId(notice("ran_away", actorId = null, authorId = "1")))
+        assertNull(ZekkPet.ownerId(notice("asleep", actorId = null, kind = null, authorId = "1")))
+        // One somebody caused is theirs, whoever posted it.
+        assertEquals("1", ZekkPet.ownerId(notice("renamed", actorId = "1", authorId = "1")))
+        assertEquals("2", ZekkPet.ownerId(notice("hatched", actorId = "2", authorId = "1")))
+        // Anything else is its author's.
+        val msg = Message(id = "1", channelId = "100", createdAt = "2026-11-11T10:00:00Z", authorId = "1")
+        assertEquals("1", ZekkPet.ownerId(msg))
+        assertEquals("2", ZekkPet.ownerId(msg.copy(authorId = null, author = PublicUser(id = "2", username = "b"))))
+        assertNull(ZekkPet.ownerId(msg.copy(authorId = null)))
     }
 
     @Test fun noticeGlyph() {
@@ -351,10 +580,27 @@ class ZekkPetTest {
     @Test fun refetchAtTheClockBoundaries() {
         val p = pet(today = "2026-11-11", dayEndsAt = "2026-11-12T00:00:00.000Z")
         assertEquals(at("2026-11-11T18:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T10:00:00Z")))
-        assertEquals(at("2026-11-12T00:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T18:00:00Z")))
+        // A boundary stands until its slack is over, so a recomposition just
+        // past 18:00 or midnight keeps the pending refetch instead of
+        // skipping to the next boundary (or to none).
+        assertEquals(at("2026-11-11T18:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T18:00:00Z")))
+        assertEquals(at("2026-11-11T18:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T18:00:04Z")))
+        assertEquals(at("2026-11-12T00:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T18:00:05Z")))
         assertEquals(at("2026-11-12T00:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-11T19:30:00Z")))
-        assertNull(ZekkPet.nextRefreshAt(p, at("2026-11-12T00:00:01Z")))
+        assertEquals(at("2026-11-12T00:00:00Z") + 5_000, ZekkPet.nextRefreshAt(p, at("2026-11-12T00:00:01Z")))
+        assertNull(ZekkPet.nextRefreshAt(p, at("2026-11-12T00:00:05Z")))
         assertNull(ZekkPet.nextRefreshAt(pet(today = "", dayEndsAt = ""), at("2026-11-11T10:00:00Z")))
+    }
+
+    @Test fun refetchAtMidnightWhileTheBarNeedsAStreak() {
+        assertEquals(at("2026-11-12T00:00:05Z"), ZekkPet.nextUtcMidnightRefreshAt(at("2026-11-11T09:00:00Z")))
+        assertEquals(at("2026-11-12T00:00:05Z"), ZekkPet.nextUtcMidnightRefreshAt(at("2026-11-11T23:59:59Z")))
+        // A recomposition inside the slack keeps the pending refetch…
+        assertEquals(at("2026-11-12T00:00:05Z"), ZekkPet.nextUtcMidnightRefreshAt(at("2026-11-12T00:00:02Z")))
+        // …and once it has fired the next midnight takes over (no refetch loop).
+        assertEquals(at("2026-11-13T00:00:05Z"), ZekkPet.nextUtcMidnightRefreshAt(at("2026-11-12T00:00:05Z")))
+        // Month and year ends roll over.
+        assertEquals(at("2027-01-01T00:00:05Z"), ZekkPet.nextUtcMidnightRefreshAt(at("2026-12-31T12:00:00Z")))
     }
 
     private val petJson = """{"channelId":"100","status":"active","invitedBy":"1","name":"Biscuit","level":5,

@@ -333,10 +333,20 @@ messagesRouter.post(
       // History + tally are best-effort — the live poke already fired.
     }
 
-    // Zekk Pet care: a poke completes the day's `poke` task. Fire-and-forget;
-    // a throttled poke (429 above) never gets here.
-    void import('../services/pets')
-      .then((pets) => pets.recordActivity({ channelId, authorId: userId, kind: 'poke' }))
+    // Zekk Pet care: a poke completes the day's `poke` task, on the UTC day it
+    // was handled. Fire-and-forget; a throttled poke (429 above) never gets
+    // here. Only while the pair may DM each other (the send route's 1:1
+    // gates): across a block or a supervision restriction a poke must not
+    // earn points or post a pet notice into the DM.
+    const pokedAt = new Date();
+    void (async () => {
+      const other = others[0]!;
+      const { isBlockedEitherWay } = await import('../services/relationships');
+      if (await isBlockedEitherWay(userId, other)) return;
+      if (await supervision.dmBlockedBySupervision(userId, other)) return;
+      const pets = await import('../services/pets');
+      await pets.recordActivity({ channelId, authorId: userId, kind: 'poke', at: pokedAt });
+    })()
       .catch((err) =>
         log.warn('pet activity failed', {
           channelId: channelId.toString(),
@@ -1544,6 +1554,10 @@ messagesRouter.post(
       if (saved.some((s, i) => /^image\//i.test(s.contentType ?? '') || !!thumbFiles[i])) {
         petActivity.push('photo');
       }
+      // The streak and the pet credit the UTC day the message was created on,
+      // however long either waits for its lock: a hi sent just before midnight
+      // counts for that day in both.
+      const sentAt = result.message.createdAt;
       void (async () => {
         try {
           const recipients = await dms.listAllRecipients(channelId);
@@ -1554,6 +1568,7 @@ messagesRouter.post(
               channelId,
               authorId: userId,
               recipientId: other,
+              at: sentAt,
             });
             // Push the new streak live to both sides so the chip updates
             // mid-session instead of only after the next DM-list fetch.
@@ -1566,7 +1581,7 @@ messagesRouter.post(
         }
         try {
           const pets = await import('../services/pets');
-          await pets.recordActivity({ channelId, authorId: userId, kind: petActivity });
+          await pets.recordActivity({ channelId, authorId: userId, kind: petActivity, at: sentAt });
         } catch (err) {
           // Never fail (or slow) a send over the pet.
           log.warn('pet activity failed', {

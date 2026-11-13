@@ -96,6 +96,7 @@ import {
 } from '../lib/disappearing';
 import { newestConfirmedId } from '../lib/readAck';
 import { isPetNotice } from '../lib/zekkPet';
+import { clearPetBannerDismissals } from '../lib/petBannerDismissals';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
 
@@ -537,7 +538,8 @@ type Action =
   | { type: 'DM_TIMER_SET'; channelId: string; seconds: number | null }
   /** getDmPet's answer. `keepPet`: a DM_PET_UPDATE or our own change landed
       while it was in flight, so its `pet` is older than ours — keep ours and
-      take only the eligibility and streak. */
+      take only the eligibility and streak (eligibility recomputed when ours
+      is gone but the answer's wasn't). */
   | { type: 'DM_PET_STATE_SET'; channelId: string; petState: DmPetState; keepPet?: boolean }
   /** A DM's pet from DM_PET_UPDATE or our own invite / accept / decline /
       rename (null = no pet any more). */
@@ -728,10 +730,13 @@ function bumpDmRecency(
  * (a reconnect READY drops closed chats' server rows, CLOSED_CACHES_DROP, so
  * none that missed the gap is left), so its newest remaining row is the new one;
  * otherwise (or with no server row left) the id stays, and MessageView's
- * stale-tail ack clears it on open (lib/readAck). Same array reference when
+ * stale-tail ack clears it on open (lib/readAck). Pet notices are skipped:
+ * they never set the watermark, here or on the server, so a notice newer than
+ * the removed row must not become it (the DM would read unread for both
+ * people). With only notices left the id stays. Same array reference when
  * nothing changes.
  */
-function rollbackDmRecency(
+export function rollbackDmRecency(
   channels: Channel[],
   channelId: string,
   before: Message[],
@@ -751,7 +756,7 @@ function rollbackDmRecency(
   let newest: bigint | null = null;
   let newestId: string | null = null;
   for (const m of after) {
-    if (!/^\d+$/.test(m.id)) continue;
+    if (!/^\d+$/.test(m.id) || isPetNotice(m)) continue;
     const n = BigInt(m.id);
     if (newest === null || n > newest) {
       newest = n;
@@ -1332,12 +1337,15 @@ function reducer(state: State, action: Action): State {
       // oldestFirst is stable and keeps non-snowflake (unsent) rows last.
       const sorted = oldestFirst([...existing, ...fresh]);
       const capped = sorted.length > MESSAGES_CAP ? sorted.slice(sorted.length - MESSAGES_CAP) : sorted;
-      const newestFresh = newestConfirmedId(fresh)!;
+      // Zekk Pet notices don't count (see MESSAGE_APPEND).
+      const newestFresh = newestConfirmedId(fresh.filter((m) => !isPetNotice(m)));
       const next: State = {
         ...base,
         messagesByChannel: { ...base.messagesByChannel, [action.channelId]: capped },
-        dmChannels: bumpDmRecency(base.dmChannels, action.channelId, newestFresh),
-        channelsByGuild: bumpGuildRecency(base.channelsByGuild, action.channelId, newestFresh),
+        dmChannels: newestFresh ? bumpDmRecency(base.dmChannels, action.channelId, newestFresh) : base.dmChannels,
+        channelsByGuild: newestFresh
+          ? bumpGuildRecency(base.channelsByGuild, action.channelId, newestFresh)
+          : base.channelsByGuild,
       };
       return upsertUsersFromMessages(next, fresh);
     }
@@ -1383,6 +1391,11 @@ function reducer(state: State, action: Action): State {
       if (ingest.kept.length === 0) return ingest.state;
       const base = ingest.state;
       const existing = base.messagesByChannel[action.channelId] ?? [];
+      // A Zekk Pet notice is added but moves no recency: the server leaves
+      // channels.last_message_id alone for them (they never make the DM
+      // unread or reorder the DM list), so a bump here would light a dot and
+      // jump the DM to the top until the next reload put it back.
+      const recency = !isPetNotice(action.message);
       // Reconcile a gateway echo with our own optimistic placeholder.
       // The sender's MESSAGE_CREATE carries the `nonce` we sent (the
       // placeholder's local id). If it matches a placeholder we have,
@@ -1407,8 +1420,12 @@ function reducer(state: State, action: Action): State {
               ...base.messagesByChannel,
               [action.channelId]: cleaned,
             },
-            dmChannels: bumpDmRecency(base.dmChannels, action.channelId, action.message.id),
-            channelsByGuild: bumpGuildRecency(base.channelsByGuild, action.channelId, action.message.id),
+            dmChannels: recency
+              ? bumpDmRecency(base.dmChannels, action.channelId, action.message.id)
+              : base.dmChannels,
+            channelsByGuild: recency
+              ? bumpGuildRecency(base.channelsByGuild, action.channelId, action.message.id)
+              : base.channelsByGuild,
           };
           return upsertUsersFromMessages(next, [action.message]);
         }
@@ -1422,8 +1439,10 @@ function reducer(state: State, action: Action): State {
       const next: State = {
         ...base,
         messagesByChannel: { ...base.messagesByChannel, [action.channelId]: capped },
-        dmChannels: bumpDmRecency(base.dmChannels, action.channelId, action.message.id),
-        channelsByGuild: bumpGuildRecency(base.channelsByGuild, action.channelId, action.message.id),
+        dmChannels: recency ? bumpDmRecency(base.dmChannels, action.channelId, action.message.id) : base.dmChannels,
+        channelsByGuild: recency
+          ? bumpGuildRecency(base.channelsByGuild, action.channelId, action.message.id)
+          : base.channelsByGuild,
       };
       return upsertUsersFromMessages(next, [action.message]);
     }
@@ -1988,16 +2007,29 @@ function reducer(state: State, action: Action): State {
     }
     case 'DM_PET_STATE_SET': {
       const prev = state.dmPets[action.channelId];
-      const next = action.keepPet && prev ? { ...action.petState, pet: prev.pet } : action.petState;
+      let next = action.keepPet && prev ? { ...action.petState, pet: prev.pet } : action.petState;
+      // The pet went away while the fetch was in flight (cancelled, expired,
+      // ran away), but the answer still saw it — and the server says "not
+      // eligible" whenever a pet exists. Work it out as the server would for
+      // no pet, from the answer's live streak and gate; otherwise the Adopt
+      // bar stays hidden and nothing refetches (the pet-gone refetch only
+      // runs for a DM that had already loaded).
+      if (next !== action.petState && next.pet === null && action.petState.pet !== null) {
+        const { streak, minStreak, canAct } = action.petState;
+        next = { ...next, eligible: canAct !== false && streak >= minStreak };
+      }
       return { ...state, dmPets: { ...state.dmPets, [action.channelId]: next } };
     }
     case 'DM_PET_SET': {
       // Not fetched yet: whether the DM may adopt is unknown until getDmPet
-      // answers, so assume not (no banner) rather than guess.
+      // answers, so assume not (no banner) rather than guess. An invite is
+      // only ever sent on a streak of at least the minimum, so take that for
+      // one until the fetch says otherwise (Accept doesn't flash "keep a
+      // streak going" while the DM opens).
       const prev = state.dmPets[action.channelId] ?? {
         pet: null,
         eligible: false,
-        streak: 0,
+        streak: action.pet?.status === 'invited' ? PET_MIN_STREAK : 0,
         minStreak: PET_MIN_STREAK,
       };
       return { ...state, dmPets: { ...state.dmPets, [action.channelId]: { ...prev, pet: action.pet } } };
@@ -2679,8 +2711,9 @@ interface AppStateValue {
   /**
    * Invite the other person to adopt, accept their invite, decline / cancel
    * the invite, or rename the pet. The server's answer goes into
-   * `state.dmPets`; failures rethrow (after a refetch, since a 409 means
-   * this view was behind).
+   * `state.dmPets` unless a DM_PET_UPDATE arrived while it was in flight
+   * (that one is as new or newer); failures rethrow (after a refetch, since
+   * a 409 means this view was behind).
    */
   changeDmPet: (channelId: string, change: DmPetChange) => Promise<PetDTO | null>;
 }
@@ -2766,6 +2799,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     if (lastIdentityRef.current === identity) return;
     lastIdentityRef.current = identity;
     dispatch({ type: 'RESET' });
+    // Hidden Zekk Pet bars live outside the reducer; the next account on
+    // this tab starts with none hidden.
+    clearPetBannerDismissals();
   }, [user?.id]);
   // Mirror state into a ref so async callbacks can guard against re-
   // entrancy without the closure pinning a stale value. React doesn't
@@ -3235,30 +3271,6 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'SUPERVISION_SET', supervision: r });
   }, [rest]);
 
-  /**
-   * Optimistically apply a relationship change to local state. Caller
-   * is responsible for firing the REST mutation; we expose this so
-   * UIs (ProfileCard, friend list) can update the global view as
-   * they act, instead of waiting for the next loadRelationships()
-   * round-trip. Pass `null` to remove a relationship row entirely.
-   */
-  const applyRelationship = useCallback(
-    (
-      user: PublicUser,
-      type: 'friend' | 'incoming_request' | 'outgoing_request' | 'blocked' | null,
-    ) => {
-      if (type === null) {
-        dispatch({ type: 'RELATIONSHIP_REMOVE', userId: user.id });
-      } else {
-        dispatch({
-          type: 'RELATIONSHIP_UPSERT',
-          relationship: { type, createdAt: new Date().toISOString(), user },
-        });
-      }
-    },
-    [],
-  );
-
   const replaceUser = useCallback((u: PublicUser) => {
     dispatch({ type: 'USER_REPLACE', user: u });
   }, []);
@@ -3507,6 +3519,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
   const changeDmPet = useCallback(
     async (channelId: string, change: DmPetChange) => {
+      const epoch = dmPetEpochRef.current.get(channelId) ?? 0;
       try {
         const r =
           change.kind === 'invite'
@@ -3516,8 +3529,15 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
               : change.kind === 'decline'
                 ? await rest.declineDmPet(channelId)
                 : await rest.renameDmPet(channelId, change.name);
-        bumpDmPetEpoch(channelId);
-        dispatch({ type: 'DM_PET_SET', channelId, pet: r.pet });
+        // A DM_PET_UPDATE came in meanwhile: the server publishes the
+        // change's own event before it answers, and one socket keeps order,
+        // so the pet from events is this change's or a newer one (a send
+        // that fed it while we waited). The answer may be older; leave it.
+        // No event (socket down, a no-op rename): the answer goes in.
+        if ((dmPetEpochRef.current.get(channelId) ?? 0) === epoch) {
+          bumpDmPetEpoch(channelId);
+          dispatch({ type: 'DM_PET_SET', channelId, pet: r.pet });
+        }
         // No pet any more: whether the DM may invite again (and its streak)
         // only comes with a fetch.
         if (r.pet === null) void loadDmPet(channelId).catch(() => undefined);
@@ -3530,6 +3550,37 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       }
     },
     [rest, bumpDmPetEpoch, loadDmPet],
+  );
+
+  /**
+   * Optimistically apply a relationship change to local state. Caller
+   * is responsible for firing the REST mutation; we expose this so
+   * UIs (ProfileCard, friend list) can update the global view as
+   * they act, instead of waiting for the next loadRelationships()
+   * round-trip. Pass `null` to remove a relationship row entirely.
+   */
+  const applyRelationship = useCallback(
+    (
+      user: PublicUser,
+      type: 'friend' | 'incoming_request' | 'outgoing_request' | 'blocked' | null,
+    ) => {
+      if (type === null) {
+        dispatch({ type: 'RELATIONSHIP_REMOVE', userId: user.id });
+      } else {
+        dispatch({
+          type: 'RELATIONSHIP_UPSERT',
+          relationship: { type, createdAt: new Date().toISOString(), user },
+        });
+      }
+      // A block or unblock opens or closes the pet actions of our DM with
+      // them (GET's canAct), and no event says so: re-read its pet. The
+      // callers apply this once their REST change has answered, so the
+      // fetch sees it.
+      for (const channelId of petDmIdsWithUser(stateRef.current, user.id)) {
+        void loadDmPet(channelId).catch(() => undefined);
+      }
+    },
+    [loadDmPet],
   );
 
   // ── Disappearing messages: local expiry ───────────────────────────────
@@ -4094,12 +4145,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           // except for a row that isn't a read (a scheduled message firing,
           // the streak warning) while someone else's timed message still
           // waits for one; MessageView re-acks that case (lib/readAck).
-          if (m.authorId === selfId && /^\d+$/.test(m.id)) {
-            dispatch({
-              type: 'READ_STATE_UPSERT',
-              readState: { channelId: m.channelId, lastMessageId: m.id, mentionCount: 0 },
-            });
-          }
+          // Zekk Pet notices never move it (ownEchoReadState).
+          const own = ownEchoReadState(m, selfId);
+          if (own) dispatch({ type: 'READ_STATE_UPSERT', readState: own });
           return;
         }
 
@@ -4359,11 +4407,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       gateway.on<{ channel_id: string; streak: number }>(GatewayEvent.DM_STREAK_UPDATE, (d) => {
         dispatch({ type: 'DM_STREAK_SET', channelId: d.channel_id, streak: d.streak });
         // A DM without a pet may just have become able to adopt one (or the
-        // banner's streak count moved). The pet event doesn't cover that, so
-        // refetch the eligibility of a DM we've already loaded.
+        // banner's streak count moved), and an open invite may be acceptable
+        // again (its streak was rebuilt). The pet event doesn't cover that,
+        // so refetch the eligibility and streak of a DM we've already loaded.
         const fresh = stateRef.current;
         const petState = fresh.dmPets[d.channel_id];
-        if (fresh.zekkPetEnabled && petState && !petState.pet) {
+        if (fresh.zekkPetEnabled && petState && (!petState.pet || petState.pet.status === 'invited')) {
           void loadDmPet(d.channel_id).catch(() => undefined);
         }
       }),
@@ -4694,6 +4743,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // every other supervision refresh path.
       gateway.on<unknown>(GatewayEvent.FAMILY_SUPERVISION_UPDATE, () => {
         void loadSupervision().catch(() => undefined);
+        // A restriction applied or lifted also opens or closes the open DM's
+        // pet actions (GET's canAct), which no pet event covers. A DM that
+        // isn't open re-reads its pet when it opens.
+        const openChannelId = routeChannelId();
+        const fresh = stateRef.current;
+        if (openChannelId && fresh.zekkPetEnabled && openChannelId in fresh.dmPets) {
+          void loadDmPet(openChannelId).catch(() => undefined);
+        }
       }),
       gateway.on<VoiceState>(GatewayEvent.VOICE_STATE_UPDATE, (v) => {
         // ── Ambient join/leave blips ──────────────────────────────────────
@@ -4819,13 +4876,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           readyOnceRef.current = true;
           return;
         }
-        // AppState doesn't track the active channel, so derive it from the
-        // route (the router encodes it as the last segment of
-        // /channels/<...>/<channelId>).
-        const openChannelId =
-          typeof window !== 'undefined'
-            ? window.location.pathname.match(/\/channels\/[^/]+\/([^/?#]+)/)?.[1] ?? null
-            : null;
+        const openChannelId = routeChannelId();
         // Closed chats missed everything sent during the gap, and only the
         // open one is resynced below. Drop their caches before anything else
         // lands, so each reopens with a full latest-window load.
@@ -4891,8 +4942,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         if (openChannelId && openChannelId in loaded.dmTimers) {
           void loadDmSettings(openChannelId).catch(() => undefined);
         }
-        // Likewise a DM_PET_UPDATE for the open DM's pet.
-        if (openChannelId && openChannelId in loaded.dmPets && gateway.getFeatures().zekk_pet === true) {
+        // Likewise a DM_PET_UPDATE for the open DM's pet, or a first fetch
+        // that failed while the API was away (no entry, so nothing else
+        // re-reads it).
+        if (
+          openChannelId &&
+          gateway.getFeatures().zekk_pet === true &&
+          reloadsPetOnReconnect(loaded, openChannelId)
+        ) {
           void loadDmPet(openChannelId).catch(() => undefined);
         }
       }),
@@ -5153,6 +5210,25 @@ export function dmE2eeSuppressed(
   return !parentIds.has(peerId);
 }
 
+/**
+ * Where a gateway MESSAGE_CREATE of our OWN row moves our local read marker
+ * (null = it doesn't): to the row, so a message we sent from here or another
+ * device doesn't read unread to us. Not for a Zekk Pet notice: one is posted
+ * in a person's name (user A for the sweep's 'asleep' / 'ran_away', caused
+ * by no one) but is no read, and the server never moves a marker for one —
+ * moving ours would mark the other person's unread messages read here only.
+ * The notice doesn't move the DM's lastMessageId either (MESSAGE_APPEND), so
+ * it can't read unread against itself; opening the DM acks it as usual.
+ */
+export function ownEchoReadState(
+  m: Pick<Message, 'id' | 'channelId' | 'authorId' | 'type' | 'metadata'>,
+  selfId: string,
+): ReadState | null {
+  if (!selfId || m.authorId !== selfId || !/^\d+$/.test(m.id)) return null;
+  if (isPetNotice(m)) return null;
+  return { channelId: m.channelId, lastMessageId: m.id, mentionCount: 0 };
+}
+
 export function isChannelUnread(
   channel: Channel,
   readStates: Record<string, ReadState>,
@@ -5303,6 +5379,51 @@ export function isUserBlocked(
   userId: string,
 ): boolean {
   return relationships.some((r) => r.type === 'blocked' && r.user.id === userId);
+}
+
+/**
+ * Zekk Pets: the 1:1 DMs with `userId` whose pet is loaded. Whether their
+ * pet may be adopted, accepted or renamed (GET's `canAct`, and `eligible`,
+ * which needs it) follows a block or unblock between the two of them, and
+ * no pet event says so — so applyRelationship re-reads these.
+ */
+export function petDmIdsWithUser(
+  state: Pick<State, 'zekkPetEnabled' | 'dmChannels' | 'dmPets'>,
+  userId: string,
+): string[] {
+  if (!state.zekkPetEnabled) return [];
+  return state.dmChannels
+    .filter(
+      (c) => c.type === 'dm' && c.id in state.dmPets && (c.recipients ?? []).some((r) => r.id === userId),
+    )
+    .map((c) => c.id);
+}
+
+/**
+ * Whether a reconnect re-reads the open channel's pet: any 1:1 DM, loaded or
+ * not. A loaded pet may have missed a DM_PET_UPDATE during the drop, and a DM
+ * whose first fetch failed (the API restarting as it opened) has no entry,
+ * which every other refetch needs.
+ */
+export function reloadsPetOnReconnect(
+  state: Pick<State, 'dmChannels' | 'dmPets'>,
+  channelId: string,
+): boolean {
+  return (
+    channelId in state.dmPets ||
+    state.dmChannels.some((c) => c.id === channelId && c.type === 'dm')
+  );
+}
+
+/**
+ * The channel the route shows. AppState doesn't track the active channel,
+ * so it's read from the URL (the router encodes it as the last segment of
+ * /channels/<...>/<channelId>).
+ */
+function routeChannelId(): string | null {
+  return typeof window !== 'undefined'
+    ? window.location.pathname.match(/\/channels\/[^/]+\/([^/?#]+)/)?.[1] ?? null
+    : null;
 }
 
 

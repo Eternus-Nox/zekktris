@@ -43,6 +43,7 @@ import { db, schema } from '../db';
 import { errors } from '../errors';
 import { log } from '../log';
 import { rollbackChannelWatermarks } from './messages';
+import { dropPetsForUser } from './pets';
 import { deleteAttachmentFile, parseCdnAttachmentId } from './uploads';
 
 /** Messages are deleted in batches so one huge account or server can't hold a
@@ -356,6 +357,23 @@ export async function purgeAccount(userId: bigint): Promise<PurgeResult> {
       })
       .where(eq(schema.users.id, userId));
   });
+
+  // Their Zekk Pets. The tombstone keeps the users row, so dm_pets' FK
+  // cascade never fires: without this the pet would keep falling asleep and
+  // running away in the other person's DM (notices authored by the deleted
+  // account), and its name would stay. After the tombstone commit, so an
+  // invite racing the purge is either removed here or refused (invitePet
+  // reads both users rows FOR SHARE under the pet lock: the tombstone either
+  // shows there or waits for the invite's commit, and this read then finds
+  // it). Best-effort, like the file cleanup.
+  try {
+    await dropPetsForUser(userId);
+  } catch (err) {
+    log.warn('pet cleanup on account deletion failed', {
+      userId: userId.toString(),
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   result.files += await removeFiles(profileFiles);
   return result;

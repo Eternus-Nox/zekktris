@@ -120,6 +120,11 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.Measurable
+import androidx.compose.ui.layout.Placeable
+import androidx.compose.ui.layout.layoutId
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -232,16 +237,40 @@ fun ChatScreen(store: AppStore, state: AppState) {
     // feature. The store fetches it on open, reconnect and foreground, and
     // DM_PET_UPDATE keeps it live; the mood also turns on the clock alone
     // (18:00 UTC, midnight UTC), so the open DM refetches at the next of those.
+    // The effect is keyed on the server's day, not on a time read during
+    // composition (a recomposition just past a boundary would move the key
+    // and cancel the refetch), and it loops, so a refetch that changes no
+    // state still schedules the next boundary.
     val petsHere = state.zekkPetEnabled && channel?.type == "dm"
     val petState = if (petsHere) channelId?.let { state.dmPets[it] } else null
     val pet = petState?.pet
     val petPeerName = petPeerNameFor(store, state, channel)
-    val petRefreshAt = pet?.takeIf { it.status != "invited" }?.let { ZekkPet.nextRefreshAt(it, System.currentTimeMillis()) }
-    LaunchedEffect(channelId, petRefreshAt) {
+    val petClock = pet?.takeIf { it.status != "invited" }
+    LaunchedEffect(channelId, petClock?.today, petClock?.dayEndsAt) {
         val cid = channelId ?: return@LaunchedEffect
-        val at = petRefreshAt ?: return@LaunchedEffect
-        kotlinx.coroutines.delay((at - System.currentTimeMillis()).coerceAtLeast(0L))
-        store.refreshDmPet(cid)
+        val p = petClock ?: return@LaunchedEffect
+        while (true) {
+            // On the server's clock, as the mood is: by a device clock that
+            // runs fast this refetched before the turn, saw the boundary as
+            // past and waited for the next one.
+            val at = ZekkPet.nextRefreshAt(p, store.serverNowMs()) ?: break
+            kotlinx.coroutines.delay((at - store.serverNowMs()).coerceAtLeast(0L))
+            store.refreshDmPet(cid)
+        }
+    }
+    // With no adopted pet, the bar's Adopt (and Accept on their invite) need
+    // a live streak, which breaks at midnight UTC with no event either, so
+    // the open DM refetches then too. Keyed on what the bar offers, not on a
+    // time read during composition; it loops for a DM left open for days.
+    val petBarNeedsStreak = petsHere && ZekkPet.bannerNeedsStreak(ZekkPet.banner(petState, state.me?.id, petPeerName))
+    LaunchedEffect(channelId, petBarNeedsStreak) {
+        val cid = channelId ?: return@LaunchedEffect
+        if (!petBarNeedsStreak) return@LaunchedEffect
+        while (true) {
+            val at = ZekkPet.nextUtcMidnightRefreshAt(store.serverNowMs())
+            kotlinx.coroutines.delay((at - store.serverNowMs()).coerceAtLeast(0L))
+            store.refreshDmPet(cid)
+        }
     }
 
     // A disappearing message vanishes from the list at its deadline (or with
@@ -334,7 +363,11 @@ fun ChatScreen(store: AppStore, state: AppState) {
         if (petsHere && channelId != null) {
             ZekkPet.banner(petState, state.me?.id, petPeerName)
                 ?.takeIf { ZekkPet.bannerKey(channelId, it.kind) !in state.petBannersDismissed }
-                ?.let { banner -> androidx.compose.runtime.key(channelId) { PetAdoptBanner(store, channelId, banner) } }
+                ?.let { banner ->
+                    androidx.compose.runtime.key(channelId) {
+                        PetAdoptBanner(store, channelId, banner, canAct = petState?.canAct ?: true)
+                    }
+                }
         }
         if (isForum && channelId != null) {
             // A forum channel shows its posts (each a thread), not a message list.
@@ -1033,6 +1066,12 @@ private fun ChatHeader(
             Icon(Icons.Filled.ChevronLeft, "Back", tint = ZkInk.ink2, modifier = Modifier.size(24.dp))
         }
         if (isDm && channel != null) {
+            // The Zekk Pet beside the streak: 1:1 DMs only, an egg while the
+            // invite is open. Next to it the disappearing timer is the
+            // avatar's badge rather than the title line's pill.
+            val headerPet = state.dmPets[channel.id]?.pet?.takeIf { state.zekkPetEnabled && channel.type == "dm" }
+            val timerSecs = state.dmTimerByChannel[channel.id]
+            val timerCue = ZekkPet.headerTimerCue(timerSecs, petShown = headerPet != null)
             // DM: avatar + presence + name + streak, iOS-style rich header.
             Row(
                 Modifier.align(Alignment.CenterStart).padding(start = 74.dp).fillMaxWidth(),
@@ -1072,53 +1111,82 @@ private fun ChatHeader(
                             )
                         }
                     }
-                }
-                // Name + tag + streak share one weighted region: the name hugs
-                // its content (fill = false) so the streak pill sits right beside
-                // it (not shoved to the far edge), while the trailing action icons
-                // stay right-aligned outside this Row. Staff names shimmer.
-                Row(
-                    Modifier.weight(1f).padding(start = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (!other?.tagLabel.isNullOrBlank()) {
-                        NameTag(other?.tagLabel, other?.tagColor, Modifier.padding(end = 6.dp))
-                    }
-                    StaffName(
-                        user = other, text = title, baseColor = ZkInk.ink1,
-                        fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
-                        // Tapping the name opens the shared profile card (the
-                        // same one message avatars and member rows open). 1:1
-                        // DMs only — in a group DM the title is the channel
-                        // name and `other` is just whoever came back first.
-                        modifier = Modifier
-                            .weight(1f, fill = false)
-                            .clip(RoundedCornerShape(6.dp))
-                            .then(
-                                if (other != null && channel.type == "dm") {
-                                    Modifier.clickable { onOpenProfile(other) }
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                    )
-                    (channel.streak ?: 0).takeIf { it > 0 }?.let {
-                        Spacer(Modifier.width(6.dp)); StreakPill(it)
-                    }
-                    // Disappearing messages on: timer + short value ("1d",
-                    // "30s"); tapping it opens the Disappearing Messages screen,
-                    // as in Signal.
-                    state.dmTimerByChannel[channel.id]?.let { secs ->
-                        Spacer(Modifier.width(6.dp)); DisappearingPill(secs, onDisappearing)
-                    }
-                    // Zekk Pet next to the streak (an egg while the invite is
-                    // open); tapping it opens the pet card. 1:1 DMs only.
-                    if (state.zekkPetEnabled && channel.type == "dm") {
-                        state.dmPets[channel.id]?.pet?.let { pet ->
-                            Spacer(Modifier.width(6.dp)); DmPetButton(pet, onPet)
+                    // Disappearing-messages badge next to a pet: the same
+                    // small themed disc, bottom-start (the presence dot holds
+                    // bottom-end), as on iOS. Beside the pet and the streak
+                    // the title line has no room left for the pill on most
+                    // phones, and it's the open DM's only cue that messages
+                    // disappear. Display-only, as on iOS: a 13dp disc would
+                    // get a 48dp touch area that swallows taps on the avatar
+                    // and the gap after Back. Disappearing Messages stays in
+                    // Conversation settings; TalkBack still reads the timer.
+                    if (timerCue == ZekkPet.TimerCue.Badge && timerSecs != null) {
+                        Box(
+                            Modifier
+                                .align(Alignment.BottomStart)
+                                .offset(x = (-4).dp, y = 4.dp)
+                                .size(13.dp)
+                                .clip(CircleShape)
+                                .background(p.bg2)
+                                .border(1.dp, p.accent.copy(alpha = 0.45f), CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Outlined.Timer, "Disappearing messages: ${Disappearing.formatLong(timerSecs)}",
+                                tint = p.accent,
+                                modifier = Modifier.size(8.dp),
+                            )
                         }
                     }
                 }
+                // Name + tag + chips share one weighted region: the name hugs
+                // its content so the streak pill sits right beside it (not
+                // shoved to the far edge), while the trailing action icons stay
+                // right-aligned outside it. Each chip shows whole or not at all
+                // (DmTitleLine), so a narrow phone never squeezes the pet into a
+                // sliver or the name to nothing. Staff names shimmer.
+                DmTitleLine(
+                    Modifier.weight(1f).padding(start = 8.dp),
+                    tag = {
+                        if (!other?.tagLabel.isNullOrBlank()) {
+                            NameTag(other?.tagLabel, other?.tagColor, Modifier.padding(end = 6.dp))
+                        }
+                    },
+                    name = {
+                        StaffName(
+                            user = other, text = title, baseColor = ZkInk.ink1,
+                            fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                            // Tapping the name opens the shared profile card (the
+                            // same one message avatars and member rows open). 1:1
+                            // DMs only — in a group DM the title is the channel
+                            // name and `other` is just whoever came back first.
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .then(
+                                    if (other != null && channel.type == "dm") {
+                                        Modifier.clickable { onOpenProfile(other) }
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
+                        )
+                    },
+                    streak = { (channel.streak ?: 0).takeIf { it > 0 }?.let { StreakPill(it) } },
+                    // Zekk Pet next to the streak (an egg while the invite is
+                    // open); tapping it opens the pet card. 1:1 DMs only.
+                    pet = {
+                        headerPet?.let { pet ->
+                            DmPetButton(pet, onPet, name = petDisplayName(pet.name, petNamesMasked(state)))
+                        }
+                    },
+                    // Disappearing messages on: timer + short value ("1d",
+                    // "30s"); tapping it opens the Disappearing Messages screen,
+                    // as in Signal. Next to a pet it's the avatar's badge
+                    // instead (web shrinks it to its stopwatch there).
+                    timer = {
+                        if (timerCue == ZekkPet.TimerCue.Pill && timerSecs != null) DisappearingPill(timerSecs, onDisappearing)
+                    },
+                )
                 // Search leads the trailing action group; hidden for E2EE
                 // channels (iOS MessageViews.swift:493-500).
                 if (!channel.isE2EE) {
@@ -1184,6 +1252,72 @@ private fun ChatHeader(
                     Icons.Filled.People, "Members", tint = ZkInk.ink3,
                     modifier = Modifier.clip(CircleShape).clickable(onClick = onMembers).padding(6.dp).size(18.dp),
                 )
+            }
+        }
+    }
+}
+
+private enum class TitleSlot { Tag, Name, Streak, Pet, Timer }
+
+/**
+ * The DM header's title line: the name tag, the name, then the streak pill,
+ * the Zekk Pet next to it and the disappearing-timer pill (empty next to a
+ * pet: the timer is the avatar's badge there), centred vertically. A Row
+ * measures the chips before a weighted name and squeezes whichever comes
+ * last — on a 360dp phone the pet into a 15dp sliver and the name to
+ * nothing — so this lays each chip out whole or leaves it out, the pet
+ * (the way into its card) before the others ([ZekkPet.fitHeaderChips]), and
+ * gives the name, which truncates, the rest.
+ * A slot that draws nothing measures 0 wide and counts as absent.
+ */
+@Composable
+private fun DmTitleLine(
+    modifier: Modifier,
+    tag: @Composable () -> Unit,
+    name: @Composable () -> Unit,
+    streak: @Composable () -> Unit,
+    pet: @Composable () -> Unit,
+    timer: @Composable () -> Unit,
+) {
+    Layout(
+        content = {
+            Box(Modifier.layoutId(TitleSlot.Tag)) { tag() }
+            Box(Modifier.layoutId(TitleSlot.Name)) { name() }
+            Box(Modifier.layoutId(TitleSlot.Streak)) { streak() }
+            Box(Modifier.layoutId(TitleSlot.Pet)) { pet() }
+            Box(Modifier.layoutId(TitleSlot.Timer)) { timer() }
+        },
+        modifier = modifier,
+    ) { measurables, constraints ->
+        fun slot(id: TitleSlot): Measurable = measurables.first { it.layoutId == id }
+        val gap = 6.dp.roundToPx()
+        val room = if (constraints.hasBoundedWidth) constraints.maxWidth else Int.MAX_VALUE / 2
+        // Chips at their own size; the tag and the name within the room.
+        val natural = Constraints(maxHeight = constraints.maxHeight)
+        val tagP = slot(TitleSlot.Tag).measure(natural.copy(maxWidth = room))
+        val afterTag = (room - tagP.width).coerceAtLeast(0)
+        // In line order: the pet sits next to the streak pill, as on web.
+        val chips = listOf(TitleSlot.Streak, TitleSlot.Pet, TitleSlot.Timer).map { slot(it).measure(natural) }
+        fun withGap(c: Placeable): Int = if (c.width > 0) c.width + gap else 0
+        val fit = ZekkPet.fitHeaderChips(
+            room = afterTag,
+            streak = withGap(chips[0]), pet = withGap(chips[1]), timer = withGap(chips[2]),
+        )
+        val keep = listOf(fit.streak, fit.pet, fit.timer)
+        val shown = chips.filterIndexed { i, _ -> keep[i] }
+        val chipsWidth = shown.sumOf { it.width + gap }
+        val nameP = slot(TitleSlot.Name).measure(natural.copy(maxWidth = (afterTag - chipsWidth).coerceAtLeast(0)))
+        val height = maxOf(tagP.height, nameP.height, shown.maxOfOrNull { it.height } ?: 0)
+            .coerceIn(constraints.minHeight, constraints.maxHeight)
+        val width = (tagP.width + nameP.width + chipsWidth).coerceIn(constraints.minWidth, constraints.maxWidth)
+        layout(width, height) {
+            tagP.placeRelative(0, (height - tagP.height) / 2)
+            nameP.placeRelative(tagP.width, (height - nameP.height) / 2)
+            var x = tagP.width + nameP.width
+            for (c in shown) {
+                x += gap
+                c.placeRelative(x, (height - c.height) / 2)
+                x += c.width
             }
         }
     }
@@ -1297,7 +1431,11 @@ private fun MessageList(
         // so a reader at the bottom follows them; an older-history page grows
         // it too, but loads only with the reader near the top.
         val appended = messages.size > lastSeenCount
-        val mine = tail != null && tail.authorId != null && tail.authorId == state.me?.id
+        // A pet notice is its actor's: the sweep's 'asleep' / 'ran_away' name
+        // user A as author but were caused by no one, so they follow A down
+        // only from the bottom, like anyone else's message.
+        val ownerId = tail?.let(ZekkPet::ownerId)
+        val mine = ownerId != null && ownerId == state.me?.id
         if (appended && (mine || atBottom)) {
             listState.animateScrollToItem(messages.lastIndex)
         }
@@ -1405,6 +1543,9 @@ private fun MessageList(
             // The other person, for the Zekk Pet notices' names.
             val petPeer = state.currentChannel?.let { c -> c.recipients?.firstOrNull { it.id != state.me?.id } ?: c.recipients?.firstOrNull() }
             val petPeerName = petPeerNameFor(store, state, state.currentChannel)
+            // A supervised child's "Blur swear words" reaches the pet's name
+            // (either person picks it) as it reaches message bodies.
+            val maskPetNames = petNamesMasked(state)
             val receiptAnchorId = if (isDm) {
                 messages.lastOrNull {
                     it.authorId == state.me?.id && !it.id.startsWith("pending-") &&
@@ -1459,6 +1600,7 @@ private fun MessageList(
                             peerId = petPeer?.id,
                             peerName = petPeerName,
                             authorName = store.dmNickname(authorId) ?: m.author?.bestName,
+                            mask = { petDisplayName(it, maskPetNames) },
                         ),
                         msg = m,
                     )

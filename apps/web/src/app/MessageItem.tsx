@@ -37,7 +37,7 @@ import { AvatarDecoration } from '../lib/avatarDecorations';
 import { useProfileCard } from '../lib/useProfileCard';
 import { Edit, Trash, Pin, CornerUpLeft, Forward as ForwardIcon, MessageSquare, Smile, Phone, Shield, Bookmark, Timer } from '../lib/icons';
 import { disappearingHint, isDisappearingNotice, noticeText } from '../lib/disappearing';
-import { isPetNotice, petNoticeArt, petNoticeMeta, petNoticeText } from '../lib/zekkPet';
+import { blockSubjectId, isPetNotice, petNoticeLine, petNoticePeer } from '../lib/zekkPet';
 import { ZekkPetArt } from '../lib/ZekkPetArt';
 import { useE2eeLinkPreviews, resolveE2eeLinkPreviews, cachedUnfurl } from '../lib/e2eeLinkPreviews';
 import { e2eeSupported, E2EE_INSECURE_SHORT } from '../lib/e2eeSupport';
@@ -291,11 +291,13 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
 
   // Block enforcement: precomputed here, applied at render time below
   // (after all hooks are declared so the hook order stays stable
-  // across the blocked → revealed → unblocked transitions).
+  // across the blocked → revealed → unblocked transitions). A pet notice
+  // goes by its actor: the daily check's notices (no actor) always show.
+  const blockedId = blockSubjectId(message);
   const blockedHidden =
-    !!author &&
+    blockedId !== null &&
     !isOwn &&
-    isUserBlocked(relationships, author.id) &&
+    isUserBlocked(relationships, blockedId) &&
     !revealed;
 
   // (renderCtx — the lookup context handed to renderMessageContent — is built
@@ -798,7 +800,15 @@ function MessageItemBase({ message, continuation, selfId, onReply, channel, show
   // like the timer notice above (no actions, no grouping, never the receipt
   // anchor). Built from metadata so it reads "You…" for the viewer.
   if (isPetNotice(message)) {
-    return <PetNotice message={message} channel={channel} selfId={selfId} authorName={displayName} />;
+    return (
+      <PetNotice
+        message={message}
+        channel={channel}
+        selfId={selfId}
+        authorName={displayName}
+        filterProfanity={filterProfanity}
+      />
+    );
   }
 
   // System call messages — render as a compact inline notice rather
@@ -1352,40 +1362,31 @@ function PetNotice({
   channel,
   selfId,
   authorName,
+  filterProfanity,
 }: {
   message: Message;
   channel?: Channel;
   selfId: string | undefined;
   /** The row author's display name (nickname-aware), from the parent. */
   authorName: string;
+  /** A supervised child's profanity mask: the pet's name (chosen by either
+      person) and the fallback content are masked like message bodies. */
+  filterProfanity: boolean;
 }) {
   const usersById = useAppStateSelector((v) => v.state.usersById);
-  const meta = petNoticeMeta(message);
   // The other person in the DM (recipients never include the viewer).
-  const peer = channel?.recipients?.find((u) => u.id !== selfId) ?? null;
+  const peer = petNoticePeer(channel, message, selfId);
   const peerNick = useDmNickname(peer?.id);
   const peerName = peerNick ?? peer?.displayName ?? peer?.username ?? 'them';
-  const actorId = meta?.actorId ?? null;
-  const actorName =
-    actorId === null
-      ? null
-      : actorId === peer?.id
-        ? peerName
-        : actorId === message.authorId
-          ? authorName
-          : (usersById[actorId]?.displayName ?? usersById[actorId]?.username ?? 'Someone');
-  const text =
-    (meta &&
-      petNoticeText({
-        event: meta.event,
-        petName: meta.petName,
-        stage: meta.stage,
-        actorIsSelf: selfId !== undefined && actorId === selfId,
-        actorName,
-        peerName,
-      })) ||
-    message.content;
-  const art = meta ? petNoticeArt(meta) : ({ stage: 'egg', mood: 'happy' } as const);
+  const { text, art } = petNoticeLine({
+    message,
+    selfId,
+    peerId: peer?.id ?? null,
+    peerName,
+    authorName,
+    nameOf: (id) => usersById[id]?.displayName ?? usersById[id]?.username,
+    filterProfanity,
+  });
   return (
     <div
       data-message-id={message.id}

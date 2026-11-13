@@ -27,10 +27,11 @@
  * advisory lock (the recordDmMessage pattern), so the two people's first
  * messages of the day, an accept racing a decline, or the sweep racing a feed
  * can't each act on a stale row. Notices ('system_pet') are inserted in that
- * same transaction; the gateway events go out after it commits.
+ * same transaction; the gateway events go out after it commits, with nothing
+ * awaited in between (announce), so they leave in commit order.
  */
 
-import { and, eq, inArray, lt, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import {
   PET_ALL_TASKS_MASK,
   PET_CHATTY_GOAL,
@@ -52,7 +53,8 @@ import type { PetNoticeEvent } from '@zekktris/db';
 import { db, schema } from '../db';
 import { errors } from '../errors';
 import { createSystemMessage, type DbHandle } from './messages';
-import { listAllRecipients, notifyHeldReadMarkerIfWaiting } from './dms';
+import { listAllRecipients, notifyHeldReadMarker } from './dms';
+import * as supervision from './supervision';
 import { toMessage } from '../lib/dto';
 import * as dispatch from '../gateway/dispatch';
 import { log } from '../log';
@@ -238,20 +240,24 @@ export function petDTO(row: PetRow, now: Date = clock()): PetDTO {
 }
 
 /** The counters, tasks, points and status after `kinds` from one side, and
- *  the notices that earns ('awake', then a stage change). Pure. */
+ *  the notices that earns ('awake', then a stage change). `seeded`: the
+ *  message is one the accept's seed already stands for (recordActivity), so
+ *  it makes that side's count at least 1 instead of adding one. Pure. */
 function applyActivity(
   row: PetRow,
   today: string,
   side: 'a' | 'b',
   kinds: readonly PetActivity[],
+  seeded = false,
 ): { next: PetRow; events: PetNoticeEvent[] } {
   let { countA, countB, tasksDone } = todayCounters(row, today);
   const doneBefore = tasksDone;
+  // Capped: past the chatty goal a count changes nothing anyone sees.
+  const counted = (n: number) => Math.min(seeded ? Math.max(n, 1) : n + 1, PET_CHATTY_GOAL);
   for (const kind of kinds) {
     if (kind === 'message') {
-      // Capped: past the chatty goal a count changes nothing anyone sees.
-      if (side === 'a') countA = Math.min(countA + 1, PET_CHATTY_GOAL);
-      else countB = Math.min(countB + 1, PET_CHATTY_GOAL);
+      if (side === 'a') countA = counted(countA);
+      else countB = counted(countB);
     } else {
       tasksDone |= ACTIVITY_BIT[kind] ?? 0;
     }
@@ -269,9 +275,7 @@ function applyActivity(
     status = 'active';
     events.push('awake');
   }
-  const stageBefore = petStageForLevel(row.level);
-  const stageAfter = petStageForLevel(level);
-  if (stageAfter !== stageBefore) events.push(stageBefore === 'egg' ? 'hatched' : 'evolved');
+  events.push(...stageEvents(row.level, level));
   return {
     next: {
       ...row,
@@ -286,6 +290,37 @@ function applyActivity(
     },
     events,
   };
+}
+
+/** The notice a level change earns: 'hatched' / 'evolved' on a new stage. */
+function stageEvents(levelBefore: number, levelAfter: number): PetNoticeEvent[] {
+  const stageBefore = petStageForLevel(levelBefore);
+  return petStageForLevel(levelAfter) === stageBefore ? [] : [stageBefore === 'egg' ? 'hatched' : 'evolved'];
+}
+
+/**
+ * A message from `today` that only reaches the row after a later day began
+ * on it (that day's send or poke got the pet lock first), on a day the
+ * streak credited. Both people did say hi on `today`, but the counters that
+ * would show it belong to the newer day now. So only the feed is credited —
+ * last_fed_day, both_hi's points (a level, maybe a stage), waking a sleeping
+ * pet — and the newer day's counters and tasks stay as they are. The caller
+ * checks `today`'s both_hi was never paid (last_fed_day < today). A day
+ * before the adoption's earns no points: had the accept seen this streak
+ * credit, its seed would only have set last_fed_day from it. Pure.
+ */
+function applyLateFeed(row: PetRow, today: string): { next: PetRow; events: PetNoticeEvent[] } {
+  const earned = row.adoptedAt !== null && utcDay(row.adoptedAt) <= today;
+  const points = row.points + (earned ? BOTH_HI.points : 0);
+  const level = petLevelForPoints(points);
+  const events: PetNoticeEvent[] = [];
+  let status = row.status;
+  if (status === 'asleep') {
+    status = 'active';
+    events.push('awake');
+  }
+  events.push(...stageEvents(row.level, level));
+  return { next: { ...row, status, points, level, lastFedDay: today }, events };
 }
 
 function rowChanged(a: PetRow, b: PetRow): boolean {
@@ -308,34 +343,68 @@ function sameDTO(a: PetDTO, b: PetDTO): boolean {
 // ── Notices ─────────────────────────────────────────────────────────────────
 
 /**
+ * Defuse a user-chosen name (the pet's, or a display name) for a notice's
+ * fallback `content`. Installed apps that predate 'system_pet' render that
+ * content as an ordinary message — a mention scan over the raw string, then
+ * inline markdown (CommonMark on iOS) — in a bubble authored by one of the
+ * two people, often carrying the name the other one chose. Left raw,
+ * `[Claim](https://evil.io)` would show there as a masked link and `<@id>` as
+ * someone's profile chip.
+ *  - An invisible word joiner (U+2060, which normalizePetName strips from
+ *    names) goes after every `]`, so no link, image, reference or
+ *    `^[…](…)` attribute can form (each needs `(`, `[` or `:` right after
+ *    the `]`), and after every `\`, so it is never an escape and prints once
+ *    on every renderer. No backslash-escapes: Android and the web have none,
+ *    so they would print them (`\[AFK\] Ari`).
+ *  - The same joiner goes after every `<` and after the `@` of @everyone /
+ *    @here, so no autolink, inline HTML or mention token (`<@id>`, `<@&id>`,
+ *    `<#id>`) can form on either app.
+ *  - It also goes before the `/` of `zkE2EE/`, so no notice starts like the
+ *    E2EE wire format (`zkE2EE/<v>:`): old apps would show it as a message
+ *    they can't decrypt, and turning E2EE off purges rows that look like it.
+ * Emphasis characters stay: at worst they style the name itself, and an
+ * escape would print as a backslash on Android (`cool\_guy`). The metadata
+ * keeps the raw name; new clients show it as plain text.
+ */
+export function escapeNoticeInline(s: string): string {
+  return s
+    .replace(/[\\\]]/g, '$&⁠')
+    .replace(/</g, '<⁠')
+    .replace(/@(everyone|here)/g, '@⁠$1')
+    .replace(/zkE2EE\//g, 'zkE2EE⁠/');
+}
+
+/**
  * The readable third-person `content` of a 'system_pet' notice — what
  * installed apps that don't know the type show as-is. New clients build their
- * own "You…" line from the metadata instead.
+ * own "You…" line from the metadata instead. Every name in it goes through
+ * escapeNoticeInline.
  */
 export function petNoticeText(
   event: PetNoticeEvent,
   p: { petName: string; stage: PetStage; actorName?: string; otherName?: string },
 ): string {
-  const actor = p.actorName ?? 'Someone';
+  const actor = escapeNoticeInline(p.actorName ?? 'Someone');
+  const pet = escapeNoticeInline(p.petName);
   switch (event) {
     case 'invited':
       return `${actor} wants to raise a Zekk Pet together. 🥚`;
     case 'adopted':
-      return `${actor} and ${p.otherName ?? 'Someone'} adopted a Zekk Pet! 🥚`;
+      return `${actor} and ${escapeNoticeInline(p.otherName ?? 'Someone')} adopted a Zekk Pet! 🥚`;
     case 'hatched':
-      return `${p.petName} hatched! 🐣`;
+      return `${pet} hatched! 🐣`;
     case 'evolved': {
       const label = petStageLabel(p.stage);
-      return `${p.petName} grew into ${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label}!`;
+      return `${pet} grew into ${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label}!`;
     }
     case 'asleep':
-      return `${p.petName} fell asleep. 😴 Say hi to each other within 2 days to wake it up.`;
+      return `${pet} fell asleep. 😴 Say hi to each other within 2 days to wake it up.`;
     case 'awake':
-      return `${p.petName} woke up! 🎉`;
+      return `${pet} woke up! 🎉`;
     case 'ran_away':
-      return `${p.petName} ran away. Keep a ${PET_MIN_STREAK}-day streak to adopt a new one.`;
+      return `${pet} ran away. Keep a ${PET_MIN_STREAK}-day streak to adopt a new one.`;
     case 'renamed':
-      return `${actor} renamed the pet to ${p.petName}.`;
+      return `${actor} renamed the pet to ${pet}.`;
   }
 }
 
@@ -394,19 +463,68 @@ async function insertNotice(
   );
 }
 
+/** Does anything from someone other than `userId` (not deleted) sit between
+ *  their stored read marker and `belowId`? Other pet notices don't count:
+ *  they never make the DM unread, so a client marker past them hides
+ *  nothing. */
+async function unreadMessageBelow(input: {
+  userId: bigint;
+  channelId: bigint;
+  belowId: bigint;
+}): Promise<boolean> {
+  const [rs] = await db
+    .select({ last: schema.readStates.lastMessageId })
+    .from(schema.readStates)
+    .where(
+      and(eq(schema.readStates.userId, input.userId), eq(schema.readStates.channelId, input.channelId)),
+    )
+    .limit(1);
+  const [hit] = await db
+    .select({ id: schema.messages.id })
+    .from(schema.messages)
+    .where(
+      and(
+        eq(schema.messages.channelId, input.channelId),
+        lt(schema.messages.id, input.belowId),
+        gt(schema.messages.id, rs?.last ?? 0n),
+        isNull(schema.messages.deletedAt),
+        sql`${schema.messages.authorId} IS DISTINCT FROM ${input.userId}`,
+        sql`${schema.messages.type} <> 'system_pet'`,
+      ),
+    )
+    .limit(1);
+  return !!hit;
+}
+
 /**
  * After the commit: DM_PET_UPDATE to the DM's recipients (when `pet` is
  * given; null = gone), then each notice the way system rows reach a DM —
  * re-subscribe the recipients' connections, MESSAGE_CREATE, and the author's
- * held read marker (notifyHeldReadMarkerIfWaiting: their clients move their
- * local marker to their own row on its echo; the call-record pattern).
+ * held read marker. The author's clients move their local marker to their
+ * own row on its echo, but a notice never moves the stored one, and its
+ * author hasn't necessarily read what came before it: a poke or a widget
+ * action reads nothing, a sweep notice ('asleep', 'ran_away', actorId null)
+ * is only nominally user A's, and the other person's message can land
+ * between a send and the notice it causes. So whenever anything from the
+ * other person waits between the author's stored marker and the notice, that
+ * marker goes back to their devices (a CHANNEL_ACK, after the echo). This
+ * covers the timed message the call-record pattern
+ * (notifyHeldReadMarkerIfWaiting) looks for, and any other unread one.
+ *
+ * Call it straight after the commit, with `recipientIds` read inside the
+ * locked transaction: nothing is awaited between the commit and the
+ * DM_PET_UPDATE, so a DM's events leave in commit order. Clients take the
+ * latest one as the truth and no later event need come (a capped chatty
+ * count, a rename); were the lookup made here, a writer waiting for a pool
+ * connection could have the next writer, which only takes the lock as this
+ * one commits, publish first and leave the clients on the older pet.
  */
 async function announce(
   channelId: bigint,
+  recipientIds: bigint[],
   notices: schema.Message[],
   pet: PetDTO | null | undefined,
 ): Promise<void> {
-  const recipientIds = await listAllRecipients(channelId);
   if (pet !== undefined) dispatch.dmPetUpdate({ channelId, recipientIds, pet });
   if (notices.length === 0) return;
   try {
@@ -423,12 +541,13 @@ async function announce(
       channelId,
       guildId: null,
     });
-    if (notice.authorId !== null) {
-      await notifyHeldReadMarkerIfWaiting({
-        userId: notice.authorId,
-        channelId,
-        belowId: notice.id,
-      });
+    if (
+      notice.authorId !== null &&
+      (await unreadMessageBelow({ userId: notice.authorId, channelId, belowId: notice.id }).catch(
+        () => false,
+      ))
+    ) {
+      await notifyHeldReadMarker({ userId: notice.authorId, channelId });
     }
   }
 }
@@ -462,6 +581,17 @@ async function liveStreak(exec: DbHandle, channelId: bigint, today: string) {
     .limit(1);
   const alive = !!row && (row.lastCountedDay === today || row.lastCountedDay === addDays(today, -1));
   return { row: row ?? null, streak: alive ? Math.min(row!.streak, STREAK_CAP) : 0 };
+}
+
+/** Did the DM's streak credit `day` (both people messaged on it)? The
+ *  stored count is the run of credited days ending on last_counted_day. */
+async function streakCredited(exec: DbHandle, channelId: bigint, day: string): Promise<boolean> {
+  const { row } = await liveStreak(exec, channelId, day);
+  return (
+    !!row?.lastCountedDay &&
+    row.lastCountedDay >= day &&
+    addDays(row.lastCountedDay, 1 - row.streak) <= day
+  );
 }
 
 /** The DM's pet, or null (none, or an invite that lapsed). */
@@ -500,6 +630,27 @@ export async function invitePet(input: {
     input.inviterId < input.otherId ? [input.inviterId, input.otherId] : [input.otherId, input.inviterId];
   const out = await db.transaction(async (tx) => {
     await lockPet(tx, input.channelId);
+    // The route checked both people are still here, but a close or an account
+    // deletion can land before this lock, and its drop (dropPet,
+    // dropPetsForUser) would then have run already and found nothing: check
+    // again under the lock. The users rows are read FOR SHARE so a tombstone
+    // not seen here waits for this commit, and dropPetsForUser's later read
+    // finds the invite. A close commits before its drop takes the lock, so it
+    // is either seen here or its drop waits for this commit.
+    const people = await tx
+      .select({ deletedAt: schema.users.deletedAt })
+      .from(schema.users)
+      .where(inArray(schema.users.id, [a, b]))
+      .for('share');
+    const here = await listAllRecipients(input.channelId, tx);
+    if (
+      people.length !== 2 ||
+      people.some((u) => u.deletedAt !== null) ||
+      !here.includes(a) ||
+      !here.includes(b)
+    ) {
+      throw errors.conflict('The other person has left this conversation');
+    }
     const existing = await loadRow(tx, input.channelId);
     if (existing) {
       if (!inviteLapsed(existing, now)) {
@@ -529,10 +680,10 @@ export async function invitePet(input: {
       })
       .returning();
     const notice = await insertNotice(tx, { pet: row!, event: 'invited', actorId: input.inviterId });
-    return { row: row!, notice };
+    return { row: row!, notice, recipientIds: await listAllRecipients(input.channelId, tx) };
   });
   const pet = petDTO(out.row, now);
-  await announce(input.channelId, [out.notice], pet);
+  await announce(input.channelId, out.recipientIds, [out.notice], pet);
   return pet;
 }
 
@@ -592,30 +743,75 @@ export async function acceptPet(input: { channelId: bigint; userId: bigint }): P
       actorId: input.userId,
       otherId: row.invitedBy ?? (input.userId === row.userAId ? row.userBId : row.userAId),
     });
-    return { row: saved!, notice };
+    return { row: saved!, notice, recipientIds: await listAllRecipients(input.channelId, tx) };
   });
   const pet = petDTO(out.row, now);
-  await announce(input.channelId, [out.notice], pet);
+  await announce(input.channelId, out.recipientIds, [out.notice], pet);
   return pet;
 }
 
 /** Decline (invitee) or cancel (inviter) an open invite. No notice. A no-op
  *  when there's nothing to decline; 409 once the pet is adopted. */
 export async function declinePet(input: { channelId: bigint; userId: bigint }): Promise<void> {
-  const removed = await db.transaction(async (tx) => {
+  const recipientIds = await db.transaction(async (tx) => {
     await lockPet(tx, input.channelId);
     const row = await loadRow(tx, input.channelId);
-    if (!row) return false;
+    if (!row) return null;
     if (row.status !== 'invited') throw errors.conflict('Only an open invite can be declined');
     await tx.delete(schema.dmPets).where(eq(schema.dmPets.channelId, input.channelId));
-    return true;
+    return listAllRecipients(input.channelId, tx);
   });
-  if (removed) await announce(input.channelId, [], null);
+  if (recipientIds) await announce(input.channelId, recipientIds, [], null);
+}
+
+/**
+ * Remove a DM's pet or invite, whatever its state, under its lock (a feed,
+ * accept or sweep that already holds it finishes first and the next one
+ * finds no row), and tell the DM's remaining recipients (DM_PET_UPDATE
+ * null). No notice. For a DM one person closed (routes/dms.ts DELETE): that
+ * channel stays one-sided for good — reopening creates a new one — so its
+ * pet could never be fed or adopted again.
+ */
+export async function dropPet(channelId: bigint): Promise<boolean> {
+  const recipientIds = await db.transaction(async (tx) => {
+    await lockPet(tx, channelId);
+    const gone = await tx
+      .delete(schema.dmPets)
+      .where(eq(schema.dmPets.channelId, channelId))
+      .returning({ channelId: schema.dmPets.channelId });
+    return gone.length > 0 ? listAllRecipients(channelId, tx) : null;
+  });
+  if (recipientIds) await announce(channelId, recipientIds, [], null);
+  return recipientIds !== null;
+}
+
+/**
+ * Account deletion (services/purge.ts): the user row stays as a tombstone, so
+ * dm_pets' ON DELETE CASCADE never fires. Drop every pet and invite the user
+ * is part of (dropPet) and tell the other person. Per-pet failures are
+ * logged and skipped.
+ */
+export async function dropPetsForUser(userId: bigint): Promise<void> {
+  const rows = await db
+    .select({ channelId: schema.dmPets.channelId })
+    .from(schema.dmPets)
+    .where(or(eq(schema.dmPets.userAId, userId), eq(schema.dmPets.userBId, userId)));
+  for (const { channelId } of rows) {
+    try {
+      await dropPet(channelId);
+    } catch (err) {
+      log.warn?.('pet drop on account deletion failed', {
+        channelId: channelId.toString(),
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }
 
 /** Rename the pet. `changed: false` (no write, no notice, no event) when the
  *  normalised name is the current one. 400 for an invalid name; 409 while
- *  it's only an invite. Posts the 'renamed' notice. */
+ *  it's only an invite. Posts the 'renamed' notice, and runs the new name
+ *  through the parental watch-word scan as a send would be. */
 export async function renamePet(input: {
   channelId: bigint;
   userId: bigint;
@@ -628,18 +824,40 @@ export async function renamePet(input: {
     await lockPet(tx, input.channelId);
     const row = await loadRow(tx, input.channelId);
     if (!row || row.status === 'invited') throw errors.conflict('There is no Zekk Pet to rename');
-    if (row.name === name) return { row, notice: null };
+    if (row.name === name) return { row, notice: null, recipientIds: [] };
     const [saved] = await tx
       .update(schema.dmPets)
       .set({ name, updatedAt: now })
       .where(eq(schema.dmPets.channelId, input.channelId))
       .returning();
     const notice = await insertNotice(tx, { pet: saved!, event: 'renamed', actorId: input.userId });
-    return { row: saved!, notice };
+    return {
+      row: saved!,
+      notice,
+      recipientIds: await listAllRecipients(input.channelId, tx),
+    };
   });
   const pet = petDTO(out.row, now);
   if (!out.notice) return { pet, changed: false };
-  await announce(input.channelId, [out.notice], pet);
+  await announce(input.channelId, out.recipientIds, [out.notice], pet);
+  // Parental controls: the name is free text that reaches the DM (this notice
+  // and every later one repeats it), so it gets the send path's watch-word
+  // scan, flagged against the 'renamed' notice. Only the new name is scanned
+  // (the notice also carries the renamer's display name, which no path
+  // scans). Each rename posts a new notice, so it's scanned as a fresh send,
+  // not as an edit of the old name: a word the old name already had is
+  // flagged again, since that earlier flag's notice doesn't show what this
+  // rename added (and may be from the other person). Fire-and-forget: it
+  // never fails the rename.
+  void supervision
+    .scanMessageForFlags({
+      messageId: out.notice.id,
+      channelId: input.channelId,
+      channelType: 'dm',
+      authorId: input.userId,
+      content: name,
+    })
+    .catch(() => undefined);
   return { pet, changed: true };
 }
 
@@ -653,25 +871,61 @@ export async function renamePet(input: {
  * DM_PET_UPDATE, and only when the DTO changed. No pet (or only an invite) =
  * nothing happens. Called fire-and-forget after the send / poke; the caller
  * catches and logs.
+ *
+ * `at` fixes the UTC day the activity counts for: a send passes its message's
+ * createdAt (and gives the streak the same instant), a poke the time it was
+ * handled, so a message a few ms before midnight is credited to the same day
+ * by the streak and the pet however long this call waits. It also tells a
+ * send from before the adoption (already in the accept's seed) from one
+ * after it. Defaults to now.
  */
 export async function recordActivity(args: {
   channelId: bigint;
   authorId: bigint;
   kind: PetActivity | readonly PetActivity[];
+  at?: Date;
 }): Promise<void> {
   const now = clock();
-  const today = utcDay(now);
+  const today = utcDay(args.at ?? now);
   const kinds: readonly PetActivity[] = typeof args.kind === 'string' ? [args.kind] : args.kind;
-  // Most DMs have no pet: one indexed read, no transaction, for those.
+  // Most DMs have no pet: one indexed read, no transaction, for those. An
+  // invite still takes the lock below: an accept in flight may be about to
+  // turn it into a pet whose seed (read from dm_streaks) missed this send.
   const peek = await loadRow(db, args.channelId);
-  if (!peek || peek.status === 'invited') return;
+  if (!peek) return;
   const out = await db.transaction(async (tx) => {
     await lockPet(tx, args.channelId);
     const row = await loadRow(tx, args.channelId);
     if (!row || row.status === 'invited' || dueToRunAway(row, today)) return null;
     const side = args.authorId === row.userAId ? 'a' : args.authorId === row.userBId ? 'b' : null;
     if (side === null) return null;
-    const { next, events } = applyActivity(row, today, side, kinds);
+    let applied: { next: PetRow; events: PetNoticeEvent[] };
+    if (row.taskDay !== null && row.taskDay > today) {
+      // A later day already started on the row (an activity of that day got
+      // the lock first): never rewind it, or todayCounters would zero that day
+      // and its tasks would pay out twice. A late activity is dropped (no
+      // per-day history is kept), except the feed it may have completed: the
+      // pet lock and the streak's are separate, so a next-day poke or send can
+      // win this one while the streak still credits this message's day. The
+      // send hook commits this message's streak update before calling here.
+      if (!kinds.includes('message')) return null;
+      if (row.lastFedDay !== null && row.lastFedDay >= today) return null;
+      if (!(await streakCredited(tx, args.channelId, today))) return null;
+      applied = applyLateFeed(row, today);
+    } else {
+      // A send from before the adoption, on the adoption day, that only gets
+      // here now (it raced the accept): the accept seeded that side's count
+      // with one for "said hi today" from dm_streaks, which may or may not
+      // have seen this send's streak commit. Either way it is that one
+      // message, so it counts at most once.
+      const seeded =
+        args.at !== undefined &&
+        row.adoptedAt !== null &&
+        args.at < row.adoptedAt &&
+        utcDay(row.adoptedAt) === today;
+      applied = applyActivity(row, today, side, kinds, seeded);
+    }
+    const { next, events } = applied;
     if (!rowChanged(row, next)) return null;
     const [saved] = await tx
       .update(schema.dmPets)
@@ -692,14 +946,16 @@ export async function recordActivity(args: {
     for (const event of events) {
       notices.push(await insertNotice(tx, { pet: saved!, event, actorId: args.authorId }));
     }
-    return { before: row, after: saved!, notices };
+    const pet = petDTO(saved!, now);
+    const visible = !sameDTO(petDTO(row, now), pet);
+    if (!visible && notices.length === 0) return null;
+    return {
+      pet: visible ? pet : undefined,
+      notices,
+      recipientIds: await listAllRecipients(args.channelId, tx),
+    };
   });
-  if (!out) return;
-  const pet = petDTO(out.after, now);
-  const visible = !sameDTO(petDTO(out.before, now), pet);
-  if (visible || out.notices.length > 0) {
-    await announce(args.channelId, out.notices, visible ? pet : undefined);
-  }
+  if (out) await announce(args.channelId, out.recipientIds, out.notices, out.pet);
 }
 
 // ── Sweep ───────────────────────────────────────────────────────────────────
@@ -759,12 +1015,13 @@ export async function sweepPets(): Promise<{
         const done = await db.transaction(async (tx) => {
           await lockPet(tx, channelId);
           const row = await loadRow(tx, channelId);
-          return row ? step(tx, row) : null;
+          const stepped = row ? await step(tx, row) : null;
+          return stepped && { ...stepped, recipientIds: await listAllRecipients(channelId, tx) };
         });
         if (!done) continue;
         touched.add(channelId.toString());
         out[counted]++;
-        await announce(channelId, done.notice ? [done.notice] : [], done.pet);
+        await announce(channelId, done.recipientIds, done.notice ? [done.notice] : [], done.pet);
       } catch (err) {
         log.warn?.('pet sweep step failed', {
           channelId: channelId.toString(),
@@ -840,27 +1097,27 @@ export async function sweepPets(): Promise<{
   );
 
   // 4. Clock-only changes. Best-effort: a missed one heals on the client's
-  // next GET (every DM open), and a duplicate is harmless.
+  // next GET (every DM open), and a duplicate is harmless. The unlocked read
+  // only picks candidates; each DTO is built from the row re-read under its
+  // lock, so a rename, feed or wake that commits meanwhile isn't followed by
+  // an older snapshot.
   const prev = lastSweepAt;
   lastSweepAt = now;
   if (prev && prev < now && crossedMoodBoundary(prev, now)) {
-    const pets = await db
-      .select()
+    const candidates = await db
+      .select({ channelId: schema.dmPets.channelId })
       .from(schema.dmPets)
       .where(inArray(schema.dmPets.status, ['active', 'asleep']));
-    for (const row of pets) {
-      if (touched.has(row.channelId.toString()) || dueToRunAway(row, today)) continue;
-      if (!changedWithClock(row, prev, now)) continue;
-      try {
-        await announce(row.channelId, [], petDTO(row, now));
-        out.refreshed++;
-      } catch (err) {
-        log.warn?.('pet refresh failed', {
-          channelId: row.channelId.toString(),
-          err: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
+    await eachLocked(
+      ids(candidates.filter((r) => !touched.has(r.channelId.toString()))),
+      async (_tx, row) =>
+        (row.status === 'active' || row.status === 'asleep') &&
+        !dueToRunAway(row, today) &&
+        changedWithClock(row, prev, now)
+          ? { pet: petDTO(row, now) }
+          : null,
+      'refreshed',
+    );
   }
   return out;
 }

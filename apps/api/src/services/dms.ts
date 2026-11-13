@@ -352,8 +352,10 @@ export async function listDmPeers(userId: bigint): Promise<bigint[]> {
   return r.map((row) => row.peer);
 }
 
-export async function listAllRecipients(channelId: bigint): Promise<bigint[]> {
-  const r = await db
+/** Every recipient of a DM. `exec`: a transaction to read it in (default the
+ *  pool). */
+export async function listAllRecipients(channelId: bigint, exec: DbHandle = db): Promise<bigint[]> {
+  const r = await exec
     .select({ userId: schema.dmRecipients.userId })
     .from(schema.dmRecipients)
     .where(eq(schema.dmRecipients.channelId, channelId));
@@ -719,7 +721,9 @@ export async function disableE2eeAndPurge(
     }
     // Find every encrypted message in the channel. We match on the
     // content prefix `zkE2EE/` so future wire-format bumps (zkE2EE/2:,
-    // zkE2EE/3:) automatically participate without code change.
+    // zkE2EE/3:) automatically participate without code change. Pet notices
+    // are never ciphertext (their names are defused, and they can't be
+    // deleted), whatever their content looks like.
     const encryptedRows = await tx
       .select({ id: schema.messages.id })
       .from(schema.messages)
@@ -727,6 +731,7 @@ export async function disableE2eeAndPurge(
         and(
           eq(schema.messages.channelId, channelId),
           like(schema.messages.content, 'zkE2EE/%'),
+          ne(schema.messages.type, 'system_pet'),
         ),
       );
     const purgedMessageIds = encryptedRows.map((r) => r.id);

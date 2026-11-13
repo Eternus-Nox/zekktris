@@ -24,15 +24,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
@@ -51,29 +55,41 @@ import com.zekktris.ui.theme.ZkPalette
 import com.zekktris.ui.theme.ZkTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** The tap heart's box in the 100-unit space ([ZekkPetArt.heartShapes]:
+ *  circles reaching 6.5 units either side and 3.5 above, the point 9 below),
+ *  the layer it fades in. */
+private val HEART_BOUNDS = Rect(
+    ZekkPetArt.HEART_X - 7f, ZekkPetArt.HEART_Y - 4f, ZekkPetArt.HEART_X + 7f, ZekkPetArt.HEART_Y + 10f,
+)
 
 /** CSS `ease-in-out` and `ease-out`, the curves web's keyframes use. */
 private val EASE_IN_OUT = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)
 private val EASE_OUT = CubicBezierEasing(0f, 0f, 0.58f, 1f)
 private val easeInOut: (Float) -> Float = EASE_IN_OUT::transform
 
+/** Real time for an animation, whatever the system's duration scale. */
+private val UNSCALED = object : MotionDurationScale {
+    override val scaleFactor: Float get() = 1f
+}
+
 /**
  * Whether the system lets apps animate: off when the user removed
  * animations (Settings → Accessibility) or set the animator duration scale
  * to 0 (Developer options). Android's reduced-motion switch — the pet then
- * stays still (no bob, breathe, wobble or squash), as web does under
- * `prefers-reduced-motion`.
+ * stays still (no bob, breathe, wobble or squash) and a tap's heart fades in
+ * place, as web does under `prefers-reduced-motion`.
  */
 @Composable
 private fun rememberMotionEnabled(): Boolean = remember { android.animation.ValueAnimator.areAnimatorsEnabled() }
 
-/** The pet's inks as Compose colours for [palette], indexed by [Ink.ordinal]. */
+/** The pet's inks as opaque Compose colours for [palette], indexed by
+ *  [Ink.ordinal]. A shape's own alpha (the cheeks' [ZekkPetArt.CHEEK_ALPHA])
+ *  is applied once, when it is drawn — never baked in here as well. */
 private fun petInks(palette: ZkPalette): List<Color> {
     val colors = ZekkPetArt.colorsFor(palette.accent.toArgb(), palette.accent2.toArgb())
-    return Ink.entries.map { ink ->
-        val c = Color(ZekkPetArt.rgbOf(ink, colors) or (0xFF shl 24))
-        if (ink == Ink.Cheek) c.copy(alpha = ZekkPetArt.CHEEK_ALPHA) else c
-    }
+    return Ink.entries.map { ink -> Color(ZekkPetArt.rgbOf(ink, colors) or (0xFF shl 24)) }
 }
 
 /**
@@ -108,30 +124,30 @@ private fun preparePetShape(shape: PetShape): Prepared = when (shape) {
     )
 }
 
-/** Draw one primitive in the 100-unit space; [alpha] fades the whole shape. */
-private fun DrawScope.drawPrepared(p: Prepared, inks: List<Color>, alpha: Float = 1f) {
+/** Draw one primitive in the 100-unit space. */
+private fun DrawScope.drawPrepared(p: Prepared, inks: List<Color>) {
     when (val s = p.shape) {
         is PetShape.Oval -> {
             val e = s.e
             val topLeft = Offset(e.cx - e.rx, e.cy - e.ry)
             val size = Size(2 * e.rx, 2 * e.ry)
             rotate(e.rotate, pivot = Offset(e.cx, e.cy)) {
-                drawOval(inks[s.fill.ordinal], topLeft, size, alpha = alpha)
-                if (s.stroke != null && p.stroke != null) drawOval(inks[s.stroke.ordinal], topLeft, size, alpha = alpha, style = p.stroke)
+                drawOval(inks[s.fill.ordinal], topLeft, size)
+                if (s.stroke != null && p.stroke != null) drawOval(inks[s.stroke.ordinal], topLeft, size, style = p.stroke)
             }
         }
-        is PetShape.Circle -> drawCircle(inks[s.fill.ordinal], s.r, Offset(s.cx, s.cy), alpha = s.alpha * alpha)
-        is PetShape.Curve -> drawPath(p.path!!, inks[s.stroke.ordinal], alpha = alpha, style = p.stroke!!)
-        is PetShape.Lines -> drawPath(p.path!!, inks[s.stroke.ordinal], alpha = alpha, style = p.stroke!!)
+        is PetShape.Circle -> drawCircle(inks[s.fill.ordinal], s.r, Offset(s.cx, s.cy), alpha = s.alpha)
+        is PetShape.Curve -> drawPath(p.path!!, inks[s.stroke.ordinal], style = p.stroke!!)
+        is PetShape.Lines -> drawPath(p.path!!, inks[s.stroke.ordinal], style = p.stroke!!)
         is PetShape.Polygon -> {
-            drawPath(p.path!!, inks[s.fill.ordinal], alpha = alpha)
-            if (s.stroke != null && p.stroke != null) drawPath(p.path, inks[s.stroke.ordinal], alpha = alpha, style = p.stroke)
+            drawPath(p.path!!, inks[s.fill.ordinal])
+            if (s.stroke != null && p.stroke != null) drawPath(p.path, inks[s.stroke.ordinal], style = p.stroke)
         }
         // 0° is 3 o'clock and angles run clockwise, so 0 → 180 sweeps the
         // bottom half; closing through the centre closes it along its top.
         is PetShape.HalfOval -> drawArc(
             inks[s.fill.ordinal], startAngle = 0f, sweepAngle = 180f, useCenter = true,
-            topLeft = Offset(s.cx - s.rx, s.cy - s.ry), size = Size(2 * s.rx, 2 * s.ry), alpha = alpha,
+            topLeft = Offset(s.cx - s.rx, s.cy - s.ry), size = Size(2 * s.rx, 2 * s.ry),
         )
     }
 }
@@ -142,7 +158,7 @@ private fun DrawScope.drawPrepared(p: Prepared, inks: List<Color>, alpha: Float 
  * to the [ZekkPetArt] it should show on.
  */
 @Stable
-class PetTapState internal constructor(private val scope: CoroutineScope, private val motion: Boolean) {
+class PetTapState internal constructor(private val scope: CoroutineScope, internal val motion: Boolean) {
     /** 0 → 1 through the squash (1 = at rest again). */
     internal val squash = Animatable(1f)
 
@@ -150,8 +166,11 @@ class PetTapState internal constructor(private val scope: CoroutineScope, privat
     internal val hearts = mutableStateListOf<Animatable<Float, AnimationVector1D>>()
 
     fun tap() {
-        // Reduced motion keeps the pet still; the heart is a fade, and with
-        // animations off it ends at once.
+        // Reduced motion keeps the pet still and the heart fades in place
+        // over its 0.8 s, as on web and iOS. With animations off the
+        // window's duration scale is 0, which would end the heart at once
+        // (nothing shown), so it runs at its own pace then; with them on it
+        // follows the system scale.
         if (motion) {
             scope.launch {
                 squash.snapTo(0f)
@@ -162,7 +181,11 @@ class PetTapState internal constructor(private val scope: CoroutineScope, privat
         hearts += heart
         scope.launch {
             try {
-                heart.animateTo(1f, tween(ZekkPetArt.HEART_MS, easing = EASE_OUT))
+                if (motion) {
+                    heart.animateTo(1f, tween(ZekkPetArt.HEART_MS, easing = EASE_OUT))
+                } else {
+                    withContext(UNSCALED) { heart.animateTo(1f, tween(ZekkPetArt.HEART_MS, easing = EASE_OUT)) }
+                }
             } finally {
                 hearts.remove(heart)
             }
@@ -206,6 +229,7 @@ fun ZekkPetArt(
         ZekkPetArt.shapes(stage, mood, if (cracked) 1f else 0f).map(::preparePetShape)
     }
     val heart = remember { ZekkPetArt.heartShapes().map(::preparePetShape) }
+    val heartPaint = remember { Paint() }
     val motion = ZekkPetArt.motion(stage, mood)
     val idle: State<Float>? = if (animated && rememberMotionEnabled()) {
         val transition = rememberInfiniteTransition(label = "zekkPet")
@@ -247,10 +271,18 @@ fun ZekkPetArt(
             }) {
                 shapes.forEach { drawPrepared(it, inks) }
             }
+            // Each heart fades as one layer, as web fades its group: its
+            // circles and triangle overlap, and faded one by one their
+            // alphas stacked into darker seams where they meet. Under
+            // reduced motion it fades in place, without the rise.
+            val rise = if (tap?.motion == false) 0f else ZekkPetArt.HEART_RISE
             tap?.hearts?.forEach { h ->
                 val f = h.value
-                translate(top = -ZekkPetArt.HEART_RISE * f) {
-                    heart.forEach { drawPrepared(it, inks, alpha = 1f - f) }
+                translate(top = -rise * f) {
+                    heartPaint.alpha = 1f - f
+                    drawIntoCanvas { it.saveLayer(HEART_BOUNDS, heartPaint) }
+                    heart.forEach { drawPrepared(it, inks) }
+                    drawIntoCanvas { it.restore() }
                 }
             }
         }
@@ -260,22 +292,28 @@ fun ZekkPetArt(
 /**
  * The header pet next to the streak pill: the same 28dp as the DM avatar,
  * on the theme's chip surface (an egg while the invite is open, the asleep
- * face when asleep). Opens the pet card.
+ * face when asleep). Opens the pet card. [name]: the pet's name as the
+ * viewer sees it, for its spoken label (masked for a supervised child with
+ * "Blur swear words" on). Only the chip (and its ripple) is rounded: the pet
+ * draws over it unclipped, as on iOS, so a sleeping pet's top Z — up by the
+ * chip's corner, and further out as it breathes — isn't shaved off.
  */
 @Composable
-fun DmPetButton(pet: PetDTO, onClick: () -> Unit) {
+fun DmPetButton(pet: PetDTO, onClick: () -> Unit, name: String = pet.name) {
     val p = ZkTheme.palette
-    val label = ZekkPet.headerLabel(pet)
-    Box(
-        Modifier
-            .size(30.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(p.bg2)
-            .border(1.dp, p.line, RoundedCornerShape(6.dp))
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = label },
-        contentAlignment = Alignment.Center,
-    ) {
+    val label = ZekkPet.headerLabel(pet, name)
+    val shape = RoundedCornerShape(6.dp)
+    Box(Modifier.size(30.dp), contentAlignment = Alignment.Center) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .clip(shape)
+                .background(p.bg2)
+                .border(1.dp, p.line, shape)
+                .clickable(onClick = onClick)
+                .semantics { contentDescription = label },
+        )
+        // No pointer input of its own, so a tap on it reaches the chip.
         ZekkPetArt(
             stage = ZekkPet.displayStage(pet),
             mood = ZekkPet.Mood.of(pet.mood),
