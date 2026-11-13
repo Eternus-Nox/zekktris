@@ -680,10 +680,11 @@ async function handleIdentify(conn: Connection, payload: IdentifyPayload | undef
       read_state: readStateRows.map(toReadState),
       voice_states: voiceStateRows.map(toVoiceState),
       // Clients switch to activity reporting (and stop PATCHing status
-      // automatically) only when they see presence_activity, and show the
+      // automatically) only when they see presence_activity, show the
       // Zekk Pet UI (pet routes, DM_PET_UPDATE, 'system_pet') only with
-      // zekk_pet.
-      features: { presence_activity: true, zekk_pet: true },
+      // zekk_pet, and offer the egg-colour picker (pets carry a colour of
+      // their own; the invite takes `{ color }`) only with zekk_pet_color.
+      features: { presence_activity: true, zekk_pet: true, zekk_pet_color: true },
     }),
   );
 

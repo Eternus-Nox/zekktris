@@ -37,7 +37,8 @@ struct ThemePalette {
 
     /// Accent trios, keyed by the base scheme name (matching the web).
     /// Web source: the [data-theme] blocks in index.css. `soft` is
-    /// `--c-accent-soft`.
+    /// `--c-accent-soft`. The app themes only: Zekk Pet colours have their
+    /// own table (ZekkPetPalette.colors), so don't add pet colours here.
     static let accentSchemes: [String: Accents] = [
         "default":  Accents(a1: 0x3DD7EC, a2: 0x9D7BFF, a3: 0xEC5FB5, soft: 0x2DB6C8),
         "sunset":   Accents(a1: 0xFF8A3D, a2: 0xFFD13D, a3: 0xFF7A7A, soft: 0xE0702A),
@@ -84,25 +85,106 @@ struct ThemePalette {
     }
 }
 
-/// The Zekk Pet's colours in a theme, as 0xRRGGBB (ZekkPet.swift draws with
-/// them): body = the theme accent, belly = the accent mixed 55% toward white,
-/// outline = 60% toward black, accent (antenna balls, stars) = the theme's
-/// second colour. A per-channel sRGB lerp rounded half up, in integers —
-/// what the web's color-mix computes. Each person sees the pet in THEIR
-/// theme, so it's built from a theme id (store.themeId), never from the
-/// static Theme.current, which goes stale inside Equatable rows.
+/// A Zekk Pet's colours, as 0xRRGGBB (ZekkPet.swift draws with them): body =
+/// its colour's accent, belly = the accent mixed 55% toward white, outline =
+/// 60% toward black, accent (antenna balls, stars) = its second colour. A
+/// per-channel sRGB lerp rounded half up, in integers — what the web's
+/// color-mix computes. A pet has ONE colour of its own, stored with it on the
+/// server (PetDTO.color, picked by the inviter), so both people in the DM see
+/// the same egg whatever Appearance theme each of them uses: it's built from
+/// the pet's colour id (forPet), never from the viewer's theme (store.themeId)
+/// or the static Theme.current. Only the pet art takes it; the pet card's
+/// chrome (buttons, level bar, checkmarks) stays in the viewer's theme.
 struct ZekkPetPalette: Equatable {
     let body: UInt32
     let belly: UInt32
     let outline: UInt32
     let accent: UInt32
 
-    static func forTheme(_ themeId: String) -> ZekkPetPalette {
-        let acc = ThemePalette.accents(for: themeId)
-        return ZekkPetPalette(body: acc.a1,
-                              belly: mix(acc.a1, toward: 0xFF, percent: 55),
-                              outline: mix(acc.a1, toward: 0x00, percent: 60),
-                              accent: acc.a2)
+    /// One pet colour: its id (what the server stores, and what PetDTO.color
+    /// and a pet notice's metadata.petColor carry), its name in the egg
+    /// picker, and its two accents.
+    struct PetColor: Identifiable, Hashable {
+        let id: String
+        let label: String
+        let a1: UInt32
+        let a2: UInt32
+    }
+
+    /// Every pet colour, in the egg picker's order: a mirror of PET_COLOR_IDS
+    /// and PET_PALETTES in packages/shared/src/pets.ts (Android carries the
+    /// same table); keep them in sync. They're the six theme accent families
+    /// (a1/a2 as in ThemePalette.accentSchemes), so a pet looks exactly as it
+    /// did in that theme when pets followed the viewer's theme. Its own table
+    /// rather than a lookup in accentSchemes: that one is the app themes'
+    /// (palettes, app icons), and an id it doesn't know silently becomes
+    /// "default" there. The ids are stored server-side: never rename or
+    /// remove one (colours may only be added).
+    static let colors: [PetColor] = [
+        PetColor(id: "default",  label: "Abyssal",  a1: 0x3DD7EC, a2: 0x9D7BFF),
+        PetColor(id: "sunset",   label: "Sunset",   a1: 0xFF8A3D, a2: 0xFFD13D),
+        PetColor(id: "forest",   label: "Forest",   a1: 0x3D9BFF, a2: 0x4FDD8F),
+        PetColor(id: "crimson",  label: "Crimson",  a1: 0xFF4D4D, a2: 0x9AA3B8),
+        PetColor(id: "blossom",  label: "Blossom",  a1: 0xFF5FA2, a2: 0xFFB088),
+        PetColor(id: "amethyst", label: "Amethyst", a1: 0xA855F7, a2: 0xF5B942),
+    ]
+
+    /// The order channelColorId picks from (the shared
+    /// PET_CHANNEL_COLOR_ORDER). Frozen, and kept apart from `colors`, which
+    /// may grow: it decides the colour of every pet nobody picked one for
+    /// (the server backfilled the pets adopted before colours existed with
+    /// it), so adding colours must not change it.
+    private static let channelColorOrder = ["default", "sunset", "forest", "crimson", "blossom", "amethyst"]
+
+    /// The colour with this id; nil for one this build doesn't know.
+    static func color(_ id: String?) -> PetColor? {
+        guard let id else { return nil }
+        return colors.first { $0.id == id }
+    }
+
+    /// The DM's own pet colour (the shared petColorForChannel): its channel
+    /// id mod 6 into the frozen order. Channel ids are positive decimal
+    /// snowflakes; one that won't parse gets "default".
+    static func channelColorId(_ channelId: String) -> String {
+        guard let id = UInt64(channelId) else { return "default" }
+        return channelColorOrder[Int(id % UInt64(channelColorOrder.count))]
+    }
+
+    /// The colour to draw a pet (or a pet notice) in (the shared
+    /// resolvePetColor): its own colour when it's one this build knows;
+    /// otherwise — none from an older server, a notice from before pets had
+    /// colours, or a newer server's colour this build lacks — its DM's
+    /// colour, which every app works out the same way, so both people (and
+    /// every app) still agree.
+    static func resolveColorId(_ color: String?, channelId: String) -> String {
+        if let known = Self.color(color) { return known.id }
+        return channelColorId(channelId)
+    }
+
+    /// The palette a pet is drawn in: forPet(pet.color, channelId: pet.channelId)
+    /// — or, for a notice, its metadata.petColor and message.channelId.
+    static func forPet(_ color: String?, channelId: String) -> ZekkPetPalette {
+        forColor(resolveColorId(color, channelId: channelId))
+    }
+
+    /// The palette of a colour id (the first colour's for one this build
+    /// doesn't know; forPet never passes one).
+    static func forColor(_ id: String) -> ZekkPetPalette {
+        let c = color(id) ?? colors[0]
+        return ZekkPetPalette(body: c.a1,
+                              belly: mix(c.a1, toward: 0xFF, percent: 55),
+                              outline: mix(c.a1, toward: 0x00, percent: 60),
+                              accent: c.a2)
+    }
+
+    /// The pet colour of an Appearance theme's family: the theme id without
+    /// its "-oled" ("sunset-oled" → "sunset"), "oled" → "default", anything
+    /// else this build doesn't know → "default". The egg picker starts on
+    /// it, so the egg first shows in the inviter's own colours.
+    static func colorId(forTheme themeId: String) -> String {
+        if themeId == "oled" { return "default" }
+        let family = themeId.hasSuffix("-oled") ? String(themeId.dropLast(5)) : themeId
+        return color(family)?.id ?? "default"
     }
 
     /// `percent`% of the way from `rgb` toward `target` (0 or 255), per
@@ -335,4 +417,30 @@ extension Theme {
     static func monoTracking(_ size: CGFloat) -> CGFloat { size * 0.01 }
     /// Web `.zk-cap` letter-spacing: 0.14em (uppercase mono labels).
     static func capTracking(_ size: CGFloat) -> CGFloat { size * 0.14 }
+}
+
+/// The two smiley glyphs by name. Since iOS 26 the system symbols ship a
+/// dark-appearance version of "face.smiling" and of "face.smiling.inverse"
+/// that swaps them: in dark appearance "face.smiling" draws the solid disc and
+/// "face.smiling.inverse" the line drawing ("face.smiling.fill" is an alias
+/// of ".inverse"). In light appearance, and on every iOS before 26, it is the
+/// other way round. A plain "face.smiling" therefore turned into a heavy blob
+/// beside the outline icons around it (the attach menu's Sticker row, the
+/// composer's emoji button), and a ".fill" badge into a thin outline.
+///
+/// These names are right only because the app is dark-only (ZekktrisApp's
+/// `.preferredColorScheme(.dark)`). A view that can render in light
+/// appearance on iOS 26+ must pick by its color scheme as well.
+enum SmileySymbol {
+    /// The line-drawn smiley, for rows of outline icons.
+    static var outline: String {
+        if #available(iOS 26.0, *) { return "face.smiling.inverse" }
+        return "face.smiling"
+    }
+
+    /// The solid smiley, for filled glyphs such as badges.
+    static var filled: String {
+        if #available(iOS 26.0, *) { return "face.smiling" }
+        return "face.smiling.inverse"
+    }
 }

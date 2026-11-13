@@ -65,6 +65,7 @@ import {
   type DmSettingsUpdatePayload,
   type DmPetState,
   type DmPetUpdatePayload,
+  type PetColorId,
   type PetDTO,
   PET_MIN_STREAK,
 } from '@zekktris/client';
@@ -345,6 +346,10 @@ interface State {
   /** The server has Zekk Pets (READY features.zekk_pet). False before the
       first READY and on servers without them: no pet UI at all then. */
   zekkPetEnabled: boolean;
+  /** Its pets have colours of their own (READY features.zekk_pet_color):
+      Adopt opens the egg picker and the invite carries the pick. Without
+      it Adopt invites straight away with no colour, as before. */
+  zekkPetColorEnabled: boolean;
   /**
    * Disappearing messages whose countdown has started: message id →
    * `expires_at` in SERVER epoch ms (compare with serverNow(offset), never
@@ -407,6 +412,7 @@ const initialState: State = {
   dmTimers: {},
   dmPets: {},
   zekkPetEnabled: false,
+  zekkPetColorEnabled: false,
   expiryDeadlines: {},
   serverClockOffsetMs: null,
   dateClockOffsetMs: null,
@@ -553,8 +559,8 @@ type Action =
   /** A DM's pet from DM_PET_UPDATE or our own invite / accept / decline /
       rename (null = no pet any more). */
   | { type: 'DM_PET_SET'; channelId: string; pet: PetDTO | null }
-  /** READY's features.zekk_pet. */
-  | { type: 'ZEKK_PET_FEATURE_SET'; enabled: boolean }
+  /** READY's features.zekk_pet, and zekk_pet_color (absent = off). */
+  | { type: 'ZEKK_PET_FEATURE_SET'; enabled: boolean; color?: boolean }
   /** MESSAGE_EXPIRY: a read started these messages' countdowns. `receivedAt`
       is the device time the event arrived, for the server-clock offset. */
   | {
@@ -2061,8 +2067,13 @@ function reducer(state: State, action: Action): State {
       };
       return { ...state, dmPets: { ...state.dmPets, [action.channelId]: { ...prev, pet: action.pet } } };
     }
-    case 'ZEKK_PET_FEATURE_SET':
-      return state.zekkPetEnabled === action.enabled ? state : { ...state, zekkPetEnabled: action.enabled };
+    case 'ZEKK_PET_FEATURE_SET': {
+      // Colours only mean anything on a server with pets.
+      const color = action.enabled && action.color === true;
+      return state.zekkPetEnabled === action.enabled && state.zekkPetColorEnabled === color
+        ? state
+        : { ...state, zekkPetEnabled: action.enabled, zekkPetColorEnabled: color };
+    }
     case 'EXPIRY_STAMP': {
       // Ids we don't hold are recorded too: a message scrolled out of the
       // window (or loaded later) is still known to be counting down.
@@ -2795,9 +2806,11 @@ interface AppStateValue {
   changeDmPet: (channelId: string, change: DmPetChange) => Promise<PetDTO | null>;
 }
 
-/** What changeDmPet does. */
+/** What changeDmPet does. An invite carries the egg picked for the pet
+    (servers with READY features.zekk_pet_color); without one the request
+    goes with no body and the server gives the pet its DM's colour. */
 export type DmPetChange =
-  | { kind: 'invite' }
+  | { kind: 'invite'; color?: PetColorId }
   | { kind: 'accept' }
   | { kind: 'decline' }
   | { kind: 'rename'; name: string };
@@ -3631,7 +3644,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       try {
         const r =
           change.kind === 'invite'
-            ? await rest.inviteDmPet(channelId)
+            ? await rest.inviteDmPet(channelId, change.color)
             : change.kind === 'accept'
               ? await rest.acceptDmPet(channelId)
               : change.kind === 'decline'
@@ -4993,8 +5006,13 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           dispatch({ type: 'VOICE_STATES_SET', voiceStates: payload.voice_states });
         }
         // Capabilities come with every READY (the gateway client has already
-        // stored them); a server without Zekk Pets hides the pet UI.
-        dispatch({ type: 'ZEKK_PET_FEATURE_SET', enabled: gateway.getFeatures().zekk_pet === true });
+        // stored them); a server without Zekk Pets hides the pet UI, and one
+        // without pet colours gets no egg picker.
+        dispatch({
+          type: 'ZEKK_PET_FEATURE_SET',
+          enabled: gateway.getFeatures().zekk_pet === true,
+          color: gateway.getFeatures().zekk_pet_color === true,
+        });
         if (!readyOnceRef.current) {
           readyOnceRef.current = true;
           return;
@@ -5079,7 +5097,11 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     );
     // A READY that landed before this subscription (the gateway connects
     // in AuthProvider) isn't replayed, so take its features now.
-    dispatch({ type: 'ZEKK_PET_FEATURE_SET', enabled: gateway.getFeatures().zekk_pet === true });
+    dispatch({
+      type: 'ZEKK_PET_FEATURE_SET',
+      enabled: gateway.getFeatures().zekk_pet === true,
+      color: gateway.getFeatures().zekk_pet_color === true,
+    });
 
       return unsubs;
     },

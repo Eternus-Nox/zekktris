@@ -152,8 +152,23 @@ usersRouter.get(
     // and `earned` are kept so in-progress badges still render "x/goal" as 0/goal.
     // value is set to 0 rather than omitted: the native model decodes it as a
     // non-optional Int, so omitting it would break the client decode.
+    // The in-progress ones also go into a FIXED order (family name, then rung)
+    // for them: the shelf lists them closest-to-unlocking first, an order
+    // computed from the very values scrubbed here, so keeping it would tell a
+    // viewer how far along each is relative to the others (pet level against
+    // active days against streak partners, with the earned rungs as anchors).
+    // Earned ones keep the shelf's order, which is the catalog's.
+    const scrubbed = () => {
+      const earned = all.filter((a) => a.earned);
+      const locked = all
+        .filter((a) => !a.earned)
+        .sort((a, b) =>
+          a.name < b.name ? -1 : a.name > b.name ? 1 : (a.goal ?? 0) - (b.goal ?? 0),
+        );
+      return [...earned, ...locked].map((a) => ({ ...a, value: 0 }));
+    };
     return c.json({
-      achievements: isOwner ? all : all.map((a) => ({ ...a, value: 0 })),
+      achievements: isOwner ? all : scrubbed(),
       public: target.pub,
     });
   },

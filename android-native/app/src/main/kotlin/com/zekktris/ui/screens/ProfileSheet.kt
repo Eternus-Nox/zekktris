@@ -1,5 +1,7 @@
 package com.zekktris.ui.screens
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -48,6 +50,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.WorkspacePremium
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -57,6 +62,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
@@ -226,11 +234,15 @@ fun ProfileSheet(store: AppStore, state: AppState, user: PublicUser, onDismiss: 
                 var achievementDetail by remember(user.id) { mutableStateOf<com.zekktris.data.model.Achievement?>(null) }
                 LaunchedEffect(user.id) { achievements = store.fetchUserAchievements(user.id); achievementsLoaded = true }
                 val earned = achievements.filter { it.isEarned }
+                // The earned badges sit behind one closed row, opened on tap —
+                // iOS AchievementsSection(collapsible: true) and web's
+                // collapsible shelf. An open grid grew a row with every few
+                // badges and pushed Message / Call further down the sheet.
+                var achievementsOpen by remember(user.id) { mutableStateOf(false) }
                 Column(Modifier.padding(top = 14.dp)) {
-                    // iOS only prints the header once there's at least one earned
-                    // badge — the loading and empty branches are bare
-                    // (MainView.swift:10811-10815).
-                    if (earned.isNotEmpty()) SectionLabel("ACHIEVEMENTS")
+                    if (earned.isNotEmpty()) {
+                        AchievementsDisclosureRow(earned.size, achievementsOpen) { achievementsOpen = !achievementsOpen }
+                    }
                     when {
                         !achievementsLoaded -> androidx.compose.material3.CircularProgressIndicator(
                             color = p.accent, strokeWidth = 2.dp,
@@ -241,8 +253,8 @@ fun ProfileSheet(store: AppStore, state: AppState, user: PublicUser, onDismiss: 
                             color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 13.sp,
                             modifier = Modifier.padding(top = 6.dp),
                         )
-                        else -> FlowRow(
-                            Modifier.fillMaxWidth().padding(top = 6.dp),
+                        achievementsOpen -> FlowRow(
+                            Modifier.fillMaxWidth().padding(top = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
@@ -499,6 +511,65 @@ private fun ReportSheet(onSubmit: (String, String) -> Unit, onDismiss: () -> Uni
                     .let { if (ok) it.clickable { onSubmit(reason!!, details) } else it }.padding(vertical = 13.dp),
             )
         }
+    }
+}
+
+/** The profile sheet's closed achievements row, built like the sheet's
+ *  secondary buttons (bg3, 10dp corners, 15sp medium): a badge glyph,
+ *  "Achievements", how many, and a chevron that turns over while open.
+ *  Mirrors iOS AchievementsSection.disclosureRow: a button to TalkBack, as
+ *  iOS's is to VoiceOver, that says whether the badges are showing, and a
+ *  chevron that turns in 0.15 s. */
+@Composable
+private fun AchievementsDisclosureRow(count: Int, open: Boolean, onToggle: () -> Unit) {
+    val p = ZkTheme.palette
+    val chevronTurn by animateFloatAsState(
+        targetValue = if (open) 180f else 0f,
+        animationSpec = tween(durationMillis = 150),
+        label = "achievementsChevron",
+    )
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(p.bg3)
+            .clickable(
+                role = Role.Button,
+                onClickLabel = if (open) "Hide the badges" else "Show the badges",
+                onClick = onToggle,
+            )
+            .semantics { stateDescription = if (open) "Expanded" else "Collapsed" }
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        androidx.compose.material3.Icon(
+            Icons.Filled.WorkspacePremium,
+            contentDescription = null,
+            tint = ZkInk.ink1,
+            modifier = Modifier.size(16.dp),
+        )
+        Text(
+            "Achievements",
+            color = ZkInk.ink1,
+            fontFamily = ZkSans,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(start = 8.dp).weight(1f),
+        )
+        Text(
+            "$count",
+            color = ZkInk.ink3,
+            fontFamily = com.zekktris.ui.theme.ZkMono,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(end = 8.dp),
+        )
+        androidx.compose.material3.Icon(
+            Icons.Filled.KeyboardArrowDown,
+            contentDescription = null,
+            tint = ZkInk.ink3,
+            modifier = Modifier.size(18.dp).rotate(chevronTurn),
+        )
     }
 }
 

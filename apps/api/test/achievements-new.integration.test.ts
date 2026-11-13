@@ -39,9 +39,139 @@ describe.runIf(dbReady)('new achievements (integration)', () => {
       'guardian_angel',
       'first_contact',
       'event_horizon',
+      'regular_30',
+      'regular_100',
+      'regular_365',
+      'crowd_pleaser_3',
+      'crowd_pleaser_5',
+      'pollster_3',
+      'pollster_5',
+      'kindred_2',
+      'kindred_3',
+      'kindred_5',
+      'vanishing_act',
+      'pet_keeper_1',
+      'pet_keeper_5',
+      'pet_keeper_10',
+      'pet_keeper_15',
+      'pet_keeper_25',
+      'pet_perfect_day',
     ]) {
       expect(byId(shelf, id).earned, `${id} should be locked`).toBe(false);
     }
+  });
+
+  it('the seven newer families follow the tier convention and sit where they belong on the shelf', async () => {
+    const u = await createUser();
+    const shelf = await achievementsForUser(u);
+    const families: Array<{ name: string; ids: string[]; goals: number[]; markers: string[]; descriptions: string[] }> = [
+      {
+        name: 'Regular',
+        ids: ['regular_30', 'regular_100', 'regular_365'],
+        goals: [30, 100, 365],
+        markers: ['30', '100', '365'],
+        descriptions: [30, 100, 365].map((n) => `Sent messages on ${n} different days.`),
+      },
+      {
+        name: 'Crowd Pleaser',
+        ids: ['crowd_pleaser_3', 'crowd_pleaser_5'],
+        goals: [3, 5],
+        markers: ['3', '5'],
+        descriptions: [3, 5].map((n) => `${n} different people reacted to one of your messages.`),
+      },
+      {
+        name: 'The People Have Spoken',
+        ids: ['pollster_3', 'pollster_5'],
+        goals: [3, 5],
+        markers: ['3', '5'],
+        descriptions: [3, 5].map((n) => `A poll you made got votes from ${n} different people.`),
+      },
+      {
+        name: 'Kindred Spirits',
+        ids: ['kindred_2', 'kindred_3', 'kindred_5'],
+        goals: [2, 3, 5],
+        markers: ['2', '3', '5'],
+        descriptions: [2, 3, 5].map((n) => `Kept a 7-day DM streak with ${n} different people.`),
+      },
+      {
+        name: 'Now You See Me',
+        ids: ['vanishing_act'],
+        goals: [1],
+        markers: ['👻'],
+        descriptions: ['Turned on disappearing messages.'],
+      },
+      {
+        name: 'Zekk Keeper',
+        ids: ['pet_keeper_1', 'pet_keeper_5', 'pet_keeper_10', 'pet_keeper_15', 'pet_keeper_25'],
+        goals: [1, 5, 10, 15, 25],
+        markers: ['🐣', '5', '10', '15', '25'],
+        // The pet is shared: both people earn each rung, whoever tipped it.
+        descriptions: [
+          'Helped hatch a Zekk Pet.',
+          'Helped a Zekk Pet grow into a Kid.',
+          'Helped a Zekk Pet grow into a Teen.',
+          'Helped a Zekk Pet grow into an Adult.',
+          'Helped a Zekk Pet grow into a Legendary.',
+        ],
+      },
+      {
+        name: 'Perfect Day',
+        ids: ['pet_perfect_day'],
+        goals: [1],
+        markers: ['☀️'],
+        descriptions: ['Every Zekk Pet task done in one day.'],
+      },
+    ];
+    for (const f of families) {
+      // Clients number rungs by grouping on the name: it must be the family's
+      // alone, and carry no numeral of its own.
+      expect(shelf.filter((a) => a.name === f.name).map((a) => a.id)).toEqual(f.ids);
+      expect(f.name).not.toMatch(/\d/);
+      f.ids.forEach((id, i) => {
+        const a = byId(shelf, id);
+        expect(a).toMatchObject({
+          name: f.name,
+          goal: f.goals[i],
+          marker: f.markers[i],
+          description: f.descriptions[i],
+          value: 0,
+          earned: false,
+        });
+        expect([...a.marker].length).toBeLessThanOrEqual(3);
+      });
+    }
+    // Nothing earned and no progress: the shelf is in push order, which is the
+    // placement the families were given.
+    const at = (id: string) => shelf.findIndex((a) => a.id === id);
+    const order = [
+      'night_owl',
+      'regular_30',
+      'regular_365',
+      'first_responder',
+      'crowd_pleaser_3',
+      'pollster_5',
+      'social_5',
+      'marathon',
+      'inseparable_100',
+      'kindred_2',
+      'kindred_5',
+      'founder',
+      'poke_received_5',
+      'pet_keeper_1',
+      'pet_keeper_25',
+      'pet_perfect_day',
+      'off_the_record',
+      'vanishing_act',
+      'discovered',
+    ];
+    for (let i = 1; i < order.length; i++) {
+      expect(at(order[i - 1]!), `${order[i - 1]} before ${order[i]}`).toBeLessThan(at(order[i]!));
+    }
+    // Android draws a badge from its marker alone: no two badges may share a
+    // glyph marker (thresholds like '5' are the tier convention, not glyphs).
+    const glyphs = shelf.map((a) => a.marker).filter((m) => !/\d/.test(m));
+    expect(glyphs.length).toBeGreaterThan(10);
+    expect(new Set(glyphs).size, `duplicate marker in ${glyphs.join(' ')}`).toBe(glyphs.length);
   });
 
   it('security: passkey earns locked_in; +2FA earns double_locked', async () => {

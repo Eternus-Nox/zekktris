@@ -27,9 +27,12 @@ import { rollbackChannelWatermarks, searchDirectMessages, searchMessages } from 
 import { disableE2eeAndPurge, enableE2ee } from '../src/services/dms';
 import { unreadBadgeCounts } from '../src/services/readStates';
 import {
+  PET_COLOR_IDS,
   PET_TASKS,
+  petColorForChannel,
   petLevelFloor,
   petLevelForPoints,
+  type PetColorId,
 } from '@zekktris/shared/pets';
 import { createUser, createDmChannel, addRelationship, cleanupAll, createMessage } from './seed';
 import { probeDb, closeDb } from './db-available';
@@ -345,6 +348,8 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
       ['tasks_done', 'integer', 'NO'],
       ['created_at', 'timestamp with time zone', 'NO'],
       ['updated_at', 'timestamp with time zone', 'NO'],
+      // Migration 0136.
+      ['color', 'text', 'YES'],
     ]);
     const idx = (await db.execute(
       sql.raw(`SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'dm_pets_sweep_idx'`),
@@ -389,6 +394,226 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     expect(cols.map((c) => [c.column_name, c.data_type, c.is_nullable])).toEqual([
       ['prev_day_a', 'text', 'YES'],
       ['prev_day_b', 'text', 'YES'],
+    ]);
+  });
+
+  it("migration 0136 follows 0135: a nullable colour, backfilled with exactly the DM's colour", async () => {
+    const journal = JSON.parse(
+      readFileSync(new URL('../../../packages/db/migrations/meta/_journal.json', import.meta.url), 'utf8'),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const at0136 = journal.entries.findIndex((e) => e.tag === '0136_dm_pet_color');
+    expect(at0136).toBeGreaterThan(0);
+    const prev = journal.entries[at0136 - 1]!;
+    expect(prev.tag).toBe('0135_dm_streak_prev_days');
+    expect(journal.entries[at0136]).toEqual({
+      idx: 135,
+      version: '7',
+      when: prev.when + 86_400_000,
+      tag: '0136_dm_pet_color',
+      breakpoints: true,
+    });
+    // No default: a build from before 0136 inserts without the column.
+    const cols = (await db.execute(
+      sql.raw(
+        `SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'dm_pets' AND column_name = 'color'`,
+      ),
+    )) as unknown as Array<{ column_name: string; data_type: string; is_nullable: string; column_default: string | null }>;
+    expect(cols.map((c) => [c.column_name, c.data_type, c.is_nullable, c.column_default])).toEqual([
+      ['color', 'text', 'YES', null],
+    ]);
+
+    // The backfill's colour expression IS petColorForChannel: evaluate it over
+    // channel ids covering every residue, small and snowflake-sized.
+    const statements = readFileSync(
+      new URL('../../../packages/db/migrations/0136_dm_pet_color.sql', import.meta.url),
+      'utf8',
+    ).split('--> statement-breakpoint');
+    expect(statements.length).toBe(2);
+    const update = /^UPDATE "dm_pets"\s+SET "color" = (.+?)\s+WHERE "color" IS NULL;\s*$/s.exec(statements[1]!.trim() + '\n');
+    expect(update, statements[1]).not.toBeNull();
+    const expr = update![1]!;
+    const ids = [
+      ...Array.from({ length: 12 }, (_, i) => BigInt(i + 1)),
+      ...Array.from({ length: 6 }, (_, i) => 7_390_000_000_000_000_000n + BigInt(i)),
+    ];
+    const evaluated = (await db.execute(
+      sql.raw(
+        `SELECT "channel_id"::text AS id, ${expr} AS color
+           FROM (VALUES ${ids.map((id) => `(${id}::bigint)`).join(', ')}) AS t("channel_id")`,
+      ),
+    )) as unknown as Array<{ id: string; color: string }>;
+    expect(evaluated.map((r) => [r.id, r.color])).toEqual(ids.map((id) => [id.toString(), petColorForChannel(id)]));
+    expect(new Set(evaluated.map((r) => r.color))).toEqual(new Set(PET_COLOR_IDS));
+
+    // Rows an older build wrote (no colour) read as the DM's colour before the
+    // backfill reaches them, and hold it after; a colour some newer build
+    // stored that this one doesn't know reads the same way.
+    const p = await pair();
+    await db.insert(schema.dmPets).values({
+      channelId: p.dm,
+      userAId: p.lo,
+      userBId: p.hi,
+      status: 'invited',
+      invitedBy: p.a,
+      // On the pinned clock, so the invite hasn't lapsed.
+      createdAt: now,
+      updatedAt: now,
+    });
+    expect((await petRow(p.dm))!.color).toBeNull();
+    expect((await petOf(p.b, p.dm)).color).toBe(petColorForChannel(p.dm));
+    await db.execute(
+      sql.raw(`UPDATE "dm_pets" SET "color" = ${expr} WHERE "color" IS NULL AND "channel_id" = ${p.dm}`),
+    );
+    expect((await petRow(p.dm))!.color).toBe(petColorForChannel(p.dm));
+    await setRow(p.dm, { color: 'teal' as PetColorId });
+    expect((await petOf(p.a, p.dm)).color).toBe(petColorForChannel(p.dm));
+  });
+
+  it('the inviter picks the egg: both people get it live and from GET, and the pet and its notices keep it for life', async () => {
+    const p = await pair();
+    await setStreak(p, { streak: 4, lastCountedDay: day(-1) });
+    // Not the DM's own colour, so it's the pick that shows.
+    const color = PET_COLOR_IDS.find((c) => c !== petColorForChannel(p.dm))!;
+    const aSent = connect(p.a, [p.dm]);
+    const bSent = connect(p.b, [p.dm]);
+
+    const inv = await call('POST', petPath(p.dm, '/invite'), p.a, { color });
+    expect(inv.status).toBe(200);
+    expect((inv.json!.pet as PetDTO).color).toBe(color);
+    for (const sent of [aSent, bSent]) expect(petFrames(sent).map((f) => f.pet!.color)).toEqual([color]);
+    for (const u of [p.a, p.b]) expect((await petOf(u, p.dm)).color).toBe(color);
+    expect((await petRow(p.dm))!.color).toBe(color);
+
+    // Accept, rename, feeding (a hatch), sleep and waking: always the same egg.
+    expect(((await accept(p.b, p.dm)).json!.pet as PetDTO).color).toBe(color);
+    expect(((await rename(p.b, p.dm, 'Pip')).json!.pet as PetDTO).color).toBe(color);
+    await setRow(p.dm, { points: 20 });
+    await msg(p.dm, p.lo);
+    await msg(p.dm, p.hi);
+    expect(await petOf(p.a, p.dm)).toMatchObject({ stage: 'baby', color });
+    at(`${day(2)}T00:05:00Z`);
+    await sweepPets();
+    expect(await petOf(p.b, p.dm)).toMatchObject({ status: 'asleep', color });
+    await msg(p.dm, p.lo);
+    await msg(p.dm, p.hi);
+    expect(await petOf(p.b, p.dm)).toMatchObject({ status: 'active', color });
+    for (const sent of [aSent, bSent]) {
+      expect(petFrames(sent).length).toBeGreaterThan(5);
+      expect(petFrames(sent).every((f) => f.pet!.color === color)).toBe(true);
+    }
+    // Every notice says which egg, the sweep's ones and the run-away's too.
+    at(`${day(6)}T00:05:00Z`);
+    await sweepPets();
+    expect(await petRow(p.dm)).toBeNull();
+    const all = await notices(p.dm);
+    expect(all.map((n) => (n.metadata as { event: string }).event)).toEqual([
+      'invited',
+      'adopted',
+      'renamed',
+      'hatched',
+      'asleep',
+      'awake',
+      'ran_away',
+    ]);
+    for (const n of all) expect((n.metadata as { petColor?: string }).petColor, n.content).toBe(color);
+    for (const sent of [aSent, bSent]) {
+      const created = framesOf(sent, 'MESSAGE_CREATE') as Array<{ type: string; metadata?: { petColor?: string } }>;
+      expect(created.filter((m) => m.type === 'system_pet').map((m) => m.metadata?.petColor)).toEqual(
+        all.map(() => color),
+      );
+    }
+  });
+
+  it("an invalid colour is a 400 that writes nothing and spends no invites; no body, an empty one or a non-object gets the DM's colour", async () => {
+    const p = await pair();
+    await setStreak(p, { streak: 4, lastCountedDay: day(-1) });
+    const own = petColorForChannel(p.dm);
+    // Eleven bad requests: past the 10-an-hour budget, if they spent it.
+    const bad = [
+      { color: 'teal' },
+      { color: 'Sunset' },
+      { color: '' },
+      { color: 5 },
+      { color: null },
+      { color: ['forest'] },
+      { color: { id: 'forest' } },
+      { color: true },
+      { color: 'default ' },
+      { color: 'hue-200' },
+      { color: 'oled' },
+    ];
+    for (const body of bad) {
+      const r = await call('POST', petPath(p.dm, '/invite'), p.a, body);
+      expect(r.status, JSON.stringify(body)).toBe(400);
+      expect((r.json?.error as { code?: string } | undefined)?.code).toBe('VALIDATION_FAILED');
+    }
+    expect(await petRow(p.dm)).toBeNull();
+    expect(await notices(p.dm)).toEqual([]);
+
+    // No body and no Content-Type: what every app without the picker sends.
+    const bare = await app.request(petPath(p.dm, '/invite'), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${await tokenFor(p.a)}` },
+    });
+    expect(bare.status).toBe(200);
+    expect(((await bare.json()) as { pet: PetDTO }).pet.color).toBe(own);
+    expect((await petRow(p.dm))!.color).toBe(own);
+    expect((await decline(p.b, p.dm)).status).toBe(200);
+    // A JSON Content-Type with an empty body (call() always sends the header).
+    const empty = await invite(p.a, p.dm);
+    expect(empty.status).toBe(200);
+    expect((empty.json!.pet as PetDTO).color).toBe(own);
+    expect((await decline(p.a, p.dm)).status).toBe(200);
+    // JSON that isn't an object reads as no body at all.
+    for (const raw of ['[]', '"sunset"', 'null', '42', '{not json']) {
+      const r = await app.request(petPath(p.dm, '/invite'), {
+        method: 'POST',
+        headers: { authorization: `Bearer ${await tokenFor(p.b)}`, 'content-type': 'application/json' },
+        body: raw,
+      });
+      expect(r.status, raw).toBe(200);
+      expect(((await r.json()) as { pet: PetDTO }).pet.color, raw).toBe(own);
+      expect((await decline(p.a, p.dm)).status).toBe(200);
+    }
+    // Unknown keys are ignored.
+    const pick = PET_COLOR_IDS.find((c) => c !== own)!;
+    const extra = await call('POST', petPath(p.dm, '/invite'), p.a, { color: pick, pattern: 'spots' });
+    expect(extra.status).toBe(200);
+    expect((extra.json!.pet as PetDTO).color).toBe(pick);
+    // One 'invited' notice per invite that went through, each with its egg.
+    expect((await notices(p.dm)).map((n) => (n.metadata as { petColor?: string }).petColor)).toEqual([
+      ...Array<string>(7).fill(own),
+      pick,
+    ]);
+  });
+
+  it('a re-invite is a new egg: it takes the new pick, after a decline and after a run-away', async () => {
+    const p = await pair();
+    await setStreak(p, { streak: 4, lastCountedDay: day(-1) });
+    const [first, second, third] = PET_COLOR_IDS.filter((c) => c !== petColorForChannel(p.dm));
+    expect((await call('POST', petPath(p.dm, '/invite'), p.a, { color: first })).status).toBe(200);
+    expect((await decline(p.b, p.dm)).status).toBe(200);
+    const again = await call('POST', petPath(p.dm, '/invite'), p.b, { color: second });
+    expect(again.status).toBe(200);
+    expect((again.json!.pet as PetDTO).color).toBe(second);
+    expect(((await accept(p.a, p.dm)).json!.pet as PetDTO).color).toBe(second);
+    // It runs away; the next one is whatever its inviter picks (or the DM's).
+    at(`${day(4)}T03:00:00Z`);
+    await sweepPets();
+    expect(await petRow(p.dm)).toBeNull();
+    await setStreak(p, { streak: 3, lastCountedDay: day(4) });
+    const third1 = await call('POST', petPath(p.dm, '/invite'), p.a, { color: third });
+    expect((third1.json!.pet as PetDTO).color).toBe(third);
+    expect((await decline(p.a, p.dm)).status).toBe(200);
+    expect(((await invite(p.a, p.dm)).json!.pet as PetDTO).color).toBe(petColorForChannel(p.dm));
+    expect((await notices(p.dm)).map((n) => (n.metadata as { petColor?: string }).petColor)).toEqual([
+      first,
+      second,
+      second,
+      second,
+      third,
+      petColorForChannel(p.dm),
     ]);
   });
 
@@ -464,6 +689,8 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
       status: 'invited',
       invitedBy: p.a.toString(),
       name: 'Zekk',
+      // No colour picked (no body): the DM's own.
+      color: petColorForChannel(p.dm),
       level: 0,
       stage: 'egg',
       points: 0,
@@ -483,7 +710,14 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     const [n1] = await notices(p.dm);
     expect(n1!.authorId).toBe(p.a);
     expect(n1!.content).toBe('Ari wants to raise a Zekk Pet together. 🥚');
-    expect(n1!.metadata).toEqual({ kind: 'pet', event: 'invited', petName: 'Zekk', stage: 'egg', actorId: p.a.toString() });
+    expect(n1!.metadata).toEqual({
+      kind: 'pet',
+      event: 'invited',
+      petName: 'Zekk',
+      stage: 'egg',
+      actorId: p.a.toString(),
+      petColor: petColorForChannel(p.dm),
+    });
     expect(n1!.expireAfterSeconds).toBeNull();
     for (const sent of [aSent, bSent]) {
       expect(petFrames(sent)).toEqual([{ channelId: p.dm.toString(), pet: invited }]);
@@ -529,7 +763,15 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     const [, n2] = await notices(p.dm);
     expect(n2!.authorId).toBe(p.b);
     expect(n2!.content).toBe('Bo and Ari adopted a Zekk Pet! 🥚');
-    expect(n2!.metadata).toEqual({ kind: 'pet', event: 'adopted', petName: 'Zekk', stage: 'egg', actorId: p.b.toString() });
+    expect(n2!.metadata).toEqual({
+      kind: 'pet',
+      event: 'adopted',
+      petName: 'Zekk',
+      stage: 'egg',
+      actorId: p.b.toString(),
+      petColor: petColorForChannel(p.dm),
+    });
+    expect(pet.color).toBe(petColorForChannel(p.dm));
     for (const sent of [aSent, bSent]) expect(petFrames(sent).at(-1)).toEqual({ channelId: p.dm.toString(), pet });
     expect((await accept(p.b, p.dm)).status).toBe(409);
     expect((await invite(p.a, p.dm)).status).toBe(409);
@@ -633,7 +875,14 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     const hatched = (await notices(p.dm)).at(-1)!;
     expect(hatched.content).toBe('Zekk hatched! 🐣');
     // A's poke was the one that got it to 25.
-    expect(hatched.metadata).toEqual({ kind: 'pet', event: 'hatched', petName: 'Zekk', stage: 'baby', actorId: p.lo.toString() });
+    expect(hatched.metadata).toEqual({
+      kind: 'pet',
+      event: 'hatched',
+      petName: 'Zekk',
+      stage: 'baby',
+      actorId: p.lo.toString(),
+      petColor: petColorForChannel(p.dm),
+    });
     expect(hatched.authorId).toBe(p.lo);
 
     // Chatty: 10 each. The counts show, capped at the goal.
@@ -757,7 +1006,14 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     await step(890, { points: 900, level: 15, stage: 'adult', levelFloor: 900, nextLevelAt: 1000 }, 'Zekk grew into an Adult!');
     await step(2120, { points: 2130, level: 25, stage: 'legendary', levelFloor: 2125, nextLevelAt: 2275 }, 'Zekk grew into a Legendary!');
     const last = (await notices(p.dm)).at(-1)!;
-    expect(last.metadata).toEqual({ kind: 'pet', event: 'evolved', petName: 'Zekk', stage: 'legendary', actorId: p.hi.toString() });
+    expect(last.metadata).toEqual({
+      kind: 'pet',
+      event: 'evolved',
+      petName: 'Zekk',
+      stage: 'legendary',
+      actorId: p.hi.toString(),
+      petColor: petColorForChannel(p.dm),
+    });
   });
 
   it('mood: asleep, thriving / happy when fed, lonely, grumpy from 18:00 UTC after a fed yesterday, else hungry', async () => {
@@ -817,7 +1073,14 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     expect(pet).toMatchObject({ status: 'asleep', mood: 'asleep', level: 5, stage: 'kid', wakeBy: day(3), lastFedDay: D0 });
     const asleep = (await notices(p.dm)).at(-1)!;
     expect(asleep.content).toBe('Zekk fell asleep. 😴 Say hi to each other within 2 days to wake it up.');
-    expect(asleep.metadata).toEqual({ kind: 'pet', event: 'asleep', petName: 'Zekk', stage: 'kid', actorId: null });
+    expect(asleep.metadata).toEqual({
+      kind: 'pet',
+      event: 'asleep',
+      petName: 'Zekk',
+      stage: 'kid',
+      actorId: null,
+      petColor: petColorForChannel(p.dm),
+    });
     expect(asleep.authorId).toBe(p.lo);
     for (const sent of [aSent, bSent]) expect(petFrames(sent).at(-1)!.pet).toEqual(pet);
     // An overlapping tick posts nothing more.
@@ -833,7 +1096,14 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     expect(pet).toMatchObject({ status: 'active', mood: 'happy', points: 215, level: 5, stage: 'kid', wakeBy: null, lastFedDay: day(3) });
     const awake = (await notices(p.dm)).at(-1)!;
     expect(awake.content).toBe('Zekk woke up! 🎉');
-    expect(awake.metadata).toEqual({ kind: 'pet', event: 'awake', petName: 'Zekk', stage: 'kid', actorId: p.hi.toString() });
+    expect(awake.metadata).toEqual({
+      kind: 'pet',
+      event: 'awake',
+      petName: 'Zekk',
+      stage: 'kid',
+      actorId: p.hi.toString(),
+      petColor: petColorForChannel(p.dm),
+    });
 
     // Neglected again: asleep on day 5, still asleep on day 7 → runs away.
     at(`${day(5)}T00:05:00Z`);
@@ -848,7 +1118,15 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     expect(await petRow(p.dm)).toBeNull();
     const ran = (await notices(p.dm)).at(-1)!;
     expect(ran.content).toBe('Zekk ran away. Keep a 3-day streak to adopt a new one.');
-    expect(ran.metadata).toEqual({ kind: 'pet', event: 'ran_away', petName: 'Zekk', stage: 'kid', actorId: null });
+    // Built from the deleted row, it still shows the pet's own egg.
+    expect(ran.metadata).toEqual({
+      kind: 'pet',
+      event: 'ran_away',
+      petName: 'Zekk',
+      stage: 'kid',
+      actorId: null,
+      petColor: petColorForChannel(p.dm),
+    });
     expect(ran.authorId).toBe(p.lo);
     for (const sent of [aSent, bSent]) expect(petFrames(sent).at(-1)).toEqual({ channelId: p.dm.toString(), pet: null });
     expect(await events(p.dm)).toEqual(['invited', 'adopted', 'asleep', 'awake', 'asleep', 'ran_away']);
@@ -909,7 +1187,14 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     expect((ok.json!.pet as PetDTO).name).toBe('Mochi Bean');
     const n = (await notices(p.dm)).at(-1)!;
     expect(n.content).toBe('Ari renamed the pet to Mochi Bean.');
-    expect(n.metadata).toEqual({ kind: 'pet', event: 'renamed', petName: 'Mochi Bean', stage: 'egg', actorId: p.a.toString() });
+    expect(n.metadata).toEqual({
+      kind: 'pet',
+      event: 'renamed',
+      petName: 'Mochi Bean',
+      stage: 'egg',
+      actorId: p.a.toString(),
+      petColor: petColorForChannel(p.dm),
+    });
     expect(petFrames(aSent).at(-1)!.pet!.name).toBe('Mochi Bean');
 
     // The same name again: nothing at all (and not counted).

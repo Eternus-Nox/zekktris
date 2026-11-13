@@ -13,6 +13,7 @@
 import type {
   AchievementsResponse,
   DmPetState,
+  PetColorId,
   PetDTO,
   Attachment,
   AuthSession,
@@ -2691,9 +2692,15 @@ export class RestClient {
   }
 
   /** Invite the other person to adopt a pet. 409 when the DM isn't eligible
-   *  (streak under 3 days or broken) or a pet / invite already exists. */
-  inviteDmPet(channelId: string): Promise<{ pet: PetDTO }> {
-    return this.request('POST', `/users/@me/channels/${channelId}/pet/invite`);
+   *  (streak under 3 days or broken) or a pet / invite already exists.
+   *  `color` is the egg the inviter picked (servers with READY
+   *  features.zekk_pet_color; others ignore it). Without one the request
+   *  has no body, exactly as before, and the server gives the pet its DM's
+   *  colour. */
+  inviteDmPet(channelId: string, color?: PetColorId): Promise<{ pet: PetDTO }> {
+    return color
+      ? this.request('POST', `/users/@me/channels/${channelId}/pet/invite`, { color })
+      : this.request('POST', `/users/@me/channels/${channelId}/pet/invite`);
   }
 
   /** Accept the other person's invite; the egg appears. Invitee only. */

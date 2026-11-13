@@ -76,6 +76,7 @@ import {
 } from '../lib/validation';
 import { ageOnDate, MIN_SIGNUP_AGE } from '../lib/age';
 import { env } from '../env';
+import { ACHIEVEMENT_CATALOG } from '../services/achievements';
 
 export const authRouter = new Hono();
 
@@ -250,8 +251,10 @@ authRouter.post('/register', validate('json', registerSchema), async (c) => {
         dobLocked: true,
         // Seed the achievement ledger as initialized: a brand-new account has
         // nothing earned yet, so every achievement it earns from here on is a
-        // real, notifiable unlock (no silent backfill needed).
+        // real, notifiable unlock (no silent backfill needed) — at this
+        // catalog too, or its first sync would be a catalog backfill.
         achievementsSeeded: true,
+        achievementsCatalog: ACHIEVEMENT_CATALOG,
       })
       .returning();
     if (!user) throw errors.internal('User creation returned no row');

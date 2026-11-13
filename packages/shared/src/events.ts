@@ -374,4 +374,12 @@ export interface ReadyFeatures {
   /** The server has Zekk Pets (GET/POST /users/@me/channels/:id/pet…,
    *  DM_PET_UPDATE, 'system_pet' notices). Clients hide the pet UI without it. */
   zekk_pet?: true;
+  /** Pets have a colour of their own (PetDTO.color, the same for both
+   *  people) and POST …/pet/invite takes an optional `{ color }`. Clients
+   *  offer the egg-colour picker only with it; without it they invite with
+   *  no body and draw a pet with no colour in its DM's colour
+   *  (petColorForChannel). It covers the six colours of PET_COLOR_IDS as
+   *  first shipped; the invite rejects any other id (400), so a colour added
+   *  later needs a flag of its own before apps may offer it. */
+  zekk_pet_color?: true;
 }

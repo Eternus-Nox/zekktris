@@ -1,6 +1,6 @@
 import { pgTable, bigint, text, boolean, integer, timestamp, index } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import type { PetStatus } from '@zekktris/shared/pets';
+import type { PetColorId, PetStatus } from '@zekktris/shared/pets';
 import { users } from './users';
 import { guilds } from './guilds';
 import { channels } from './channels';
@@ -156,6 +156,12 @@ export const dmPets = pgTable(
     status: text('status').notNull().$type<PetStatus>(),
     invitedBy: bigint('invited_by', { mode: 'bigint' }),
     name: text('name').notNull().default('Zekk'),
+    /** The pet's own colour (a PetColorId), the same for both people: the
+     *  inviter's pick, else the DM's colour (petColorForChannel). Nullable
+     *  with no default so a build from before migration 0136 can still
+     *  insert; the API draws NULL, or an id it doesn't know (a newer
+     *  server's), in the DM's colour (resolvePetColor). */
+    color: text('color').$type<PetColorId>(),
     points: integer('points').notNull().default(0),
     level: integer('level').notNull().default(0),
     adoptedAt: timestamp('adopted_at', { withTimezone: true }),

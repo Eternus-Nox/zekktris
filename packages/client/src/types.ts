@@ -506,6 +506,10 @@ export type MessageMetadata =
       /** Who caused it (stringified BigInt); null for events the server's
        *  daily check caused (asleep, ran_away). */
       actorId: string | null;
+      /** The pet's colour when the notice was posted (a PetColorId). Absent
+       *  on notices from before pets had colours and from older servers:
+       *  draw with resolvePetColor(petColor, message.channelId). */
+      petColor?: string;
     };
 
 /** What a 'system_pet' notice reports. */
@@ -651,6 +655,11 @@ export interface PetDTO {
   /** Who sent the adoption invite (stringified BigInt). */
   invitedBy: string | null;
   name: string;
+  /** The pet's own colour (a PetColorId), the same for both people. Absent
+   *  from servers without READY features.zekk_pet_color, and possibly an id
+   *  this app doesn't know from a newer one: draw with
+   *  resolvePetColor(pet.color, pet.channelId), never the viewer's theme. */
+  color?: string;
   level: number;
   stage: PetStage;
   /** Total points earned. */
@@ -1031,13 +1040,15 @@ export type {
   PresenceActivity,
   ReadyFeatures,
 } from '@zekktris/shared/events';
-export type { PetMood, PetStage, PetStatus, PetTaskKey } from '@zekktris/shared/pets';
+export type { PetColorId, PetMood, PetStage, PetStatus, PetTaskKey } from '@zekktris/shared/pets';
 export { GatewayOp, GatewayEvent } from '@zekktris/shared/events';
 // The Zekk Pet rules and strings, so the web client shows exactly the
 // server's numbers and words without depending on @zekktris/shared itself.
 export {
   PET_ALL_TASKS_MASK,
   PET_CHATTY_GOAL,
+  PET_COLOR_IDS,
+  PET_PALETTES,
   PET_DEFAULT_NAME,
   PET_INVITE_TTL_DAYS,
   PET_MIN_STREAK,
@@ -1045,12 +1056,15 @@ export {
   PET_NAME_MAX_LENGTH,
   PET_STAGES,
   PET_TASKS,
+  isPetColorId,
   normalizePetName,
+  petColorForChannel,
   petLevelFloor,
   petLevelForPoints,
   petPointsForNextLevel,
   petStageForLevel,
   petStageLabel,
+  resolvePetColor,
 } from '@zekktris/shared/pets';
 
 // ── Webhooks ─────────────────────────────────────────────────────────────

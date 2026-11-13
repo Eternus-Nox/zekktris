@@ -16,7 +16,8 @@ import org.junit.Test
 import kotlin.math.abs
 import kotlin.math.hypot
 
-/** The Zekk Pet's drawing as data (ZekkPetArt.kt): the theme colours, the
+/** The Zekk Pet's drawing as data (ZekkPetArt.kt): the pet colours (one per
+ *  pet, the same for both people) and how a DM without one gets its own, the
  *  geometry of every stage, the faces, the back-to-front order, and the
  *  motion curves. The same numbers web and iOS draw. */
 class ZekkPetArtTest {
@@ -53,6 +54,93 @@ class ZekkPetArtTest {
         }
         // Compose's toArgb() carries an opaque alpha byte; it's ignored.
         assertEquals(ZekkPetArt.colorsFor(0x3DD7EC, 0x9D7BFF), ZekkPetArt.colorsFor(0xFF3DD7EC.toInt(), 0xFF9D7BFF.toInt()))
+    }
+
+    /** The pet colours are packages/shared/src/pets.ts's PET_COLOR_IDS /
+     *  PET_PALETTES, id for id and byte for byte, and each is its theme
+     *  family's two accents (the [themes] table, as ZkAccentSchemes has
+     *  them), so a pet in a family's colour is exactly the pet that theme
+     *  used to draw: same body, belly, outline and antenna tips. */
+    @Test fun petColorsAreTheSharedTable() {
+        assertEquals(
+            listOf("default", "sunset", "forest", "crimson", "blossom", "amethyst"),
+            ZekkPetArt.PET_COLORS.map { it.id },
+        )
+        assertEquals(
+            listOf("Abyssal", "Sunset", "Forest", "Crimson", "Blossom", "Amethyst"),
+            ZekkPetArt.PET_COLORS.map { it.label },
+        )
+        assertEquals(
+            listOf("#3DD7EC/#9D7BFF", "#FF8A3D/#FFD13D", "#3D9BFF/#4FDD8F", "#FF4D4D/#9AA3B8", "#FF5FA2/#FFB088", "#A855F7/#F5B942"),
+            ZekkPetArt.PET_COLORS.map { "${hex(it.accent)}/${hex(it.accent2)}" },
+        )
+        assertEquals(themes.size, ZekkPetArt.PET_COLORS.size)
+        for ((ids, v) in themes) {
+            val c = ZekkPetArt.petColor(ids[0])
+            assertEquals("${ids[0]} accent", v[0], c?.accent)
+            assertEquals("${ids[0]} accent2", v[1], c?.accent2)
+            val inks = ZekkPetArt.colorsOf(ids[0])
+            assertEquals("${ids[0]} body", v[2], hex(inks.body))
+            assertEquals("${ids[0]} belly", v[3], hex(inks.belly))
+            assertEquals("${ids[0]} outline", v[4], hex(inks.outline))
+            assertEquals("${ids[0]} accent", v[5], hex(inks.accent))
+        }
+        // Ids only, and exactly: no other spelling, nothing inherited.
+        for (id in listOf(null, "", "Sunset", " sunset", "oled", "teal", "toString")) {
+            assertNull("$id", ZekkPetArt.petColor(id))
+            assertFalse("$id", ZekkPetArt.isColorId(id))
+        }
+        assertTrue(ZekkPetArt.PET_COLORS.all { ZekkPetArt.isColorId(it.id) })
+        // An unknown id draws as the default colour rather than failing.
+        assertEquals(ZekkPetArt.colorsOf("default"), ZekkPetArt.colorsOf("teal"))
+    }
+
+    /** A DM's own colour: the channel id mod 6 into the frozen order, the
+     *  answers packages/shared/src/pets.ts's petColorForChannel gives (run
+     *  on the shared code for these ids). */
+    @Test fun aDmsOwnColourIsItsIdModSix() {
+        val expected = listOf(
+            "0" to "default", "1" to "sunset", "2" to "forest", "3" to "crimson", "4" to "blossom",
+            "5" to "amethyst", "6" to "default", "7" to "sunset", "100" to "blossom", "101" to "amethyst",
+            // Snowflake-sized, the largest signed 64-bit id, and one past 64
+            // bits (2^64 + 5), which the shared code's BigInt still reads.
+            "1234567890123456789" to "crimson", "1311768467463790320" to "default",
+            "9223372036854775807" to "sunset", "18446744073709551621" to "crimson",
+            // A negative id counts by its size, as the shared code does.
+            "-7" to "sunset",
+        )
+        for ((id, color) in expected) assertEquals(id, color, ZekkPetArt.colorForChannel(id))
+        // An id that won't parse gets the default colour.
+        for (id in listOf("", "abc", "12x", "1.5")) assertEquals(id, "default", ZekkPetArt.colorForChannel(id))
+    }
+
+    /** What a pet (or a notice) draws in: its own colour when this app knows
+     *  it, else its DM's — never anything from the viewer. */
+    @Test fun resolvingAPetsColour() {
+        // DM "100" is blossom (100 mod 6 = 4).
+        assertEquals("sunset", ZekkPetArt.resolveColor("sunset", "100"))
+        assertEquals("default", ZekkPetArt.resolveColor("default", "100"))
+        // None (an older server, an older notice), or one from a newer
+        // server this app doesn't know: the DM's, the same on both sides.
+        assertEquals("blossom", ZekkPetArt.resolveColor(null, "100"))
+        assertEquals("blossom", ZekkPetArt.resolveColor("teal", "100"))
+        assertEquals("blossom", ZekkPetArt.resolveColor("Sunset", "100"))
+        assertEquals("blossom", ZekkPetArt.resolveColor("", "100"))
+        assertEquals("default", ZekkPetArt.resolveColor(null, "not-an-id"))
+        // Its colours are that colour's.
+        assertEquals(ZekkPetArt.colorsFor(0x3D9BFF, 0x4FDD8F), ZekkPetArt.colorsForPet("forest", "100"))
+        assertEquals(ZekkPetArt.colorsFor(0xFF5FA2, 0xFFB088), ZekkPetArt.colorsForPet(null, "100"))
+        assertEquals(ZekkPetArt.colorsFor(0xFF5FA2, 0xFFB088), ZekkPetArt.colorsForPet("teal", "100"))
+    }
+
+    /** The egg picker starts on the viewer's theme family (both ladders of
+     *  a family, OLED too); a theme this app doesn't know starts on the
+     *  default. */
+    @Test fun thePickerStartsOnTheViewersThemeFamily() {
+        for ((ids, _) in themes) for (id in ids) assertEquals(id, ids[0], ZekkPetArt.colorForTheme(id))
+        for (id in listOf(null, "", "neon", "neon-oled", "-oled", "Sunset")) {
+            assertEquals("$id", "default", ZekkPetArt.colorForTheme(id))
+        }
     }
 
     @Test fun mixRoundsHalfUpPerChannel() {
@@ -96,7 +184,7 @@ class ZekkPetArtTest {
 
     @Test fun bodiesBelliesAndEyesPerStage() {
         val body = mapOf(
-            Stage.Egg to e(50, 56, 26, 32), Stage.Baby to e(50, 60, 24, 22), Stage.Kid to e(50, 58, 27, 25),
+            Stage.Egg to e(50, 50, 26, 32), Stage.Baby to e(50, 60, 24, 22), Stage.Kid to e(50, 58, 27, 25),
             Stage.Teen to e(50, 56, 28, 29), Stage.Adult to e(50, 55, 31, 31), Stage.Legendary to e(50, 55, 31, 31),
         )
         val belly = mapOf(
@@ -162,7 +250,7 @@ class ZekkPetArtTest {
             assertEquals(Ink.Outline, shell.stroke)
             near(2.5f, shell.strokeWidth)
             assertEquals(
-                listOf(Triple(40f, 46f, 5f), Triple(60f, 60f, 6f), Triple(46f, 72f, 4f)),
+                listOf(Triple(40f, 40f, 5f), Triple(60f, 54f, 6f), Triple(46f, 66f, 4f)),
                 shapes.drop(1).map { (it as PetShape.Circle).let { c -> Triple(c.cx, c.cy, c.r) } },
             )
             assertTrue(shapes.drop(1).all { (it as PetShape.Circle).fill == Ink.Body })
@@ -172,7 +260,7 @@ class ZekkPetArtTest {
         assertEquals(Part.Crack, crack.part)
         assertEquals(Ink.Outline, crack.stroke)
         near(2f, crack.width)
-        assertEquals(listOf(30f to 52f, 38f to 46f, 45f to 54f, 53f to 46f, 60f to 54f, 70f to 48f), crack.points.map { it.x to it.y })
+        assertEquals(listOf(30f to 46f, 38f to 40f, 45f to 48f, 53f to 40f, 60f to 48f, 70f to 42f), crack.points.map { it.x to it.y })
     }
 
     @Test fun drawnBackToFront() {

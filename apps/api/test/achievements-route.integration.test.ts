@@ -6,7 +6,7 @@ import { usersRouter } from '../src/routes/users';
 import { errorHandler } from '../src/middleware';
 import { createSession } from '../src/auth/sessions';
 import { signAccessToken } from '../src/auth/tokens';
-import { createUser, cleanupAll } from './seed';
+import { createUser, addRelationship, cleanupAll } from './seed';
 import { probeDb, closeDb } from './db-available';
 
 const dbReady = await probeDb();
@@ -63,6 +63,36 @@ describe.runIf(dbReady)('GET /users/:id/achievements (route)', () => {
     // exact message/friend/call totals), while goal is preserved.
     expect(body.achievements.every((a) => a.value === 0)).toBe(true);
     expect(body.achievements.some((a) => (a.goal ?? 0) > 0)).toBe(true);
+  });
+
+  it("gives a non-owner the in-progress badges in a FIXED order, not the owner's closest-first one (which would leak the progress it scrubs)", async () => {
+    const target = await createUser();
+    const viewer = await createUser();
+    await db
+      .update(schema.users)
+      .set({ achievementsPublic: true })
+      .where(eq(schema.users.id, target));
+    // Progress on one family only: Social Circle, 3 of 5 friends.
+    for (let i = 0; i < 3; i++) await addRelationship(target, await createUser(), 'friend');
+    type Entry = { id: string; name: string; earned: boolean; value: number; goal?: number };
+    const shelf = async (as: bigint) =>
+      ((await (await get(`/users/${target}/achievements`, await tokenFor(as))).json()) as {
+        achievements: Entry[];
+      }).achievements.filter((a) => !a.earned);
+    const mine = await shelf(target);
+    const theirs = await shelf(viewer);
+
+    // The owner's shelf leads with what's closest to unlocking.
+    expect(mine[0]).toMatchObject({ id: 'social_5', value: 3 });
+    // A viewer gets the same badges by family name, then rung — an order
+    // that says nothing about anyone's progress.
+    expect(new Set(theirs.map((a) => a.id))).toEqual(new Set(mine.map((a) => a.id)));
+    const fixed = [...theirs].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : (a.goal ?? 0) - (b.goal ?? 0),
+    );
+    expect(theirs.map((a) => a.id)).toEqual(fixed.map((a) => a.id));
+    expect(theirs[0]!.id).not.toBe('social_5');
+    expect(theirs.every((a) => a.value === 0)).toBe(true);
   });
 
   it('returns an empty list to a non-owner viewing a PRIVATE profile', async () => {

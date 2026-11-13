@@ -30,7 +30,7 @@ import { isBlockedEitherWay } from '../services/relationships';
 import { RateLimiter } from '../lib/rateLimit';
 import { DISAPPEARING_MAX_SECONDS, DISAPPEARING_MIN_SECONDS } from '../lib/disappearing';
 import * as pets from '../services/pets';
-import { normalizePetName } from '@zekktris/shared/pets';
+import { PET_COLOR_IDS, normalizePetName, type PetColorId } from '@zekktris/shared/pets';
 import { log } from '../log';
 
 export const dmsRouter = new Hono();
@@ -369,6 +369,14 @@ dmsRouter.patch(
       channelId,
       ttlSecondsAfterRead,
     });
+    // Turning a timer on (its notice is committed) is the Now You See Me
+    // unlock: a rare, deliberate act, so unthrottled — the changer's 60 s
+    // send throttle mustn't swallow it. Fire-and-forget.
+    if (ttlSecondsAfterRead !== null) {
+      void import('../services/achievements')
+        .then((m) => m.syncAndNotifyAchievements(userId))
+        .catch(() => {});
+    }
     return c.json({ ttlSecondsAfterRead });
   },
 );
@@ -451,20 +459,40 @@ dmsRouter.get(
   },
 );
 
+/** The invite's optional body: the egg the inviter picked. Not strict, so a
+ *  newer app's extra keys are ignored; a colour that isn't one of ours is a
+ *  400. (PET_COLOR_IDS is a plain readonly array; z.enum wants it as a
+ *  non-empty tuple.) */
+const petInviteSchema = z.object({
+  color: z.enum(PET_COLOR_IDS as readonly [PetColorId, ...PetColorId[]]).optional(),
+});
+
 /** POST /invite — ask the other person to adopt a pet together. 409 when the
-    streak isn't alive and 3+ days, or a pet / invite already exists. */
+    streak isn't alive and 3+ days, or a pet / invite already exists.
+    Optional body `{ color }` (READY features.zekk_pet_color): the egg's
+    colour; without one the pet gets its DM's colour. */
 dmsRouter.post(
   '/:channelId/pet/invite',
   validate('param', z.object({ channelId: snowflakeSchema })),
   async (c) => {
     const userId = requireUserId(c);
     const channelId = BigInt(c.req.valid('param').channelId);
+    // Read tolerantly, not with validate('json'): apps without the picker
+    // (every app before it) send no body and no Content-Type, and Hono's
+    // json validator turns a JSON Content-Type with an empty body into a 500.
+    // No body, an empty one or anything but a JSON object reads as {}; a bad
+    // colour throws a ZodError (400) here, before the rate limiter, so a
+    // malformed request writes nothing and doesn't spend the hourly budget.
+    const raw = (await c.req.json().catch(() => ({}))) as unknown;
+    const { color } = petInviteSchema.parse(
+      raw !== null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {},
+    );
     await petDm(channelId, userId);
     const other = await assertPetWriteAllowed(channelId, userId);
     if (other === null) throw errors.conflict('The other person has left this conversation');
     const rl = await petInviteLimiter.consume(userId.toString());
     if (!rl.ok) throw errors.rateLimited(Math.ceil(rl.retryAfterMs / 1000));
-    const pet = await pets.invitePet({ channelId, inviterId: userId, otherId: other });
+    const pet = await pets.invitePet({ channelId, inviterId: userId, otherId: other, color });
     return c.json({ pet });
   },
 );

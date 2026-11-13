@@ -15,11 +15,14 @@ import {
   PET_MOODS,
   PET_STAGES,
   PET_TASKS,
+  isPetColorId,
   petStageLabel,
+  resolvePetColor,
   type Channel,
   type DmPetState,
   type Message,
   type MessageMetadata,
+  type PetColorId,
   type PetDTO,
   type PetMood,
   type PetNoticeEvent,
@@ -211,6 +214,45 @@ export function petCanAct(state: DmPetState | undefined): boolean {
   return state?.canAct !== false;
 }
 
+/** Whether the bar offers Adopt, which is what the egg picker is for: the
+    DM may adopt (petBanner's 'adopt') and the viewer may act (Adopt hides
+    without canAct). The picker closes once this goes false under it, as on
+    iOS and Android: our invite went out (from here or another device), they
+    invited first, the streak broke at midnight UTC, a block. */
+export function petAdoptOffered(state: DmPetState | undefined, selfId: string | undefined): boolean {
+  return petBanner(state, selfId, '')?.kind === 'adopt' && petCanAct(state);
+}
+
+/** Whether the DM's pet comes from the viewer's own invite (any status: the
+    other person may have accepted it already). When that is what took Adopt
+    away under the egg picker, the invite went out — from another device, or
+    from the picker itself with its answer lost — so no failure explains it,
+    and saying one would sit beside "Waiting for Sam to accept…" and might
+    get a good invite cancelled. As on iOS. */
+export function petOwnInviteOut(state: DmPetState | undefined, selfId: string | undefined): boolean {
+  const pet = state?.pet;
+  return !!pet && !!selfId && pet.invitedBy === selfId;
+}
+
+/** How long a failed invite can explain Adopt going away under the egg
+    picker: time for the resync after it (a 409: they invited first, the
+    streak broke) to land. As on iOS. */
+export const PET_PICK_ERROR_EXPLAINS_MS = 10_000;
+
+/** The reason to hand to the toast as the egg picker closes because Adopt
+    went away: a send that failed just before (`failure`, with when) is why,
+    so the closing picker passes it on — unless our own invite is what took
+    Adopt away (`ownInviteOut`, petOwnInviteOut). An older failure was read
+    in the picker already. */
+export function petPickErrorForToast(
+  failure: { message: string; at: number } | null,
+  now: number,
+  ownInviteOut: boolean,
+): string | null {
+  if (!failure || ownInviteOut) return null;
+  return now - failure.at <= PET_PICK_ERROR_EXPLAINS_MS ? failure.message : null;
+}
+
 // ── The in-chat notice ────────────────────────────────────────────────────
 
 export type PetNoticeMeta = Extract<MessageMetadata, { kind: 'pet' }>;
@@ -326,6 +368,25 @@ export function petNoticeArt(meta: Pick<PetNoticeMeta, 'event' | 'stage'>): { st
   return { stage, mood };
 }
 
+/** The colour a notice's pet is drawn in: the colour the pet had when the
+    notice was posted (its metadata), else its DM's colour — for notices from
+    before pets had colours, and from older servers. Never the DM's live pet:
+    a pet that ran away keeps its colour in its notices after a new one is
+    adopted, and a DM search hit can come from a closed DM with no pet
+    loaded at all. */
+export function petNoticeColor(message: Pick<Message, 'metadata' | 'channelId'>): PetColorId {
+  return resolvePetColor(petNoticeMeta(message)?.petColor, message.channelId);
+}
+
+/** The egg the picker starts on: the viewer's own Appearance theme family
+    (an OLED theme shares its family's accents, so "sunset-oled" is
+    'sunset' and Abyssal OLED, "oled", is 'default'); anything else is
+    'default'. Only the first pick — the pet keeps whatever is sent. */
+export function petColorForTheme(themeId: string | null | undefined): PetColorId {
+  const family = themeId === 'oled' ? 'default' : (themeId ?? '').replace(/-oled$/, '');
+  return isPetColorId(family) ? family : 'default';
+}
+
 /** The other person in the 1:1 DM a pet notice sits in: the channel's
     recipients (which never include the viewer), else the row's author when
     that isn't the viewer. The fallback is for DM search, whose results can
@@ -348,7 +409,8 @@ export function petNoticePeer(
  * files 'asleep' / 'ran_away' under user A). The server's third-person
  * `content` is the fallback for an event this client doesn't know or a row
  * without its metadata. A supervised child's profanity mask covers the pet's
- * name and that fallback.
+ * name and that fallback. The glyph is drawn in the notice's own colour
+ * (petNoticeColor).
  */
 export function petNoticeLine({
   message,
@@ -359,7 +421,7 @@ export function petNoticeLine({
   nameOf,
   filterProfanity,
 }: {
-  message: Pick<Message, 'content' | 'metadata' | 'authorId'>;
+  message: Pick<Message, 'content' | 'metadata' | 'authorId' | 'channelId'>;
   selfId: string | undefined;
   /** The other person in the DM, and their (nicknamed) name. */
   peerId: string | null;
@@ -369,7 +431,7 @@ export function petNoticeLine({
   /** Any other user's name, when known. */
   nameOf: (id: string) => string | null | undefined;
   filterProfanity: boolean;
-}): { text: string; art: { stage: PetStage; mood: PetMood } } {
+}): { text: string; art: { stage: PetStage; mood: PetMood; color: PetColorId } } {
   const meta = petNoticeMeta(message);
   const actorId = meta?.actorId ?? null;
   const actorName =
@@ -392,7 +454,7 @@ export function petNoticeLine({
       })) ||
     (filterProfanity ? maskProfanity(message.content) : message.content);
   const art = meta ? petNoticeArt(meta) : ({ stage: 'egg', mood: 'happy' } as const);
-  return { text, art };
+  return { text, art: { ...art, color: petNoticeColor(message) } };
 }
 
 /** Progress towards the next level for the art (the egg cracks near the end). */

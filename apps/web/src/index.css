@@ -1208,11 +1208,13 @@ body.is-resizing *::after {
 }
 
 /* ── Zekk Pet ──────────────────────────────────────────────────────────────
- * The pet wears the viewer's theme: body = the accent, belly = the accent
- * mixed 55% toward white, outline = 60% toward black, antenna tips = the
- * theme's second colour (lib/petArt.ts; the iOS and Android apps compute the
- * same values). Defined on :root from the theme channels, so a theme switch
- * recolours every pet on screen at once. */
+ * A pet has a colour of its own, the same for both people: ZekkPetArt sets
+ * these four properties on its <svg> from that colour's two accents (body =
+ * the accent, belly = the accent mixed 55% toward white, outline = 60% toward
+ * black, antenna tips = the second colour; lib/petArt.ts petPalette, and the
+ * iOS and Android apps compute the same values). The :root values below are
+ * only the fallback for art drawn without a colour: the same mix of the
+ * viewer's theme accents. */
 :root {
   --zk-pet-body: rgb(var(--c-accent));
   --zk-pet-belly: color-mix(in srgb, rgb(var(--c-accent)) 45%, white);
@@ -1221,7 +1223,8 @@ body.is-resizing *::after {
 }
 
 /* Motion (lib/ZekkPetArt.tsx). Transforms are in the art's 100-unit box and
- * turn about the ground point under the feet (50, 88). */
+ * turn about the ground point (50, 88): under the hatched stages' feet, and
+ * 6 units under the centred egg's base (lib/petArt.ts PET_GROUND). */
 .zk-pet-motion {
   transform-box: view-box;
   transform-origin: 50% 88%;

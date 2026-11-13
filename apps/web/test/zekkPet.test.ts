@@ -1,12 +1,16 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { createElement } from 'react';
+import { createElement, type ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
+  PET_COLOR_IDS,
   PET_MOODS,
+  PET_PALETTES,
   PET_STAGES,
   PET_TASKS,
+  RestClient,
   normalizePetName,
+  petColorForChannel,
   type Channel,
   type DmPetState,
   type Message,
@@ -16,29 +20,35 @@ import {
 } from '@zekktris/client';
 import {
   PET_FETCH_RETRY_MS,
+  PET_PICK_ERROR_EXPLAINS_MS,
   appendScrollKind,
   blockSubjectId,
   fetchPetWithRetry,
   isPetNotice,
   nextUtcMidnightRefreshAt,
+  petAdoptOffered,
   petArtProgress,
   petBanner,
   petCanAct,
+  petColorForTheme,
   petDisplayName,
   petLevelLine,
   petLevelProgress,
   petMoodView,
   petNextRefreshAt,
   petNoticeArt,
+  petNoticeColor,
   petNoticeLine,
   petNoticePeer,
   petNoticeText,
+  petOwnInviteOut,
+  petPickErrorForToast,
   petStagePath,
   petTaskRows,
   utcWeekday,
 } from '../src/lib/zekkPet';
 import { PetInviteActions, barButton, barHoldsFocus, refocusIfDropped } from '../src/app/ZekkPet';
-import { restoreFocus } from '../src/app/ZekkPetModal';
+import { PetEggPicker, restoreFocus } from '../src/app/ZekkPetModal';
 import {
   clearPetBannerDismissals,
   dismissPetBanner,
@@ -53,6 +63,7 @@ import {
   petGeometry,
   petHeartShapes,
   petMotion,
+  petPalette,
   petShapes,
   sparklePoints,
   starPoints,
@@ -60,6 +71,7 @@ import {
   type PetShape,
 } from '../src/lib/petArt';
 import { ZekkPetArt } from '../src/lib/ZekkPetArt';
+import { THEMES } from '../src/lib/theme';
 import {
   appStateReducer,
   channelMentionCount,
@@ -298,6 +310,40 @@ describe('adopt bar', () => {
     expect(html('waiting', false)).toContain('Cancel');
   });
 
+  it('opens the egg picker from Adopt on a server with pet colours, else invites with no colour', () => {
+    const calls: string[] = [];
+    const adopt = (onAdopt?: () => void) =>
+      PetInviteActions({
+        kind: 'adopt',
+        busy: null,
+        onRun: (c) => calls.push(`run:${JSON.stringify(c)}`),
+        onAdopt,
+      }) as ReactElement<{ onClick: () => void; 'data-action': string; children: string }>;
+    // An older server: Adopt sends the invite itself, with no colour (so the
+    // request goes with no body, as before).
+    adopt().props.onClick();
+    expect(calls).toEqual(['run:{"kind":"invite"}']);
+    // With READY features.zekk_pet_color: Adopt opens the picker, and nothing
+    // is sent until the picker's Send invite.
+    calls.length = 0;
+    const withPicker = adopt(() => calls.push('picker'));
+    withPicker.props.onClick();
+    expect(calls).toEqual(['picker']);
+    // The same button either way (the bar's focus return finds it by its
+    // data-action).
+    expect(withPicker.props['data-action']).toBe('invite');
+    expect(withPicker.props.children).toBe('Adopt');
+    // Wired: MessageView hands the bar the picker only with the flag, and
+    // opens the card on it.
+    const view = readFileSync(new URL('../src/app/MessageView.tsx', import.meta.url), 'utf8');
+    expect(view).toMatch(/<PetAdoptBanner[^>]*onAdopt=\{zekkPetColorEnabled \? openPetPicker : undefined\}/);
+    expect(view).toContain("const openPetPicker = useCallback(() => setPetOpen('adopt'), []);");
+    expect(view).toContain("adopt={petOpen === 'adopt'}");
+    const bar = readFileSync(new URL('../src/app/ZekkPet.tsx', import.meta.url), 'utf8');
+    expect(bar).toContain('onAdopt={onAdopt}');
+    expect(bar).toContain("onClick={() => (onAdopt ? onAdopt() : onRun({ kind: 'invite' }))}");
+  });
+
   it('hands focus on to the gear when it goes with focus on it', () => {
     // Accept / Not now / Cancel take the bar away (the pet is adopted, the
     // invite is gone), and the X hides it: focus must not drop to <body>.
@@ -505,9 +551,12 @@ describe('in-chat notices', () => {
       event: string,
       actorId: string | null,
       content: string,
-    ): Pick<Message, 'author' | 'authorId' | 'content' | 'metadata'> => ({
+    ): Pick<Message, 'author' | 'authorId' | 'content' | 'metadata' | 'channelId'> => ({
       author,
       authorId: author.id,
+      // A sunset DM (901 mod 6 = 1): the colour of its notices that carry
+      // none of their own.
+      channelId: '901',
       content,
       metadata: { kind: 'pet', event, petName: 'Zekk', stage: 'baby', actorId } as Message['metadata'],
     });
@@ -531,8 +580,40 @@ describe('in-chat notices', () => {
       expect(line(adopted, bo, { recipients: [ari] }).text).toBe('You and Ari adopted a Zekk Pet! 🥚');
       expect(line(asleep, bo, { recipients: [ari] })).toEqual({
         text: 'Zekk fell asleep. 😴 Say hi to each other within 2 days to wake it up.',
-        art: { stage: 'baby', mood: 'asleep' },
+        art: { stage: 'baby', mood: 'asleep', color: 'sunset' },
       });
+    });
+
+    it("draws its pet in the colour the notice carries, else in its DM's", () => {
+      const colored = (m: ReturnType<typeof notice>, petColor: unknown) => ({
+        ...m,
+        metadata: { ...m.metadata!, petColor } as Message['metadata'],
+      });
+      // The pet's colour when the notice was posted — a pet that ran away
+      // keeps it after a new one is adopted (nothing reads the live pet).
+      expect(line(colored(asleep, 'amethyst'), bo, { recipients: [ari] }).art).toEqual({
+        stage: 'baby',
+        mood: 'asleep',
+        color: 'amethyst',
+      });
+      expect(petNoticeColor(colored(adopted, 'forest'))).toBe('forest');
+      // None (a notice from before colours, an older server) or one this app
+      // doesn't know (a newer server): the DM's colour, which is also what
+      // the server gives a pet nobody picked a colour for.
+      expect(petNoticeColor(adopted)).toBe('sunset');
+      expect(petNoticeColor(colored(adopted, 'ultraviolet'))).toBe('sunset');
+      expect(petNoticeColor(colored(adopted, 7))).toBe('sunset');
+      expect(petNoticeColor({ ...adopted, metadata: null })).toBe('sunset');
+      expect(petNoticeColor({ ...adopted, channelId: '906' })).toBe('default');
+      expect(petNoticeColor({ ...adopted, channelId: '905' })).toBe(petColorForChannel('905'));
+      expect(line({ ...adopted, metadata: null }, ari).art.color).toBe('sunset');
+      // Both surfaces pass it on (after the pinned stage / mood / size).
+      for (const file of ['../src/app/MessageItem.tsx', '../src/app/DMList.tsx']) {
+        const src = readFileSync(new URL(file, import.meta.url), 'utf8');
+        expect(src).toContain(
+          '<ZekkPetArt stage={art.stage} mood={art.mood} size={16} animated={false} color={art.color} />',
+        );
+      }
     });
 
     it('finds the other person in a DM search hit from a closed DM (no channel)', () => {
@@ -547,7 +628,10 @@ describe('in-chat notices', () => {
 
     it("falls back to the server's content (masked for a supervised child) without metadata", () => {
       const bare = { ...adopted, metadata: null };
-      expect(line(bare, ari)).toEqual({ text: 'Bo and Ari adopted a Zekk Pet! 🥚', art: { stage: 'egg', mood: 'happy' } });
+      expect(line(bare, ari)).toEqual({
+        text: 'Bo and Ari adopted a Zekk Pet! 🥚',
+        art: { stage: 'egg', mood: 'happy', color: 'sunset' },
+      });
       expect(line(notice(bo, 'danced', '2', 'Zekk danced.'), ari).text).toBe('Zekk danced.');
       const masked = (m: ReturnType<typeof notice>) =>
         petNoticeLine({ message: m, selfId: ari.id, peerId: bo.id, peerName: 'Bo', authorName: 'Bo', nameOf: () => null, filterProfanity: true }).text;
@@ -741,7 +825,7 @@ const parts = (shapes: PetShape[]) => shapes.map((s) => s.part);
 describe('art: stages', () => {
   it('has the body, belly and eyes of each stage', () => {
     const g = (s: PetStage) => petGeometry(s);
-    expect(g('egg').body).toEqual({ cx: 50, cy: 56, rx: 26, ry: 32 });
+    expect(g('egg').body).toEqual({ cx: 50, cy: 50, rx: 26, ry: 32 });
     expect(g('egg').eyes).toBeNull();
     expect([g('baby').body, g('baby').belly, g('baby').eyes]).toEqual([
       { cx: 50, cy: 60, rx: 24, ry: 22 },
@@ -810,7 +894,7 @@ describe('art: stages', () => {
     expect(cracked.at(-1)).toMatchObject({
       tag: 'polyline',
       part: 'crack',
-      attrs: { points: '30,52 38,46 45,54 53,46 60,54 70,48', strokeWidth: 2, stroke: PET_COLORS.outline },
+      attrs: { points: '30,46 38,40 45,48 53,40 60,48 70,42', strokeWidth: 2, stroke: PET_COLORS.outline },
     });
     // No face on the egg, whatever the mood.
     expect(parts(petShapes({ stage: 'egg', mood: 'asleep' }))).toEqual(['body', 'spot', 'spot', 'spot']);
@@ -934,9 +1018,9 @@ describe('art: faces', () => {
   });
 });
 
-describe('art: colours follow the theme', () => {
-  // The cross-platform table: theme accent / second colour → body, belly,
-  // outline, antenna tips.
+describe("art: the pet's own colours", () => {
+  // The cross-platform table: pet colour (= its theme family's accent /
+  // second colour) → body, belly, outline, antenna tips.
   const TABLE: Record<string, [string, string, string, string]> = {
     default: ['#3DD7EC', '#A8EDF6', '#18565E', '#9D7BFF'],
     sunset: ['#FF8A3D', '#FFCAA8', '#663718', '#FFD13D'],
@@ -969,6 +1053,81 @@ describe('art: colours follow the theme', () => {
     for (const [theme, [body, belly, outline, accent]] of Object.entries(TABLE)) {
       const [a1, a2] = accents(theme);
       expect(petColorsForAccents(a1, a2)).toEqual({ body, belly, outline, accent });
+    }
+  });
+
+  it("gives each pet colour its theme family's colours, the same on every app", () => {
+    // The picker order, and the ids dm_pets.color stores.
+    expect(PET_COLOR_IDS).toEqual(['default', 'sunset', 'forest', 'crimson', 'blossom', 'amethyst']);
+    expect(Object.keys(TABLE)).toEqual([...PET_COLOR_IDS]);
+    expect(PET_COLOR_IDS.map((id) => PET_PALETTES[id].label)).toEqual([
+      'Abyssal',
+      'Sunset',
+      'Forest',
+      'Crimson',
+      'Blossom',
+      'Amethyst',
+    ]);
+    for (const id of PET_COLOR_IDS) {
+      const [body, belly, outline, accent] = TABLE[id]!;
+      expect(petPalette(id)).toEqual({ body, belly, outline, accent });
+      // A pet colour IS its theme family: the CSS theme's two accents, so a
+      // pet looks exactly like that theme's pet did before pets had colours.
+      expect([PET_PALETTES[id].accent, PET_PALETTES[id].accent2]).toEqual(accents(id));
+    }
+    // No colour, or one this app doesn't know: no palette, and the art keeps
+    // the :root fallback. Never an Object.prototype member.
+    for (const id of [undefined, null, '', 'ultraviolet', 'Sunset', 'oled', 'constructor', 'toString']) {
+      expect(petPalette(id)).toBeNull();
+    }
+  });
+
+  it('puts the colour on the svg as the custom properties every shape reads', () => {
+    const svgTag = (html: string) => html.slice(0, html.indexOf('>') + 1);
+    const egg = renderToStaticMarkup(
+      createElement(ZekkPetArt, { stage: 'egg', mood: 'happy', size: 28, color: 'sunset' }),
+    );
+    expect(svgTag(egg)).toContain(
+      'style="--zk-pet-body:#FF8A3D;--zk-pet-belly:#FFCAA8;--zk-pet-outline:#663718;--zk-pet-accent:#FFD13D"',
+    );
+    for (const color of PET_COLOR_IDS) {
+      const [body, belly, outline, accent] = TABLE[color]!;
+      const html = renderToStaticMarkup(createElement(ZekkPetArt, { stage: 'teen', mood: 'happy', size: 28, color }));
+      expect(svgTag(html)).toContain(
+        `--zk-pet-body:${body};--zk-pet-belly:${belly};--zk-pet-outline:${outline};--zk-pet-accent:${accent}`,
+      );
+      // Set once, on the svg; the shapes still read them through var().
+      expect(html.match(/--zk-pet-body:/g)).toHaveLength(1);
+      expect(html).toContain('fill:var(--zk-pet-body)');
+      expect(html).toContain('fill:var(--zk-pet-accent)');
+    }
+    // No colour or an unknown one: nothing inline, so :root applies. Setting
+    // --c-accent on the svg would not do: the --zk-pet-* defaults are worked
+    // out on :root, and the svg inherits the result.
+    for (const color of [undefined, null, 'ultraviolet']) {
+      const html = renderToStaticMarkup(createElement(ZekkPetArt, { stage: 'egg', mood: 'happy', size: 28, color }));
+      expect(svgTag(html)).not.toContain('style=');
+      expect(html).not.toMatch(/--zk-pet-\w+:/);
+    }
+    // Every pet the app draws passes its own colour (the notice surfaces are
+    // pinned with the notices).
+    const bar = readFileSync(new URL('../src/app/ZekkPet.tsx', import.meta.url), 'utf8');
+    const modal = readFileSync(new URL('../src/app/ZekkPetModal.tsx', import.meta.url), 'utf8');
+    expect(bar).toContain('color={resolvePetColor(pet.color, pet.channelId)}');
+    expect(modal).toContain('color={resolvePetColor(pet.color, pet.channelId)}');
+  });
+
+  it("starts the egg picker on the viewer's theme family", () => {
+    expect(petColorForTheme('default')).toBe('default');
+    expect(petColorForTheme('oled')).toBe('default');
+    expect(petColorForTheme('sunset-oled')).toBe('sunset');
+    for (const odd of [undefined, null, '', 'neon', 'neon-oled', 'Sunset', 'sunset-oled-oled']) {
+      expect(petColorForTheme(odd)).toBe('default');
+    }
+    // Every Appearance theme starts on the egg with its own two accents.
+    for (const t of THEMES) {
+      const p = PET_PALETTES[petColorForTheme(t.id)];
+      expect([p.accent, p.accent2]).toEqual([t.accents[0].toUpperCase(), t.accents[1].toUpperCase()]);
     }
   });
 
@@ -1017,8 +1176,10 @@ describe('art: motion and the rendered SVG', () => {
 
   it('renders every stage × mood to clean, in-box SVG', () => {
     for (const stage of STAGES) {
-      for (const mood of MOODS) {
-        const html = renderToStaticMarkup(createElement(ZekkPetArt, { stage, mood, size: 28, progress: 0.9 }));
+      for (const [i, mood] of MOODS.entries()) {
+        // With and without a pet colour (the svg then carries it in style).
+        const color = i % 2 ? PET_COLOR_IDS[i] : undefined;
+        const html = renderToStaticMarkup(createElement(ZekkPetArt, { stage, mood, color, size: 28, progress: 0.9 }));
         expect(html.startsWith('<svg')).toBe(true);
         expect(html).toContain('viewBox="0 0 100 100"');
         expect(html).not.toMatch(/NaN|undefined|Infinity/);
@@ -1126,6 +1287,243 @@ describe('pet card', () => {
   });
 });
 
+describe('egg picker', () => {
+  const picker = (props: Partial<Parameters<typeof PetEggPicker>[0]> = {}) =>
+    renderToStaticMarkup(
+      createElement(PetEggPicker, {
+        picked: 'forest',
+        onPick: () => {},
+        busy: false,
+        error: null,
+        onSend: () => {},
+        onCancel: () => {},
+        ...props,
+      }),
+    );
+  /** Each egg's button: its opening tag and what it holds. */
+  const radios = (html: string) =>
+    html
+      .split(/(?=<button[^>]*role="radio")/)
+      .slice(1)
+      .map((chunk) => ({ tag: chunk.slice(0, chunk.indexOf('>') + 1), body: chunk.slice(0, chunk.indexOf('</button>')) }));
+  const attr = (tag: string, name: string) => new RegExp(`${name}="([^"]*)"`).exec(tag)?.[1];
+
+  it('offers the six eggs in the shared order, named for the screen reader, the pick checked', () => {
+    const html = picker({ captionId: 'cap' });
+    // Its own title and caption, as on iOS (no header bar).
+    expect(html).toContain(
+      '<h2 class="text-[17px] font-semibold text-ink-1 leading-snug">Pick an egg</h2><p id="cap" class="text-[13px] text-ink-2 leading-snug">You&#x27;ll both see this egg.</p>',
+    );
+    expect(html).toContain('role="radiogroup" aria-label="Egg color"');
+    const eggs = radios(html);
+    expect(eggs.map((e) => attr(e.tag, 'aria-label'))).toEqual([
+      'Abyssal egg',
+      'Sunset egg',
+      'Forest egg',
+      'Crimson egg',
+      'Blossom egg',
+      'Amethyst egg',
+    ]);
+    expect(eggs.map((e) => attr(e.tag, 'data-color'))).toEqual([...PET_COLOR_IDS]);
+    expect(eggs.map((e) => attr(e.tag, 'aria-checked'))).toEqual(['false', 'false', 'true', 'false', 'false', 'false']);
+    // One tab stop, on the pick; arrow keys move the pick.
+    expect(eggs.map((e) => attr(e.tag, 'tabindex'))).toEqual(['-1', '-1', '0', '-1', '-1', '-1']);
+    // Each egg is a still, decorative egg (the radio names it) in its own
+    // colour, with the colour's name under it.
+    for (const [i, e] of eggs.entries()) {
+      const color = PET_COLOR_IDS[i]!;
+      const svg = e.body.slice(e.body.indexOf('<svg'));
+      expect(svg).toContain('aria-hidden="true"');
+      expect(svg).not.toContain('zk-pet-motion');
+      expect(svg).toContain(`--zk-pet-body:${petPalette(color)!.body};`);
+      expect(svg.match(/<(ellipse|circle|path|polygon|polyline|line)\b/g)).toHaveLength(
+        petShapes({ stage: 'egg', mood: 'happy' }).length + (i === 2 ? 1 : 0), // + the pick's ✓
+      );
+      expect(e.body).toContain(`>${PET_PALETTES[color].label}</span>`);
+      // iOS's egg cards: on the bg2 sheet an egg that isn't picked sits a
+      // step darker (bg1, no edge, ink3 label); the pick is bg3 with an
+      // accent edge and an ink1 label.
+      const cls = attr(e.tag, 'class')!;
+      const label = /<span class="([^"]*)">[^<]*<\/span>/.exec(e.body)![1]!;
+      if (i === 2) {
+        expect(cls).toContain('border-accent/50 bg-bg-3');
+        expect(label).toContain('text-ink-1');
+      } else {
+        expect(cls).toContain('border-transparent bg-bg-1');
+        expect(label).toContain('text-ink-3');
+      }
+    }
+    // Picking another egg moves the check.
+    expect(radios(picker({ picked: 'amethyst' })).map((e) => attr(e.tag, 'aria-checked'))).toEqual([
+      'false',
+      'false',
+      'false',
+      'false',
+      'false',
+      'true',
+    ]);
+  });
+
+  it('sends from Send invite, holds still while sending, and says why a send failed', () => {
+    const idle = picker();
+    expect(idle).toMatch(/>Cancel<\/button>/);
+    expect(idle).toMatch(/>Send invite<\/button>/);
+    expect(idle).not.toContain('role="alert"');
+    expect(idle).not.toContain('disabled=""');
+    // iOS's foot: a full-width pair of 44 px buttons, Cancel on bg3 and
+    // Send invite on the accent.
+    const cancel = /<button type="button" class="([^"]*)">Cancel<\/button>/.exec(idle)![1]!;
+    const send = /<button type="button" class="([^"]*)">Send invite<\/button>/.exec(idle)![1]!;
+    for (const cls of [cancel, send]) expect(cls).toMatch(/^flex-1 min-w-0 min-h-\[44px\] px-3 rounded-\[10px\] /);
+    expect(cancel).toContain('bg-bg-3 text-ink-2');
+    expect(send).toContain('bg-accent');
+    // Sending: the six eggs, Send invite and Cancel too are disabled — the
+    // request already carries the pick, and its answer lands in the picker,
+    // which can't be closed until then (as on iOS and Android).
+    const sending = picker({ busy: true });
+    expect(sending).toMatch(/>Sending…<\/button>/);
+    expect(sending.match(/<button[^>]*disabled=""[^>]*>/g)).toHaveLength(8);
+    expect(sending).toMatch(/<button type="button" disabled="" class="[^"]*">Cancel<\/button>/);
+    // A failed send says why, inside the picker.
+    expect(picker({ error: 'This DM already has a pet.' })).toContain(
+      '<p role="alert" class="text-xs text-red-300 leading-snug">This DM already has a pet.</p>',
+    );
+  });
+
+  it('is for an Adopt on offer: gone once the invite went out, theirs came in, the streak broke or a block', () => {
+    const open: DmPetState = { pet: null, eligible: true, streak: 5, minStreak: 3 };
+    expect(petAdoptOffered(open, SELF)).toBe(true);
+    expect(petAdoptOffered({ ...open, canAct: true }, SELF)).toBe(true);
+    const invited = pet({ status: 'invited', level: 0, stage: 'egg', tasks: [] });
+    // Our invite went out (from here or another device).
+    expect(petAdoptOffered({ ...open, eligible: false, pet: { ...invited, invitedBy: SELF } }, SELF)).toBe(false);
+    // They invited first.
+    expect(petAdoptOffered({ ...open, eligible: false, pet: { ...invited, invitedBy: PEER } }, SELF)).toBe(false);
+    // The streak broke at midnight UTC: the refetch says the DM may not adopt.
+    expect(petAdoptOffered({ ...open, eligible: false, streak: 0 }, SELF)).toBe(false);
+    // A block, a mute or supervision: the bar hides Adopt.
+    expect(petAdoptOffered({ ...open, canAct: false }, SELF)).toBe(false);
+    // Already adopted; nothing loaded; signed out.
+    expect(petAdoptOffered({ ...open, eligible: false, pet: pet() }, SELF)).toBe(false);
+    expect(petAdoptOffered(undefined, SELF)).toBe(false);
+    expect(petAdoptOffered(open, undefined)).toBe(false);
+  });
+
+  it('hands the toast only a send failure that just happened as it closes', () => {
+    // A 409 resyncs the pet, which is what takes Adopt away: that failure
+    // explains the picker closing. One from longer ago was read in it.
+    const at = 1_000_000;
+    const failure = { message: 'This conversation already has a Zekk Pet or an open invite', at };
+    expect(PET_PICK_ERROR_EXPLAINS_MS).toBe(10_000);
+    expect(petPickErrorForToast(failure, at, false)).toBe(failure.message);
+    expect(petPickErrorForToast(failure, at + PET_PICK_ERROR_EXPLAINS_MS, false)).toBe(failure.message);
+    expect(petPickErrorForToast(failure, at + PET_PICK_ERROR_EXPLAINS_MS + 1, false)).toBeNull();
+    expect(petPickErrorForToast(null, at, false)).toBeNull();
+    // Our own invite took Adopt away (the request failed, the invite went
+    // out): nothing to say beside "Waiting for Sam to accept…".
+    expect(petPickErrorForToast(failure, at, true)).toBeNull();
+  });
+
+  it('knows when the pet is our own invite, whatever became of it', () => {
+    const state = (p: PetDTO | null): DmPetState => ({ pet: p, eligible: false, streak: 5, minStreak: 3 });
+    const invited = pet({ status: 'invited', level: 0, stage: 'egg', tasks: [] });
+    expect(petOwnInviteOut(state({ ...invited, invitedBy: SELF }), SELF)).toBe(true);
+    // They accepted it already.
+    expect(petOwnInviteOut(state(pet({ invitedBy: SELF })), SELF)).toBe(true);
+    // Theirs, or none.
+    expect(petOwnInviteOut(state({ ...invited, invitedBy: PEER }), SELF)).toBe(false);
+    expect(petOwnInviteOut(state(null), SELF)).toBe(false);
+    expect(petOwnInviteOut(undefined, SELF)).toBe(false);
+    expect(petOwnInviteOut(state({ ...invited, invitedBy: SELF }), undefined)).toBe(false);
+  });
+
+  it('is a sheet opened from Adopt that closes like the iOS and Android pickers', () => {
+    const modal = readFileSync(new URL('../src/app/ZekkPetModal.tsx', import.meta.url), 'utf8');
+    // Adopt opens the picker for as long as it's up: it never turns into
+    // the invite view, and the card's "nothing left to show" isn't its rule.
+    expect(modal).toContain('const showPicker = adopt;');
+    expect(modal).not.toContain('setPicking');
+    expect(modal).not.toContain('wasPicker');
+    expect(modal).toMatch(/if \(!showPicker && petState && !pet\) onClose\(\);/);
+    // It closes once Adopt is no longer on offer (sent, they invited first,
+    // the streak broke, a block), handing a send failure from just before
+    // to the toast it uncovers — unless our own invite is what's out.
+    expect(modal).toContain('const adoptOffered = petAdoptOffered(petState, selfId);');
+    expect(modal).toContain('const ownInviteOut = petOwnInviteOut(petState, selfId);');
+    expect(modal).toMatch(
+      /if \(!showPicker \|\| adoptOffered\) return;\s*const why = petPickErrorForToast\(pickErrorRef\.current, Date\.now\(\), ownInviteOut\);\s*if \(why\) toasts\.push\(why, 'error'\);\s*onClose\(\);\s*\}, \[showPicker, adoptOffered, ownInviteOut, onClose, toasts\]\);/,
+    );
+    // Starts on the viewer's theme family.
+    expect(modal).toContain('useState<PetColorId>(() => petColorForTheme(getStoredTheme()))');
+    // Send invite runs the usual invite with the pick and keeps its error
+    // inside while it's up; one that has closed since leaves the error to
+    // the toast (quiet when our own invite went out after all). It closes
+    // once the invite went out — unless it has closed already.
+    expect(modal).toMatch(
+      /void run\(\{ kind: 'invite', color: picked \}, \(message\) => \{\s*if \(mountedRef\.current\) \{\s*setPickError\(\{ message, at: Date\.now\(\) \}\);\s*return true;\s*\}[^}]*return ownInviteOutRef\.current;\s*\}\)\.then\(\(ok\) => \{[^}]*if \(ok && mountedRef\.current\) onClose\(\);/,
+    );
+    // What the caller doesn't take goes to the toast.
+    const bar = readFileSync(new URL('../src/app/ZekkPet.tsx', import.meta.url), 'utf8');
+    expect(bar).toContain("if (!onError?.(message)) toasts.push(message, 'error');");
+    // While the invite is on its way nothing closes it: Cancel is disabled
+    // (above), and Escape and the backdrop wait.
+    expect(modal).toContain('const sending = showPicker && busy !== null;');
+    expect(modal).toMatch(/if \(editing\) setEditing\(false\);\s*else if \(!sending\) onClose\(\);/);
+    expect(modal).toContain('onClick={sending ? undefined : onClose}');
+    expect(modal).toContain('busy={sending}');
+    // iOS's compact sheet, not the full-screen card: up from the bottom on
+    // a phone, content-sized, on bg2, no header bar (its title is inside).
+    expect(modal).toContain("showPicker ? 'items-end' : 'items-stretch'");
+    expect(modal).toMatch(/const PICKER_SHEET =\s*'bg-bg-2 [^']*rounded-t-2xl sm:rounded-lg sm:max-w-sm [^']*pb-\[calc\(env\(safe-area-inset-bottom\)\+1rem\)\] sm:pb-4 /);
+    expect(modal).toMatch(/\{showPicker \? \(\s*<PetEggPicker[\s\S]*?\) : \(\s*<>\s*<ModalHeader title=\{title\} onClose=\{onClose\} \/>/);
+    // The dialog is named by what it shows, and described by the caption.
+    expect(modal).toContain("const title = showPicker ? 'Pick an egg' : 'Zekk Pet';");
+    expect(modal).toContain('aria-label={title}');
+    expect(modal).toContain('aria-describedby={showPicker ? pickerCaptionId : undefined}');
+    // Focus: back to Send invite after a failed send.
+    expect(modal).toContain('if (wasBusy.current && !busy) refocusIfDropped(sendRef.current ?? dialogRef.current);');
+    expect(modal).toContain('ref={sendRef}');
+  });
+});
+
+describe('RestClient pet invite', () => {
+  function capture() {
+    const calls: Array<{ url: string; method?: string; contentType: string | null; body: unknown }> = [];
+    const client = new RestClient({
+      baseUrl: 'https://example.test/api',
+      getToken: () => 't',
+      fetch: (async (url: string, init?: RequestInit) => {
+        calls.push({
+          url,
+          method: init?.method,
+          contentType: new Headers(init?.headers).get('content-type'),
+          body: init?.body === undefined ? undefined : JSON.parse(init.body as string),
+        });
+        return new Response(JSON.stringify({ pet: pet({ status: 'invited' }) }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch,
+    } as ConstructorParameters<typeof RestClient>[0]);
+    return { client, calls };
+  }
+
+  it('sends the picked egg, and no body at all without one (as older apps do)', async () => {
+    const { client, calls } = capture();
+    await client.inviteDmPet('42', 'blossom');
+    await client.inviteDmPet('42');
+    expect(calls).toEqual([
+      {
+        url: 'https://example.test/api/users/@me/channels/42/pet/invite',
+        method: 'POST',
+        contentType: 'application/json',
+        body: { color: 'blossom' },
+      },
+      { url: 'https://example.test/api/users/@me/channels/42/pet/invite', method: 'POST', contentType: null, body: undefined },
+    ]);
+  });
+});
+
 // ── State ───────────────────────────────────────────────────────────────
 
 describe('AppState pet map', () => {
@@ -1139,6 +1537,29 @@ describe('AppState pet map', () => {
     expect(on.zekkPetEnabled).toBe(true);
     // Same value → same state object (no re-render).
     expect(appStateReducer(on, { type: 'ZEKK_PET_FEATURE_SET', enabled: true })).toBe(on);
+  });
+
+  it('takes pet colours from READY, only on a server with pets', () => {
+    expect(initialAppState.zekkPetColorEnabled).toBe(false);
+    const both = run({ type: 'ZEKK_PET_FEATURE_SET', enabled: true, color: true });
+    expect(both).toMatchObject({ zekkPetEnabled: true, zekkPetColorEnabled: true });
+    expect(appStateReducer(both, { type: 'ZEKK_PET_FEATURE_SET', enabled: true, color: true })).toBe(both);
+    // A server with pets but no colours (no picker; the invite has no body).
+    expect(appStateReducer(both, { type: 'ZEKK_PET_FEATURE_SET', enabled: true })).toMatchObject({
+      zekkPetEnabled: true,
+      zekkPetColorEnabled: false,
+    });
+    // Colours mean nothing without pets.
+    expect(run({ type: 'ZEKK_PET_FEATURE_SET', enabled: false, color: true }).zekkPetColorEnabled).toBe(false);
+    // Read from every READY next to zekk_pet (both places), and the invite
+    // hands the pick to the REST call.
+    const appState = readFileSync(new URL('../src/state/AppState.tsx', import.meta.url), 'utf8');
+    expect(
+      appState.match(
+        /type: 'ZEKK_PET_FEATURE_SET',\s*enabled: gateway\.getFeatures\(\)\.zekk_pet === true,\s*color: gateway\.getFeatures\(\)\.zekk_pet_color === true,/g,
+      ),
+    ).toHaveLength(2);
+    expect(appState).toContain('await rest.inviteDmPet(channelId, change.color)');
   });
 
   it('stores the fetch, then the live pet keeps the eligibility', () => {

@@ -602,7 +602,7 @@ export async function createSystemMessage(input: {
   mentionedUserIds: bigint[];
   /** Structured metadata for system messages that need it: system_call
    *  carries { missed, durationMs, initiatorId }, system_pet { kind: 'pet',
-   *  event, petName, stage, actorId }, and so on (MessageMetadataJson).
+   *  event, petName, stage, actorId, petColor }, and so on (MessageMetadataJson).
    *  Stored as-is in the JSONB metadata column. */
   metadata?: import('@zekktris/db').MessageMetadataJson | null;
   /** Make the row the channel's newest message (last_message_id) and advance

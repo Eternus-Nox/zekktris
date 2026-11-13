@@ -471,6 +471,11 @@ struct MessageListView: View {
     @State private var showDmSettings = false
     /// The Zekk Pet card (1:1 DMs; the header pet opens it).
     @State private var showPetCard = false
+    /// The egg picker the pet bar's Adopt opens (servers whose pets have
+    /// colours). Hosted here, not in the bar: the bar is only mounted while
+    /// it has something to say, and a sheet attached to it would be torn
+    /// down if it went away mid-pick.
+    @State private var showEggPicker = false
     /// The header is narrower than `narrowHeaderWidth` (see headerShowsSearch).
     @State private var narrowHeader = false
     @State private var showPokePopover = false
@@ -642,7 +647,8 @@ struct MessageListView: View {
         VStack(spacing: 0) {
             header
             if let banner = petBanner {
-                ZekkPetBanner(channelId: channel.id, banner: banner)
+                ZekkPetBanner(channelId: channel.id, banner: banner,
+                              onAdopt: { showEggPicker = true })
             }
 
             if isLocked {
@@ -1082,6 +1088,24 @@ struct MessageListView: View {
         .sheet(isPresented: $showPetCard) {
             ZekkPetCardSheet(channel: channel)
         }
+        // A compact detent sheet like the poke palette's (no NavigationStack:
+        // see ZekkPetEggPicker), tall enough for the eggs, the buttons and a
+        // two-line error. It starts on the viewer's own theme family.
+        .sheet(isPresented: $showEggPicker) {
+            ZekkPetEggPicker(channelId: channel.id,
+                             initial: ZekkPetPalette.colorId(forTheme: store.themeId),
+                             onDone: { showEggPicker = false })
+                .presentationDetents([.height(420)])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(Theme.bg2)
+        }
+        // The picker is for an Adopt on offer: it closes once that goes away
+        // under it — our invite went out (from here or another device), they
+        // invited first, or the streak broke at midnight UTC — or hides
+        // (a block, a mute or supervision: canAct).
+        .onChange(of: adoptOnOffer) { _, offered in
+            if !offered { showEggPicker = false }
+        }
     }
 
     /// The Zekk Pet bar under a 1:1 DM's header (adopt / waiting / invited),
@@ -1091,6 +1115,14 @@ struct MessageListView: View {
                                           peerName: store.dmDisplayTitle(channel)),
               !store.isPetBannerDismissed(channel.id, banner.kind) else { return nil }
         return banner
+    }
+
+    /// The bar shows its Adopt button: an adopt bar, and the server lets this
+    /// viewer act (canAct, read as ZekkPetBanner reads it — the banner's kind
+    /// stays .adopt while a block, a mute or supervision hides the button).
+    /// What the egg picker is for.
+    private var adoptOnOffer: Bool {
+        petBanner?.kind == .adopt && (store.dmPets[channel.id]?.canAct ?? true)
     }
 
     // MARK: Open landing
@@ -1623,7 +1655,13 @@ struct MessageListView: View {
             isSaved: store.isSaved(message.id),
             noticeText: DisappearingTimer.isNotice(message) ? disappearingNoticeText(message)
                 : (ZekkPet.isNotice(message) ? petNoticeText(message) : nil),
-            petThemeId: ZekkPet.isNotice(message) ? store.themeId : nil,
+            // The pet's colour when the notice was posted (its metadata), or
+            // the DM's colour on a notice from before pets had colours —
+            // never the live pet's (a later pet may have another colour) nor
+            // the viewer's theme.
+            petPalette: ZekkPet.isNotice(message)
+                ? ZekkPetPalette.forPet(message.metadata?.petColor, channelId: message.channelId)
+                : nil,
             emojiCatalogVersion: store.emojiCatalogVersion,
             mentionContextVersion: store.mentionContextVersion,
             e2eeUnlockVersion: store.e2eeUnlockVersion
@@ -1813,7 +1851,7 @@ struct MessageListView: View {
                         // An egg while the invite is open, asleep after a
                         // broken streak. Opens the pet card.
                         if let pet {
-                            ZekkPetHeaderButton(pet: pet, themeId: store.themeId,
+                            ZekkPetHeaderButton(pet: pet,
                                                 maskProfane: store.family?.restrictions?.filterProfanity == true) {
                                 showPetCard = true
                             }
@@ -2052,40 +2090,59 @@ struct MessageListView: View {
                     // options (photo/video, file, voice, schedule) — each is
                     // sealed with the channel key — EXCEPT polls, which can't
                     // be E2EE (the server must read options + tally votes).
+                    //
+                    // Laid out as three groups that always read top to bottom
+                    // in this order — what you already have (photo, camera,
+                    // file), what you make here (voice, sticker, poll), and
+                    // sending later — with one outline icon style throughout.
+                    // `.menuOrder(.fixed)` matters: by default iOS flips a menu
+                    // that opens upward from the composer so its FIRST item sits
+                    // nearest the button, which turned this list upside down
+                    // ("Schedule message" on top, "Photo or video" at the
+                    // bottom) and made the order look random.
                     Menu {
-                        Button { showPhotoPicker = true } label: {
-                            Label("Photo or video", systemImage: "photo")
-                        }
-                        // Any document (PDF, zip, audio, a photo or video kept
-                        // in Files…). Web and Android always had a file
-                        // picker; iOS could only send from the photo library.
-                        Button { showFileImporter = true } label: {
-                            Label("File", systemImage: "doc")
-                        }
-                        // Live camera capture (hidden on Simulator / camera-less
-                        // devices). Sends through the same attachment path.
-                        if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                            Button { showCamera = true } label: {
-                                Label("Take photo", systemImage: "camera")
+                        Section {
+                            Button { showPhotoPicker = true } label: {
+                                Label("Photo or video", systemImage: "photo")
+                            }
+                            // Live camera capture (hidden on Simulator / camera-less
+                            // devices). Sends through the same attachment path.
+                            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                                Button { showCamera = true } label: {
+                                    Label("Take photo", systemImage: "camera")
+                                }
+                            }
+                            // Any document (PDF, zip, audio, a photo or video kept
+                            // in Files…). Web and Android always had a file
+                            // picker; iOS could only send from the photo library.
+                            Button { showFileImporter = true } label: {
+                                Label("File", systemImage: "doc")
                             }
                         }
                         // (Pasting an image is now done straight from the iOS
                         // keyboard — the composer field intercepts an image
                         // paste and attaches it. No menu button needed.)
-                        if !channel.isE2EE {
-                            Button { showPollSheet = true } label: { Label("Poll", systemImage: "chart.bar.xaxis") }
+                        Section {
+                            Button { recorder.start() } label: { Label("Voice message", systemImage: "mic") }
+                            if store.selectedGuild != nil {
+                                Button { showStickers = true } label: {
+                                    Label("Sticker", systemImage: SmileySymbol.outline)
+                                }
+                            }
+                            if !channel.isE2EE {
+                                Button { showPollSheet = true } label: { Label("Poll", systemImage: "checklist") }
+                            }
                         }
-                        if store.selectedGuild != nil {
-                            Button { showStickers = true } label: { Label("Sticker", systemImage: "face.smiling") }
+                        Section {
+                            Button { showSchedule = true } label: { Label("Schedule message", systemImage: "clock") }
                         }
-                        Button { recorder.start() } label: { Label("Voice message", systemImage: "mic.fill") }
-                        Button { showSchedule = true } label: { Label("Schedule message", systemImage: "clock") }
                     } label: {
                         Image(systemName: "paperclip")
                             .font(.system(size: 17))
                             .foregroundColor(Theme.ink2)
                             .frame(width: 28, height: 32)
                     }
+                    .menuOrder(.fixed)
 
                     ComposerTextView(
                         text: $draft,
@@ -2095,7 +2152,7 @@ struct MessageListView: View {
                     )
 
                     Button { showEmojiPicker = true } label: {
-                        Image(systemName: "face.smiling")
+                        Image(systemName: SmileySymbol.outline)
                             .font(.system(size: 17))
                             .foregroundColor(Theme.ink2)
                             .frame(width: 28, height: 32)
@@ -2386,7 +2443,7 @@ struct MessageListView: View {
                 if let img = store.emojiImage(for: e) {
                     Image(uiImage: img).resizable().frame(width: 22, height: 22)
                 } else {
-                    Image(systemName: "face.smiling").font(.system(size: 16)).foregroundColor(Theme.ink3).frame(width: 22, height: 22)
+                    Image(systemName: SmileySymbol.outline).font(.system(size: 16)).foregroundColor(Theme.ink3).frame(width: 22, height: 22)
                 }
                 Text(":\(e.name):").font(.zkSans(14, weight: .medium)).foregroundColor(Theme.ink1)
                 Spacer(minLength: 0)
@@ -2868,10 +2925,12 @@ struct MessageRowData: Equatable {
     /// "<name> set …") or a Zekk Pet notice ("You and Sam adopted …"); nil
     /// for every other row.
     var noticeText: String?
-    /// A Zekk Pet notice's glyph colours: the viewer's theme id, so a theme
-    /// switch redraws it (this row is Equatable, so it can't read the static
-    /// Theme.current); nil for every other row.
-    var petThemeId: String?
+    /// A Zekk Pet notice's glyph colours: the pet's colour when the notice
+    /// was posted (ZekkPetPalette.forPet of its metadata.petColor and
+    /// channel), resolved in rowData like everything else here, since this
+    /// row is Equatable and must not read the store or Theme.current; nil
+    /// for every other row.
+    var petPalette: ZekkPetPalette?
     var emojiCatalogVersion: Int
     var mentionContextVersion: Int
     var e2eeUnlockVersion: Int
@@ -3023,14 +3082,17 @@ struct MessageRow: View, Equatable {
     }
 
     /// Something happened to the DM's Zekk Pet — a centered notice with a
-    /// small pet glyph in the viewer's theme ("You and Sam adopted a Zekk
-    /// Pet! 🥚", "Zekk grew into a Kid!"). The line is resolved in rowData
-    /// from the notice's metadata; the content is the server's fallback.
+    /// small pet glyph in the pet's colour at the time, the same for both
+    /// people ("You and Sam adopted a Zekk Pet! 🥚", "Zekk grew into a
+    /// Kid!"). The line and the colour are resolved in rowData from the
+    /// notice's metadata; the content is the server's fallback.
     private var petNoticeRow: some View {
         let art = ZekkPet.noticeArt(event: message.metadata?.event, stage: message.metadata?.stage)
+        let palette = data.petPalette
+            ?? ZekkPetPalette.forPet(message.metadata?.petColor, channelId: message.channelId)
         return HStack(spacing: 6) {
             Spacer(minLength: 0)
-            ZekkPetArt(stage: art.stage, mood: art.mood, themeId: data.petThemeId ?? "default", animated: false)
+            ZekkPetArt(stage: art.stage, mood: art.mood, palette: palette, animated: false)
                 .frame(width: 16, height: 16)
                 .accessibilityHidden(true)
             Text(data.noticeText ?? message.text)
@@ -3099,7 +3161,7 @@ struct MessageRow: View, Equatable {
                 Label("More…", systemImage: "plus.circle")
             }
         } label: {
-            Label("Add reaction", systemImage: "face.smiling")
+            Label("Add reaction", systemImage: SmileySymbol.outline)
         }
         Button { store.setReply(message) } label: {
             Label("Reply", systemImage: "arrowshape.turn.up.left")
@@ -5493,8 +5555,10 @@ struct ProfileCardView: View {
                     }
                 }
 
-                // …then EARNED achievements only (the Settings gallery shows all).
-                AchievementsSection(userId: user.id, earnedOnly: true)
+                // …then EARNED achievements only (the Settings gallery shows all),
+                // behind one closed row as on web: the full grid inline put
+                // Message / Call further down with every few badges earned.
+                AchievementsSection(userId: user.id, earnedOnly: true, collapsible: true)
 
                 // Message / Call / friend actions — only for OTHER users. Your
                 // own card just shows your profile (no "this is you" filler).

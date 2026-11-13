@@ -2,8 +2,14 @@
  * ZekkPetArt
  * ----------
  * The Zekk Pet as an inline SVG, drawn from lib/petArt's primitives (the same
- * geometry the iOS and Android apps draw). Colours are the viewer's theme
- * (--zk-pet-* in index.css), so the pet recolours live on a theme switch.
+ * geometry the iOS and Android apps draw). Colours are the pet's own —
+ * `color`: resolvePetColor(pet.color, pet.channelId) for a pet, a notice's
+ * petColor (resolved the same way) for a notice — so both people see the
+ * same pet whatever their themes. They go on the <svg> as the four
+ * --zk-pet-* custom properties, which every shape inside reads; setting
+ * --c-accent there would do nothing, since the --zk-pet-* defaults are
+ * already worked out on :root. Art drawn without a colour keeps those :root
+ * defaults (index.css), which follow the viewer's theme.
  *
  * Motion is CSS (index.css, `zk-pet-*`): an idle bob, a slow breathe while
  * asleep, a wobble on the egg; reduced-motion settings keep it still. The pet
@@ -17,7 +23,7 @@
 
 import { createElement, type CSSProperties } from 'react';
 import type { PetMood, PetStage } from '@zekktris/client';
-import { petHeartShapes, petMotion, petShapes, type PetShape } from './petArt';
+import { petHeartShapes, petMotion, petPalette, petShapes, type PetShape } from './petArt';
 
 function renderShape(s: PetShape, key: number) {
   const { fill, stroke, ...rest } = s.attrs;
@@ -27,9 +33,24 @@ function renderShape(s: PetShape, key: number) {
   return createElement(s.tag, { key, ...rest, style });
 }
 
+/** The pet's colours as the custom properties its shapes read (a React
+    style object: React sets it through the CSSOM, which the CSP allows).
+    undefined without a known colour, leaving the :root defaults. */
+function petColorStyle(color: string | null | undefined): CSSProperties | undefined {
+  const p = petPalette(color);
+  if (!p) return undefined;
+  return {
+    ['--zk-pet-body']: p.body,
+    ['--zk-pet-belly']: p.belly,
+    ['--zk-pet-outline']: p.outline,
+    ['--zk-pet-accent']: p.accent,
+  } as CSSProperties;
+}
+
 export function ZekkPetArt({
   stage,
   mood,
+  color,
   progress = 0,
   size,
   animated = true,
@@ -40,6 +61,10 @@ export function ZekkPetArt({
 }: {
   stage: PetStage;
   mood: PetMood;
+  /** The pet's own colour (a PetColorId), the same for everyone who sees
+      it. Without one, or with an id this app doesn't know, the art falls
+      back to the :root colours (the viewer's theme). */
+  color?: string | null;
   /** 0–1 towards the next level (cracks the egg near the end). */
   progress?: number;
   /** Rendered width and height in px. */
@@ -63,6 +88,7 @@ export function ZekkPetArt({
       width={size}
       height={size}
       className={`overflow-visible shrink-0 ${className}`}
+      style={petColorStyle(color)}
       {...(title ? { role: 'img', 'aria-label': title } : { 'aria-hidden': true })}
     >
       <g className={motion}>

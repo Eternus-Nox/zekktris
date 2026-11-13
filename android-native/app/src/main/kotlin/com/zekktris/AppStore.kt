@@ -182,6 +182,12 @@ data class AppState(
     // The server has Zekk Pets (READY features.zekk_pet). False before the
     // first READY and on servers without them: no pet UI at all then.
     val zekkPetEnabled: Boolean = false,
+    // Pets have a colour of their own there and the invite takes one (READY
+    // features.zekk_pet_color): Adopt opens the egg picker. Without it Adopt
+    // invites straight away with no colour, as before — an older server would
+    // drop a picked colour without a word. Pets draw in their own colour (or
+    // their DM's) either way.
+    val zekkPetColorEnabled: Boolean = false,
     // 1:1 DM channelId → its Zekk Pet (pet null = none) with whether the DM
     // may adopt one and its streak (absent = not fetched yet). Fed by GET /pet
     // when the DM opens, DM_PET_UPDATE (the pet alone: the eligibility from
@@ -1754,7 +1760,7 @@ class AppStore(
             val gen = dmPetGen[channelId] ?: 0
             val error = try {
                 val pet = when (change) {
-                    ZekkPet.Change.Invite -> api.inviteDmPet(channelId)
+                    is ZekkPet.Change.Invite -> api.inviteDmPet(channelId, change.color)
                     ZekkPet.Change.Accept -> api.acceptDmPet(channelId)
                     ZekkPet.Change.Decline -> api.declineDmPet(channelId)
                     is ZekkPet.Change.Rename -> api.renameDmPet(channelId, change.name)
@@ -5130,13 +5136,17 @@ class AppStore(
         }
         val obj = d?.jsonObject ?: return
         // Capabilities come with every READY (a RESUMED keeps the last): a
-        // server without Zekk Pets shows no pet UI. On a reconnect the open
-        // DM's pet is refetched — a DM_PET_UPDATE may have been missed, and a
-        // DM selected before the first READY couldn't fetch it yet.
-        val petsOn = obj["features"]
+        // server without Zekk Pets shows no pet UI, and one without pet
+        // colours no egg picker. On a reconnect the open DM's pet is
+        // refetched — a DM_PET_UPDATE may have been missed, and a DM selected
+        // before the first READY couldn't fetch it yet.
+        val features = obj["features"]
             ?.let { runCatching { api.json.decodeFromJsonElement<com.zekktris.data.model.ReadyFeatures>(it) }.getOrNull() }
-            ?.zekkPet == true
-        if (_state.value.zekkPetEnabled != petsOn) _state.update { it.copy(zekkPetEnabled = petsOn) }
+        val petsOn = features?.zekkPet == true
+        val petColorsOn = features?.zekkPetColor == true
+        if (_state.value.zekkPetEnabled != petsOn || _state.value.zekkPetColorEnabled != petColorsOn) {
+            _state.update { it.copy(zekkPetEnabled = petsOn, zekkPetColorEnabled = petColorsOn) }
+        }
         _state.value.selectedChannelId?.let { refreshDmPet(it) }
         // Our chosen status may have been changed on another device while this
         // one was away. Only the choice: READY's `effectiveStatus` can predate

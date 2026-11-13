@@ -60,6 +60,7 @@ const { createSession } = await import('../src/auth/sessions');
 const { signAccessToken } = await import('../src/auth/tokens');
 const { errorHandler } = await import('../src/middleware');
 const { authRouter } = await import('../src/routes/auth');
+const { ACHIEVEMENT_CATALOG } = await import('../src/services/achievements');
 
 const dbReady = await probeDb();
 if (!dbReady) {
@@ -342,6 +343,14 @@ describe.runIf(dbReady)('first admin', () => {
       expect(body.user.isAdmin).not.toBe(true);
       expect(await adminCount()).toBe(0);
     });
+
+    it('a new account starts seeded at the current achievement catalog (no silent backfill to swallow its first unlock)', async () => {
+      const res = await register('newcomer@example.test', 'newcomer');
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { user: { id: string } };
+      const u = await row(BigInt(body.user.id));
+      expect([u.achievementsSeeded, u.achievementsCatalog]).toEqual([true, ACHIEVEMENT_CATALOG]);
+    });
   });
 
   describe('createAdmin (install.sh / scripts/create-admin.ts)', () => {
@@ -357,6 +366,7 @@ describe.runIf(dbReady)('first admin', () => {
       expect(u.emailVerified).toBe(true);
       expect(u.displayName).toBe('Jordan.reyes_chat');
       expect(u.achievementsSeeded).toBe(true);
+      expect(u.achievementsCatalog).toBe(ACHIEVEMENT_CATALOG);
       expect(u.dateOfBirth).toBeNull();
       expect(u.dobLocked).toBe(false); // the app asks for it once
       expect(u.passwordHash).not.toContain('operator-chosen-pw');

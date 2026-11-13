@@ -238,9 +238,12 @@ export interface VoteInput {
  * composite PK collides, we swallow the conflict).
  *
  * Returns the channelId so the caller can broadcast a MESSAGE_UPDATE
- * with refreshed tallies.
+ * with refreshed tallies, and the poll's author (its message's), whose
+ * achievements a vote can move.
  */
-export async function vote(input: VoteInput): Promise<{ channelId: bigint; messageId: bigint }> {
+export async function vote(
+  input: VoteInput,
+): Promise<{ channelId: bigint; messageId: bigint; authorId: bigint | null }> {
   return db.transaction(async (tx) => {
     // Serialize concurrent votes by the SAME user on the SAME poll. Without
     // this, a single-choice poll's clear-then-insert races under READ
@@ -338,7 +341,7 @@ export async function vote(input: VoteInput): Promise<{ channelId: bigint; messa
       })
       .onConflictDoNothing();
 
-    return { channelId: row.message.channelId, messageId: row.message.id };
+    return { channelId: row.message.channelId, messageId: row.message.id, authorId: row.message.authorId };
   });
 }
 

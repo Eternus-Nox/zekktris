@@ -38,6 +38,7 @@ import { USERNAME_MAX_LENGTH, USERNAME_MIN_LENGTH } from '@zekktris/shared/const
 import { db, schema, isUniqueViolation } from '../db';
 import { nextSnowflake } from '../snowflake';
 import { hashPassword } from '../auth/passwords';
+import { ACHIEVEMENT_CATALOG } from '../services/achievements';
 import {
   emailSchema,
   passwordSchema,
@@ -184,6 +185,7 @@ export async function createAdmin(input: CreateAdminInput): Promise<CreateAdminR
         dobLocked: false,
         // Same as a signup: a brand-new account has nothing earned yet.
         achievementsSeeded: true,
+        achievementsCatalog: ACHIEVEMENT_CATALOG,
       });
       return { outcome: 'created', userId: id, email, username };
     } catch (err) {

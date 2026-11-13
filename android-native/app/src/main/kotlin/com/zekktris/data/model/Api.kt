@@ -462,6 +462,14 @@ data class DmChannelSettings(
 @Serializable data class DmPetWrap(val pet: PetDTO? = null)
 @Serializable data class PetRenameBody(val name: String)
 
+/** POST …/pet/invite's body: the egg the inviter picked (a pet colour id).
+ *  Sent only with a colour — no colour is no body at all
+ *  ([com.zekktris.data.ApiClient.inviteDmPet]). NO DEFAULT, deliberately:
+ *  with encodeDefaults off, a value equal to its default is dropped from
+ *  the request even when passed explicitly (the [DeviceTokenBody] trap),
+ *  and the server would quietly give the pet its DM's colour instead. */
+@Serializable data class PetInviteBody(val color: String)
+
 // ── Account security ─────────────────────────────────────────────────────────
 @Serializable data class ChangePasswordBody(val currentPassword: String, val newPassword: String)
 @Serializable data class ChangeUsernameBody(val username: String, val currentPassword: String)

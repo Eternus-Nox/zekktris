@@ -6636,7 +6636,7 @@ struct GuildSettingsView: View {
             settingsRow("Roles", icon: "shield.lefthalf.filled") { showRoles = true }
             settingsRow("Reaction Roles", icon: "wand.and.stars") { showReactionRoles = true }
             if store.canManageEmojis {
-                settingsRow("Emoji", icon: "face.smiling") { showEmojiMgr = true }
+                settingsRow("Emoji", icon: SmileySymbol.outline) { showEmojiMgr = true }
                 settingsRow("Stickers", icon: "rectangle.stack.fill") { showStickerMgr = true }
             }
             settingsRow("Members", icon: "person.2.fill") { showMembers = true }
@@ -8501,7 +8501,7 @@ struct StorageItemsView: View {
     private func icon(_ item: StorageItem) -> String {
         switch item.category {
         case "avatars", "banners": return "person.crop.square.fill"
-        case "emojis", "stickers": return "face.smiling.fill"
+        case "emojis", "stickers": return SmileySymbol.filled
         default: return "doc.fill"
         }
     }
@@ -10755,7 +10755,8 @@ private struct FlowWords: View {
 // Achievements — badge grid for profiles.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Roman numeral (1→I … 4→IV; covers our max 4 tiers, handles more if needed).
+/// Roman numeral (1→I, 4→IV, 5→V, …; any count — Zekk Keeper has five tiers,
+/// I…V).
 func zkRoman(_ n: Int) -> String {
     guard n > 0 else { return "" }
     let vals: [(Int, String)] = [(10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")]
@@ -10857,10 +10858,20 @@ struct AchievementsSection: View {
     let userId: String
     /// Profile cards show only EARNED badges; the Settings gallery shows all.
     var earnedOnly: Bool = false
+    /// Profile card: the earned badges sit behind one closed row (the badge
+    /// glyph, "Achievements", how many, a chevron), opened on tap — web's
+    /// collapsible AchievementsShelf. An inline grid grew a row with every
+    /// few badges and pushed Message / Call further down the card. Closed,
+    /// it's as tall as the card's buttons. Only for the earned grid: still
+    /// loading, a load error and "No achievements unlocked yet." look as
+    /// before.
+    var collapsible: Bool = false
     @State private var achievements: [Achievement] = []
     @State private var loaded = false
     @State private var loadError: String?
     @State private var detail: Achievement?
+    /// collapsible: the earned grid is open.
+    @State private var expanded = false
 
     private var earned: [Achievement] { achievements.filter { $0.isEarned } }
     private var locked: [Achievement] { achievements.filter { !$0.isEarned } }
@@ -10872,14 +10883,20 @@ struct AchievementsSection: View {
             if !earned.isEmpty || (!earnedOnly && !locked.isEmpty) {
                 VStack(alignment: .leading, spacing: 8) {
                     if !earned.isEmpty {
-                        Text("ACHIEVEMENTS")
-                            .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
-                            ForEach(earned) { a in
-                                Button { detail = a } label: {
-                                    AchievementBadge(achievement: a, numeral: numerals[a.id])
+                        if collapsible {
+                            disclosureRow
+                        } else {
+                            Text("ACHIEVEMENTS")
+                                .font(.zkSans(11, weight: .bold)).foregroundColor(Theme.ink3)
+                        }
+                        if !collapsible || expanded {
+                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+                                ForEach(earned) { a in
+                                    Button { detail = a } label: {
+                                        AchievementBadge(achievement: a, numeral: numerals[a.id])
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -10933,6 +10950,43 @@ struct AchievementsSection: View {
         .sheet(item: $detail) { a in
             AchievementDetailView(achievement: a, numeral: numerals[a.id])
         }
+    }
+
+    /// The closed row (collapsible), built like the card's secondary buttons
+    /// (15 pt medium, 11 pt vertical padding, bg3, radius 10) so it's as tall
+    /// as they are: the shelf's default badge glyph and "Achievements", then
+    /// how many and a chevron that turns over while open. Opens and closes
+    /// the grid under it in place.
+    private var disclosureRow: some View {
+        Button { expanded.toggle() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "rosette")
+                    .font(.system(size: 14))
+                    .foregroundColor(Theme.ink1)
+                Text("Achievements")
+                    .font(.zkSans(15, weight: .medium))
+                    .foregroundColor(Theme.ink1)
+                Spacer(minLength: 8)
+                Text("\(earned.count)")
+                    .font(.zkMono(12, weight: .semibold))
+                    .foregroundColor(Theme.ink3)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(Theme.ink3)
+                    .rotationEffect(.degrees(expanded ? 180 : 0))
+                    .animation(.easeInOut(duration: 0.15), value: expanded)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .frame(maxWidth: .infinity)
+            .background(Theme.bg3)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Achievements")
+        .accessibilityValue("\(earned.count)")
+        .accessibilityHint(expanded ? "Hides the badges" : "Shows the badges")
     }
 }
 

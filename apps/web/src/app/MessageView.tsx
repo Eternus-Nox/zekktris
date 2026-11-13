@@ -131,6 +131,7 @@ export function MessageView({
   // The DM's Zekk Pet (undefined until fetched below; 1:1 DMs on a server
   // with the feature only).
   const zekkPetEnabled = useAppStateSelector((v) => v.state.zekkPetEnabled);
+  const zekkPetColorEnabled = useAppStateSelector((v) => v.state.zekkPetColorEnabled);
   const loadDmPet = useAppStateSelector((v) => v.loadDmPet);
   const petState = useAppStateSelector((v) => v.state.dmPets[channel.id]);
   const clearPokePill = useAppStateSelector((v) => v.clearPokePill);
@@ -659,8 +660,11 @@ export function MessageView({
   // of those.
   const petsHere = isDM1to1 && zekkPetEnabled;
   const pet = petsHere ? (petState?.pet ?? null) : null;
-  const [petOpen, setPetOpen] = useState(false);
+  // The pet card: 'card' from the header pet, 'adopt' from the bar's Adopt
+  // on a server with pet colours (the card opens on its egg picker).
+  const [petOpen, setPetOpen] = useState<false | 'card' | 'adopt'>(false);
   const closePet = useCallback(() => setPetOpen(false), []);
+  const openPetPicker = useCallback(() => setPetOpen('adopt'), []);
   useEffect(() => {
     setPetOpen(false);
   }, [channel.id]);
@@ -910,7 +914,7 @@ export function MessageView({
               <DmStreakPill streak={channel.streak} />
             )}
             {/* Zekk Pet next to the streak (an egg while the invite is open). */}
-            {pet && <DmPetButton pet={pet} onOpen={() => setPetOpen(true)} />}
+            {pet && <DmPetButton pet={pet} onOpen={() => setPetOpen('card')} />}
             {/* Disappearing-messages indicator while the timer is on. Next
                 to a pet it's only the stopwatch on a phone: with the streak,
                 the pet, the timer text and four actions the row overflows a
@@ -1108,19 +1112,22 @@ export function MessageView({
               selfId={user.id}
               onClose={closePet}
               returnFocus={focusDmSettingsToggle}
+              adopt={petOpen === 'adopt'}
             />
           </Suspense>
         )}
       </header>
       {/* Zekk Pet adopt / invite bar. Keyed by channel so a pending action
           never carries over to another DM. When it goes while focused,
-          focus moves to the gear, as it does from the pet card. */}
+          focus moves to the gear, as it does from the pet card. With pet
+          colours, Adopt opens the egg picker rather than inviting. */}
       {petsHere && petBannerView && (
         <PetAdoptBanner
           key={channel.id}
           channelId={channel.id}
           banner={petBannerView}
           returnFocus={focusDmSettingsToggle}
+          onAdopt={zekkPetColorEnabled ? openPetPicker : undefined}
         />
       )}
 

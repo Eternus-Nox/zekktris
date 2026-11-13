@@ -328,6 +328,13 @@ struct MessageMetadata: Codable, Hashable {
     var petName: String?
     var stage: String?
     var actorId: String?
+    /// kind == "pet": the pet's colour when the notice was posted (a
+    /// ZekkPetPalette colour id), so its glyph keeps the egg it showed then.
+    /// Absent on notices from before pets had colours and from older
+    /// servers: drawn in ZekkPetPalette.forPet(petColor, channelId:
+    /// message.channelId), the DM's colour. A NEW key, always a JSON string
+    /// (a different type under it would fail the whole page decode).
+    var petColor: String?
 }
 
 /// Poke/nudge variants — emoji + verb. Mirror of the server POKE_VARIANTS
@@ -891,6 +898,12 @@ struct PetDTO: Decodable, Hashable {
     /// Who sent the adoption invite.
     var invitedBy: String?
     var name: String
+    /// The pet's own colour (a ZekkPetPalette colour id), the same for both
+    /// people. nil from a server without READY features.zekk_pet_color, and
+    /// possibly an id this build doesn't know from a newer one: draw with
+    /// ZekkPetPalette.forPet(color, channelId: channelId), never the viewer's
+    /// theme.
+    var color: String?
     var level: Int
     var stage: PetStage
     /// Total points earned.
@@ -915,7 +928,7 @@ struct PetDTO: Decodable, Hashable {
     var dayEndsAt: String
 
     private enum CodingKeys: String, CodingKey {
-        case channelId, status, invitedBy, name, level, stage, points, levelFloor, nextLevelAt
+        case channelId, status, invitedBy, name, color, level, stage, points, levelFloor, nextLevelAt
         case mood, tasks, fedToday, lastFedDay, wakeBy, adoptedAt, today, dayEndsAt
     }
 
@@ -926,6 +939,10 @@ struct PetDTO: Decodable, Hashable {
         invitedBy = try? c.decode(String.self, forKey: .invitedBy)
         let rawName = (try? c.decode(String.self, forKey: .name)) ?? ""
         name = rawName.isEmpty ? ZekkPet.defaultName : rawName
+        // Kept as sent, even an id this build doesn't know: the drawing
+        // resolves it (ZekkPetPalette.forPet), and a colour change still
+        // reads as a change to the pet.
+        color = try? c.decode(String.self, forKey: .color)
         level = max(0, (try? c.decode(Int.self, forKey: .level)) ?? 0)
         // An unknown stage (a newer server's) follows from the level.
         let rawStage = (try? c.decode(String.self, forKey: .stage)) ?? ""
@@ -2626,7 +2643,13 @@ struct Achievement: Codable, Identifiable, Hashable {
 
     /// SF Symbol for this achievement, keyed by id prefix. Mirrors web's
     /// `badgeIcon` mapping (AchievementsShelf.tsx) with native equivalents,
-    /// so the same achievement reads the same on both clients.
+    /// so the same achievement reads the same on both clients. A family's
+    /// rungs are `family_<goal>` (achievements.ts), so families match by
+    /// prefix and every rung gets the family's glyph. The first match wins,
+    /// so a more specific prefix goes above any shorter one its ids also
+    /// start with ('founding_member' doesn't start with 'founder', so those
+    /// two are safe in either order). Symbols must exist on iOS 17.0: a
+    /// missing name draws nothing, with no compile error.
     var sfSymbol: String {
         switch true {
         case id.hasPrefix("veteran"): return "calendar.badge.checkmark"
@@ -2635,19 +2658,35 @@ struct Achievement: Codable, Identifiable, Hashable {
         case id == "night_owl": return "moon.stars.fill"
         case id == "first_responder": return "bolt.fill"
         case id == "marathon": return "flame.fill"
-        case id == "founder": return "building.columns.fill"
+        case id.hasPrefix("founding_member"): return "leaf.fill"
+        case id.hasPrefix("founder"): return "building.columns.fill"
         case id == "voice_of_people": return "mic.fill"
         case id == "locked_in": return "key.fill"
         case id == "double_locked": return "lock.shield.fill"
         case id == "tagged": return "tag.fill"
         case id == "framed": return "photo.circle.fill"
         case id == "signature_look": return "sparkles"
-        case id == "welcome_committee": return "hand.wave.fill"
+        case id.hasPrefix("welcome_committee"): return "hand.wave.fill"
         case id == "off_the_record": return "lock.fill"
         case id == "discovered": return "safari.fill"
         case id == "guardian_angel": return "figure.and.child.holdinghands"
         case id == "first_contact": return "antenna.radiowaves.left.and.right"
-        case id == "event_horizon": return "circle.circle.fill"
+        case id.hasPrefix("event_horizon"): return "circle.circle.fill"
+        case id.hasPrefix("pet_keeper"): return "pawprint.fill"
+        // A sun, not sparkles: sparkles is Signature Look's glyph above, and
+        // the two tiles must be told apart.
+        case id.hasPrefix("pet_perfect_day"): return "sun.max.fill"
+        case id.hasPrefix("kindred"): return "heart.fill"
+        case id.hasPrefix("inseparable"): return "flame.fill"
+        case id.hasPrefix("regular"): return "calendar"
+        case id.hasPrefix("vanishing_act"): return "timer"
+        // Not "face.smiling.fill": since iOS 26 that draws a thin outline in
+        // this dark-only app (see SmileySymbol).
+        case id.hasPrefix("crowd_pleaser"): return SmileySymbol.filled
+        case id.hasPrefix("pollster"): return "chart.bar.fill"
+        case id.hasPrefix("ring_ring"): return "phone.fill"
+        case id.hasPrefix("poke_sent"): return "hand.point.right.fill"
+        case id.hasPrefix("poke_received"): return "hand.tap.fill"
         default: return "rosette"
         }
     }

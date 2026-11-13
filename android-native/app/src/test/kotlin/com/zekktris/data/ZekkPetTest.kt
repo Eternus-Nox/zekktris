@@ -44,8 +44,10 @@ class ZekkPetTest {
         wakeBy: String? = null,
         today: String = "2026-11-11",
         dayEndsAt: String = "2026-11-12T00:00:00.000Z",
+        color: String? = null,
+        channelId: String = "100",
     ) = PetDTO(
-        channelId = "100", status = status, invitedBy = invitedBy, name = name, level = level, stage = stage,
+        channelId = channelId, status = status, invitedBy = invitedBy, name = name, color = color, level = level, stage = stage,
         points = points, levelFloor = levelFloor, nextLevelAt = nextLevelAt, mood = mood, tasks = tasks,
         fedToday = mood == "happy" || mood == "thriving", lastFedDay = lastFedDay, wakeBy = wakeBy,
         adoptedAt = "2026-11-01T12:00:00.000Z", today = today, dayEndsAt = dayEndsAt,
@@ -439,10 +441,37 @@ class ZekkPetTest {
     }
 
     @Test fun failureWords() {
-        assertEquals("Couldn't send the invite.", ZekkPet.failedMessage(ZekkPet.Change.Invite))
+        assertEquals("Couldn't send the invite.", ZekkPet.failedMessage(ZekkPet.Change.Invite()))
+        assertEquals("Couldn't send the invite.", ZekkPet.failedMessage(ZekkPet.Change.Invite("sunset")))
         assertEquals("Couldn't adopt the pet.", ZekkPet.failedMessage(ZekkPet.Change.Accept))
         assertEquals("Couldn't answer the invite.", ZekkPet.failedMessage(ZekkPet.Change.Decline))
         assertEquals("Couldn't rename the pet.", ZekkPet.failedMessage(ZekkPet.Change.Rename("Biscuit")))
+    }
+
+    /** An invite carries the egg picked for it (none from a server without
+     *  colours), so it is a class: the bar and the picker spot one in
+     *  flight with `is`, since an `==` against a bare Invite() misses one
+     *  that carries a colour. */
+    @Test fun anInviteCarriesItsColour() {
+        assertNull(ZekkPet.Change.Invite().color)
+        assertEquals("sunset", ZekkPet.Change.Invite("sunset").color)
+        assertEquals(ZekkPet.Change.Invite("sunset"), ZekkPet.Change.Invite("sunset"))
+        assertNotEquals(ZekkPet.Change.Invite(), ZekkPet.Change.Invite("sunset"))
+        val inFlight: ZekkPet.Change = ZekkPet.Change.Invite("forest")
+        assertTrue(inFlight is ZekkPet.Change.Invite)
+        val others: List<ZekkPet.Change> = listOf(ZekkPet.Change.Accept, ZekkPet.Change.Decline, ZekkPet.Change.Rename("Biscuit"))
+        assertTrue(others.none { it is ZekkPet.Change.Invite })
+    }
+
+    /** A pet draws in its own colour, the same for both people; without one
+     *  this app knows (an older server, a newer colour) in its DM's. */
+    @Test fun aPetDrawsInItsOwnColour() {
+        assertEquals("sunset", ZekkPet.artColor(pet(color = "sunset")))
+        assertEquals("amethyst", ZekkPet.artColor(pet(color = "amethyst", status = "invited")))
+        // DM "100" → blossom, "102" → default (mod 6).
+        assertEquals("blossom", ZekkPet.artColor(pet(color = null)))
+        assertEquals("blossom", ZekkPet.artColor(pet(color = "teal")))
+        assertEquals("default", ZekkPet.artColor(pet(color = null, channelId = "102")))
     }
 
     // ── The in-chat notice ──────────────────────────────────────────────────
@@ -478,11 +507,12 @@ class ZekkPetTest {
         stage: String? = "kid",
         content: String = "Fallback text.",
         kind: String? = "pet",
+        petColor: String? = null,
     ) = Message(
         id = "900", channelId = "100", createdAt = "2026-11-11T10:00:00Z", authorId = authorId,
         author = authorId?.let { PublicUser(id = it, username = "author$it") },
         type = "system_pet", content = content,
-        metadata = MessageMetadata(kind = kind, event = event, petName = petName, stage = stage, actorId = actorId),
+        metadata = MessageMetadata(kind = kind, event = event, petName = petName, stage = stage, actorId = actorId, petColor = petColor),
     )
 
     @Test fun noticeLineFromMetadata() {
@@ -571,6 +601,21 @@ class ZekkPetTest {
         assertEquals(Stage.Baby to Mood.Happy, ZekkPet.noticeArt(notice("hatched", actorId = "1", stage = "baby")))
         assertEquals(Stage.Egg to Mood.Happy, ZekkPet.noticeArt(notice("adopted", actorId = "1", stage = "mythic")))
         assertEquals(Stage.Egg to Mood.Happy, ZekkPet.noticeArt(notice(null, actorId = null, kind = null)))
+    }
+
+    /** The glyph keeps the colour the pet had when the notice was posted;
+     *  an older notice (or an unknown colour) takes the DM's ("100" →
+     *  blossom). It never reads the live pet, which would recolour history. */
+    @Test fun noticeGlyphColour() {
+        assertEquals("crimson", ZekkPet.noticeColor(notice("hatched", actorId = "1", petColor = "crimson")))
+        assertEquals("forest", ZekkPet.noticeColor(notice("ran_away", actorId = null, petColor = "forest")))
+        assertEquals("blossom", ZekkPet.noticeColor(notice("hatched", actorId = "1")))
+        assertEquals("blossom", ZekkPet.noticeColor(notice("hatched", actorId = "1", petColor = "teal")))
+        // Not pet metadata: nothing to read the colour from.
+        assertEquals("blossom", ZekkPet.noticeColor(notice(null, actorId = null, kind = null, petColor = "crimson")))
+        // No metadata at all: the DM's ("105" → crimson).
+        val bare = Message(id = "1", channelId = "105", createdAt = "2026-11-11T10:00:00Z", type = "system_pet")
+        assertEquals("crimson", ZekkPet.noticeColor(bare))
     }
 
     // ── Refresh and the gateway ─────────────────────────────────────────────

@@ -351,7 +351,9 @@ function DMSearchPetResult({ message, onClick }: { message: Message; onClick: ()
         className="w-full text-left px-3 py-2 hover:bg-bg-3 transition-colors flex items-start gap-2"
       >
         <div className="w-7 h-7 flex items-center justify-center shrink-0">
-          <ZekkPetArt stage={art.stage} mood={art.mood} size={16} animated={false} />
+          {/* The notice's own colour: the hit may come from a closed DM,
+              with no pet loaded to ask. */}
+          <ZekkPetArt stage={art.stage} mood={art.mood} size={16} animated={false} color={art.color} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline justify-between gap-2">

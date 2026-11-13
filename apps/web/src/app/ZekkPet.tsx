@@ -8,6 +8,8 @@
  *     invite is open, the asleep face when asleep). Opens the pet card.
  *   - PetAdoptBanner: the slim bar under the header — "Adopt" when the DM
  *     may adopt, "Cancel" on our open invite, "Accept" / "Not now" on theirs.
+ *     On a server with pet colours, Adopt opens the egg picker (a sheet
+ *     ZekkPetModal hosts) instead of inviting straight away.
  *     Dismissible for the session (per DM and per kind of bar, so hiding the
  *     adopt prompt doesn't also hide a later invite; cleared on sign-out —
  *     lib/petBannerDismissals).
@@ -19,7 +21,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ApiError, type PetDTO } from '@zekktris/client';
+import { ApiError, resolvePetColor, type PetDTO } from '@zekktris/client';
 import { ZekkPetArt } from '../lib/ZekkPetArt';
 import { X } from '../lib/icons';
 import { dismissPetBanner, usePetBannerDismissed } from '../lib/petBannerDismissals';
@@ -44,7 +46,8 @@ export function usePetDisplayName(name: string): string {
   return petDisplayName(name, filterProfanity);
 }
 
-/** The header pet. Same 28 px as the DM avatar, on the theme's chip surface. */
+/** The header pet. Same 28 px as the DM avatar, on the theme's chip surface;
+    the pet itself is in its own colour, which both people see. */
 export function DmPetButton({ pet, onOpen }: { pet: PetDTO; onOpen: () => void }) {
   const mood = petMoodView(pet);
   const name = usePetDisplayName(pet.name);
@@ -61,6 +64,7 @@ export function DmPetButton({ pet, onOpen }: { pet: PetDTO; onOpen: () => void }
       <ZekkPetArt
         stage={pet.status === 'invited' ? 'egg' : pet.stage}
         mood={pet.mood}
+        color={resolvePetColor(pet.color, pet.channelId)}
         progress={petArtProgress(pet)}
         size={28}
       />
@@ -123,8 +127,11 @@ const FAILED: Record<DmPetChange['kind'], string> = {
   rename: "Couldn't rename the pet.",
 };
 
-/** Run a pet change with one-at-a-time busy state and an error toast.
-    Resolves true when the server took it. */
+/** Run a pet change with one-at-a-time busy state and an error toast. With
+    `onError` the caller sees a failure first and returns whether it took it
+    (the egg picker shows it inside itself while it's up); one it doesn't
+    take — a picker that has closed since can't show it — goes to the toast.
+    Resolves true when the server took the change. */
 export function usePetActions(channelId: string) {
   const changeDmPet = useAppStateSelector((v) => v.changeDmPet);
   const toasts = useToasts();
@@ -139,7 +146,7 @@ export function usePetActions(channelId: string) {
   }, []);
 
   const run = useCallback(
-    async (change: DmPetChange): Promise<boolean> => {
+    async (change: DmPetChange, onError?: (message: string) => boolean): Promise<boolean> => {
       if (busyRef.current) return false;
       busyRef.current = true;
       setBusy(change.kind);
@@ -147,7 +154,8 @@ export function usePetActions(channelId: string) {
         await changeDmPet(channelId, change);
         return true;
       } catch (e) {
-        toasts.push(e instanceof ApiError ? e.message : FAILED[change.kind], 'error');
+        const message = e instanceof ApiError ? e.message : FAILED[change.kind];
+        if (!onError?.(message)) toasts.push(message, 'error');
         return false;
       } finally {
         busyRef.current = false;
@@ -169,11 +177,14 @@ const SECONDARY =
     Without `canAct` (a block, a mute, supervision, or the other person left)
     Adopt and Accept hide: they would only fail. So does Accept on a
     `locked` invite (the streak is under the minimum: PetBanner.locked).
+    With `onAdopt` (a server with pet colours) Adopt calls it to open the
+    egg picker; without it Adopt sends the invite itself, with no colour.
     Each button names its change in data-action (barButton). */
 export function PetInviteActions({
   kind,
   busy,
   onRun,
+  onAdopt,
   canAct = true,
   locked = false,
   buttonRef,
@@ -181,6 +192,7 @@ export function PetInviteActions({
   kind: PetBannerKind;
   busy: DmPetChange['kind'] | null;
   onRun: (change: DmPetChange) => void;
+  onAdopt?: () => void;
   canAct?: boolean;
   locked?: boolean;
   /** Set on every button: React calls it with null just before it removes one. */
@@ -195,7 +207,7 @@ export function PetInviteActions({
         data-action="invite"
         className={PRIMARY}
         disabled={busy !== null}
-        onClick={() => onRun({ kind: 'invite' })}
+        onClick={() => (onAdopt ? onAdopt() : onRun({ kind: 'invite' }))}
       >
         {busy === 'invite' ? 'Inviting…' : 'Adopt'}
       </button>
@@ -249,12 +261,16 @@ export function PetAdoptBanner({
   channelId,
   banner,
   returnFocus,
+  onAdopt,
 }: {
   channelId: string;
   banner: PetBanner;
   /** Focuses something that stays on the page, for when the bar goes away
       with focus on one of its buttons. */
   returnFocus?: () => void;
+  /** Opens the egg picker (servers with pet colours); without it Adopt
+      invites straight away. */
+  onAdopt?: () => void;
 }) {
   const key = `${channelId}:${banner.kind}`;
   const hidden = usePetBannerDismissed(key);
@@ -317,6 +333,7 @@ export function PetAdoptBanner({
         canAct={canAct}
         locked={banner.locked}
         onRun={(c) => void run(c)}
+        onAdopt={onAdopt}
         buttonRef={watchButton}
       />
       <button

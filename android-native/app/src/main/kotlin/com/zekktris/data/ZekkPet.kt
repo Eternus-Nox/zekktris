@@ -257,6 +257,11 @@ object ZekkPet {
     /** Progress towards the next level, for the art (the egg cracks near the end). */
     fun artProgress(pet: PetDTO): Float = levelProgress(pet).fraction
 
+    /** The colour to draw [pet] in (a pet colour id): its own when it's one
+     *  this app knows, else its DM's ([ZekkPetArt.resolveColor]). The same
+     *  for both people, whatever theme each of them uses. */
+    fun artColor(pet: PetDTO): String = ZekkPetArt.resolveColor(pet.color, pet.channelId)
+
     /** Which chips the DM header's title line shows beside the name. */
     data class HeaderChips(val streak: Boolean, val timer: Boolean, val pet: Boolean)
 
@@ -360,9 +365,15 @@ object ZekkPet {
 
     // ── Changes ───────────────────────────────────────────────────────────
 
-    /** What the adopt bar, the pet card and the rename dialog ask the server for. */
+    /** What the adopt bar, the egg picker, the pet card and the rename
+     *  dialog ask the server for. */
     sealed interface Change {
-        data object Invite : Change
+        /** [color]: the egg picked for the pet (a pet colour id), or null to
+         *  invite with no colour (the server then gives the pet its DM's
+         *  colour) — what a server without colours always gets. A class, not
+         *  an object: test for it with `is`, as an `==` against a fresh
+         *  `Invite()` never matches one carrying a colour. */
+        data class Invite(val color: String? = null) : Change
         data object Accept : Change
         /** The invitee declines, or the inviter cancels. */
         data object Decline : Change
@@ -371,7 +382,7 @@ object ZekkPet {
 
     /** Shown when a change fails without a reason from the server. */
     fun failedMessage(change: Change): String = when (change) {
-        Change.Invite -> "Couldn't send the invite."
+        is Change.Invite -> "Couldn't send the invite."
         Change.Accept -> "Couldn't adopt the pet."
         Change.Decline -> "Couldn't answer the invite."
         is Change.Rename -> "Couldn't rename the pet."
@@ -475,6 +486,13 @@ object ZekkPet {
         }
         return Stage.of(md.stage) to mood
     }
+
+    /** The colour of the small pet beside a notice: the pet's when the
+     *  notice was posted (its metadata's petColor), else the DM's
+     *  ([ZekkPetArt.resolveColor]) — never the live pet's, which would
+     *  recolour history (a pet that ran away would take the next one's). */
+    fun noticeColor(m: Message): String =
+        ZekkPetArt.resolveColor(m.metadata?.takeIf { it.kind == "pet" }?.petColor, m.channelId)
 
     // ── Refresh ───────────────────────────────────────────────────────────
 

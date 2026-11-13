@@ -1,21 +1,25 @@
 import SwiftUI
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Zekk Pet — the art, the header pet, the adopt banner and the pet card.
+// Zekk Pet — the art, the header pet, the adopt banner, the egg picker and the
+// pet card.
 // ═══════════════════════════════════════════════════════════════════════════
 //
 // One original creature, drawn natively from the SAME 100×100 geometry as the
 // web (apps/web/src/lib/petArt.ts) and Android, back to front: wings, arms,
-// feet, body, belly, antennae, face, extras. Its colours follow the VIEWER's
-// Appearance theme (ZekkPetPalette, from a theme id — never the static
-// Theme.current, which goes stale inside Equatable rows such as MessageRow),
-// so it recolours the moment they switch themes. The words and the state come
-// from ZekkPet and AppStore (Models.swift / AppStore.swift); the server
+// feet, body, belly, antennae, face, extras. It's drawn in the PET's own
+// colour, stored with it on the server (PetDTO.color; the inviter picks the
+// egg), so both people see the same egg whatever Appearance theme each of
+// them uses: ZekkPetPalette.forPet, from the pet's colour id and channel —
+// never the viewer's theme, nor the static Theme.current, which goes stale
+// inside Equatable rows such as MessageRow. The pet card's chrome (buttons,
+// level bar, checkmarks) stays in the viewer's theme. The words and the state
+// come from ZekkPet and AppStore (Models.swift / AppStore.swift); the server
 // decides everything shown here.
 
 // MARK: - Colours
 
-/// The inks that are the same in every theme (the theme-derived body, belly,
+/// The inks every pet shares, whatever its colour (its own body, belly,
 /// outline and accent are ZekkPetPalette, in Theme.swift).
 private enum PetInk {
     static let eye = Color(hex: 0x1D1D2B)
@@ -80,8 +84,11 @@ enum ZekkPetDrawing {
         var sparkles: [Sparkle]
     }
 
-    /// The point the egg wobbles around and the pet breathes / squashes from
-    /// (just under the feet).
+    /// The point the egg wobbles around and the pet breathes / squashes from:
+    /// the ground the hatched stages stand on (just under the feet). The egg,
+    /// centred in the box, turns about it too, 6 units under its base (82):
+    /// one point for every stage, as on web and Android, and on the 140 pt
+    /// pet card that moves the egg's base by under a point.
     static let ground = CGPoint(x: 50, y: 88)
     /// Where the tap heart starts, and how far it rises while it fades.
     static let heartOrigin = CGPoint(x: 50, y: 26)
@@ -115,7 +122,12 @@ enum ZekkPetDrawing {
     static func geometry(_ stage: PetStage) -> Geometry {
         switch stage {
         case .egg:
-            return Geometry(body: Ellipse(cx: 50, cy: 56, rx: 26, ry: 32), belly: nil, eyes: nil,
+            // Centred in the 100×100 box (18–82 tall) rather than resting on
+            // the hatched stages' ground line: the egg is mostly seen alone in
+            // a small square (the header chip, notice glyphs, the egg picker),
+            // where sitting 6 units low read as off-centre. Spots and crack
+            // below sit on the same shell. Web and Android use these numbers.
+            return Geometry(body: Ellipse(cx: 50, cy: 50, rx: 26, ry: 32), belly: nil, eyes: nil,
                             feet: [], arms: [], wings: [], antennae: [], crown: [], sparkles: [])
         case .baby:
             return Geometry(
@@ -253,11 +265,11 @@ enum ZekkPetDrawing {
             let shell = ellipse(g.body)
             ctx.fill(shell, with: .color(belly))
             ctx.stroke(shell, with: .color(outline), lineWidth: outlineWidth)
-            ctx.fill(circle(40, 46, 5), with: .color(body))
-            ctx.fill(circle(60, 60, 6), with: .color(body))
-            ctx.fill(circle(46, 72, 4), with: .color(body))
+            ctx.fill(circle(40, 40, 5), with: .color(body))
+            ctx.fill(circle(60, 54, 6), with: .color(body))
+            ctx.fill(circle(46, 66, 4), with: .color(body))
             if progress >= crackAt {
-                let crack = [pt(30, 52), pt(38, 46), pt(45, 54), pt(53, 46), pt(60, 54), pt(70, 48)]
+                let crack = [pt(30, 46), pt(38, 40), pt(45, 48), pt(53, 40), pt(60, 48), pt(70, 42)]
                 ctx.stroke(polyline(crack), with: .color(outline), style: thin)
             }
             return
@@ -438,17 +450,20 @@ struct ZekkPetHeart: Identifiable, Equatable {
     let start: Date
 }
 
-/// The pet, drawn natively in the viewer's theme colours and scaled to the
-/// frame it's given. Idle motion (the bob, a slow breathe while asleep, the
-/// egg's wobble) runs unless Reduce Motion is on or `animated` is false
-/// (tiny glyphs). `squashAt` / `hearts` are the pet card's tap reactions.
+/// The pet, drawn natively in its own colours and scaled to the frame it's
+/// given. Idle motion (the bob, a slow breathe while asleep, the egg's
+/// wobble) runs unless Reduce Motion is on or `animated` is false (tiny
+/// glyphs, the egg picker). `squashAt` / `hearts` are the pet card's tap
+/// reactions.
 struct ZekkPetArt: View {
     let stage: PetStage
     let mood: PetMood
     /// 0–1 towards the next level (the egg cracks from 0.8).
     var progress: Double = 0
-    /// The viewer's theme (store.themeId).
-    let themeId: String
+    /// The pet's colours: ZekkPetPalette.forPet(pet.color, channelId:
+    /// pet.channelId), the same for both people — never from the viewer's
+    /// theme.
+    let palette: ZekkPetPalette
     var animated: Bool = true
     /// Fewest seconds between frames — a small header glyph needn't run at
     /// the display's full rate. nil = every frame.
@@ -459,7 +474,7 @@ struct ZekkPetArt: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let palette = ZekkPetPalette.forTheme(themeId)
+        let palette = self.palette
         let still = reduceMotion
         let idle = animated && !still
         if idle || squashAt != nil || !hearts.isEmpty {
@@ -521,13 +536,13 @@ extension ZekkPet {
 
 // MARK: - Header pet
 
-/// The header pet next to the streak chip: 28 pt on the theme's chip surface
-/// (bg2 + line border) — an egg while the invite is open, the asleep face
-/// when asleep. Opens the pet card. The chip is drawn behind the art, not
-/// clipped to it, so the asleep Z's corner paints over its edge.
+/// The header pet next to the streak chip: 28 pt, in the pet's own colour, on
+/// the theme's chip surface (bg2 + line border) — an egg while the invite is
+/// open, the asleep face when asleep. Opens the pet card. The chip is drawn
+/// behind the art, not clipped to it, so the asleep Z's corner paints over
+/// its edge.
 struct ZekkPetHeaderButton: View {
     let pet: PetDTO
-    let themeId: String
     /// The viewer's swear-word mask (ZekkPet.displayName).
     let maskProfane: Bool
     let action: () -> Void
@@ -538,7 +553,7 @@ struct ZekkPetHeaderButton: View {
             ZekkPetArt(stage: pet.status == .invited ? .egg : pet.stage,
                        mood: pet.mood,
                        progress: ZekkPet.levelProgress(pet).fraction,
-                       themeId: themeId,
+                       palette: ZekkPetPalette.forPet(pet.color, channelId: pet.channelId),
                        frameInterval: 1.0 / 30)
                 .frame(width: 28, height: 28)
                 .frame(width: 30, height: 30)
@@ -569,6 +584,10 @@ struct ZekkPetBanner: View {
     @EnvironmentObject private var store: AppStore
     let channelId: String
     let banner: ZekkPet.Banner
+    /// Opens the egg picker (ZekkPetEggPicker), which MessageListView hosts:
+    /// this bar is only mounted while it has something to say, and a sheet
+    /// attached here would be torn down if it went away mid-pick.
+    var onAdopt: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -581,7 +600,8 @@ struct ZekkPetBanner: View {
             // text wraps into what's left.
             ZekkPetInviteActions(channelId: channelId, kind: banner.kind,
                                  canAct: store.dmPets[channelId]?.canAct ?? true,
-                                 locked: banner.locked)
+                                 locked: banner.locked,
+                                 onAdopt: onAdopt)
                 .fixedSize()
             Button { store.dismissPetBanner(channelId, banner.kind) } label: {
                 Image(systemName: "xmark")
@@ -620,6 +640,10 @@ struct ZekkPetInviteActions: View {
     /// false (the card has closed since) leaves it there. Unset, a failure
     /// shows in the toast (the banner).
     var onError: ((String?) -> Bool)? = nil
+    /// Adopt opens the egg picker through this (the banner's host owns the
+    /// sheet) on a server whose pets have colours. Unset, or on a server
+    /// without them, Adopt invites straight away with no colour, as before.
+    var onAdopt: (() -> Void)? = nil
     @State private var busy: Busy?
 
     private enum Busy { case invite, accept, decline }
@@ -629,7 +653,7 @@ struct ZekkPetInviteActions: View {
             switch kind {
             case .adopt:
                 if canAct {
-                    primary(busy == .invite ? "Inviting…" : "Adopt") { run(.invite, .invite) }
+                    primary(busy == .invite ? "Inviting…" : "Adopt") { adopt() }
                 }
             case .waiting:
                 secondary(busy == .decline ? "Cancelling…" : "Cancel") { run(.decline, .decline) }
@@ -641,6 +665,18 @@ struct ZekkPetInviteActions: View {
             }
         }
         .disabled(busy != nil)
+    }
+
+    /// The inviter picks the egg first where the server keeps it (READY
+    /// features.zekk_pet_color); the picker then sends the invite. An older
+    /// server would drop the pick, so there it goes out at once with none
+    /// and the server gives the pet its DM's colour.
+    private func adopt() {
+        if store.zekkPetColorEnabled, let onAdopt {
+            onAdopt()
+        } else {
+            run(.invite(color: nil), .invite)
+        }
     }
 
     private func run(_ change: AppStore.PetChange, _ marker: Busy) {
@@ -687,6 +723,238 @@ struct ZekkPetInviteActions: View {
         }
         .buttonStyle(.plain)
         .opacity(busy != nil ? 0.6 : 1)
+    }
+}
+
+// MARK: - Egg picker
+
+/// "Pick an egg": the inviter chooses the pet's colour before the invite goes
+/// out (servers with READY features.zekk_pet_color; the bar's Adopt opens
+/// it). Six still eggs in ZekkPetPalette.colors order, starting on the
+/// inviter's own theme family; "Send invite" sends the invite with that
+/// colour, which the server stores with the pet, so both people see that egg
+/// from then on. The invitee has nothing to pick: the invited egg already
+/// shows in it. A compact detent sheet like PokePopover, with no
+/// NavigationStack (drag-dismissing a NavigationStack sheet can leave the
+/// presenter's hit-testing stuck). MessageListView hosts it, and closes it
+/// once the invite is out or when Adopt goes away under it (they invited
+/// first, the streak broke at midnight UTC, the invite went out from another
+/// device).
+struct ZekkPetEggPicker: View {
+    @EnvironmentObject private var store: AppStore
+    let channelId: String
+    /// Closes the sheet (the host owns whether it's up).
+    let onDone: () -> Void
+    @State private var selected: String
+    @State private var sending = false
+    /// Why the invite failed. MainView's error toast sits behind this sheet,
+    /// so the picker says it itself.
+    @State private var sendError: String? = nil
+    /// When it failed. Only a failure that just happened explains Adopt
+    /// going away under the picker (the resync after a 409: they invited
+    /// first, the streak broke; or after a 403: a block), so only that one is
+    /// handed to the toast as the picker closes — and never when our own
+    /// invite turned up instead (ownInviteOut).
+    @State private var sendErrorAt: Date? = nil
+    /// Whether the picker is still up. The invite can fail after it has
+    /// closed (Adopt went away mid-request); its error then stays in the
+    /// toast, which the sheet no longer covers, unless our own invite is what
+    /// closed it.
+    @State private var presence = Presence()
+
+    /// A class box, so the Task the invite runs in reads it live.
+    final class Presence { var onScreen = true }
+
+    /// How long a failure can explain Adopt going away (time for the resync
+    /// after it to land).
+    private static let errorExplainsChangeFor: TimeInterval = 10
+
+    /// `initial`: the colour to start on (ZekkPetPalette.colorId(forTheme:)
+    /// of the viewer's theme).
+    init(channelId: String, initial: String, onDone: @escaping () -> Void) {
+        self.channelId = channelId
+        self.onDone = onDone
+        _selected = State(initialValue: ZekkPetPalette.color(initial)?.id ?? ZekkPetPalette.colors[0].id)
+    }
+
+    /// The bar still shows Adopt, which is what the picker is for: an adopt
+    /// bar the server lets this viewer act on (canAct), as the host's
+    /// adoptOnOffer, which closes the picker when this turns false.
+    private var adoptOffered: Bool {
+        let state = store.dmPets[channelId]
+        return (state?.canAct ?? true)
+            && ZekkPet.banner(state, selfId: store.currentUserId, peerName: "")?.kind == .adopt
+    }
+
+    /// The DM's pet now comes from our own invite — sent from here, its
+    /// answer lost or timed out (the request failed, the invite didn't), or
+    /// from another device. Adopt went away because an invite went out, so
+    /// no failure explains it: saying one would sit beside "Waiting for …
+    /// to accept your Zekk Pet" and might get a good invite cancelled. Any
+    /// status: they may have accepted it already.
+    private var ownInviteOut: Bool {
+        guard let me = store.currentUserId, let pet = store.dmPets[channelId]?.pet else { return false }
+        return pet.invitedBy == me
+    }
+
+    var body: some View {
+        VStack(spacing: 14) {
+            VStack(spacing: 4) {
+                Text("Pick an egg")
+                    .font(.zkSans(17, weight: .semibold))
+                    .foregroundColor(Theme.ink1)
+                    .accessibilityAddTraits(.isHeader)
+                Text("You'll both see this egg.")
+                    .font(.zkSans(13))
+                    .foregroundColor(Theme.ink2)
+            }
+            // Three eggs a row, two rows.
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                ForEach(ZekkPetPalette.colors) { color in
+                    egg(color)
+                }
+            }
+            .disabled(sending)
+            if let sendError {
+                Text(sendError)
+                    .font(.zkSans(12))
+                    .foregroundColor(Theme.dangerSoft)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // The buttons sit at the foot of the sheet; the room the
+            // detent keeps for a two-line error stays above them.
+            Spacer(minLength: 0)
+            HStack(spacing: 10) {
+                Button { onDone() } label: {
+                    Text("Cancel")
+                        .font(.zkSans(15, weight: .medium))
+                        .foregroundColor(Theme.ink2)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(Theme.bg3)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                Button(action: send) {
+                    Text(sending ? "Sending…" : "Send invite")
+                        .font(.zkSans(15, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(Theme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .disabled(sending)
+            .opacity(sending ? 0.6 : 1)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 20)
+        .padding(.bottom, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(Theme.bg2)
+        // The invite's answer lands here (Cancel waits for it too); a swipe
+        // down mid-request would only race it.
+        .interactiveDismissDisabled(sending)
+        .onAppear { presence.onScreen = true }
+        .onDisappear {
+            presence.onScreen = false
+            // Closed because Adopt went away just after the invite failed:
+            // hand the reason to MainView's toast, which the closing sheet
+            // uncovers. Closed by hand with Adopt still there, it was read.
+            // Not when our own invite is what took Adopt away (the failed
+            // request went through after all): the bar now says it's waiting.
+            if let sendError, let sendErrorAt, !adoptOffered, !ownInviteOut,
+               Date().timeIntervalSince(sendErrorAt) <= Self.errorExplainsChangeFor {
+                store.errorText = sendError
+            }
+        }
+    }
+
+    /// One egg, styled like Appearance's theme cards: bg3 with an accent
+    /// edge and a checkmark once chosen. Still (not animated): six eggs
+    /// wobbling at once would only be noise.
+    private func egg(_ color: ZekkPetPalette.PetColor) -> some View {
+        let isSelected = selected == color.id
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        return Button {
+            selected = color.id
+            // A new pick clears the last failure, as on web and Android (and
+            // with it any hand-off of that failure to the toast).
+            sendError = nil
+            sendErrorAt = nil
+        } label: {
+            VStack(spacing: 6) {
+                ZekkPetArt(stage: .egg, mood: .happy,
+                           palette: ZekkPetPalette.forColor(color.id), animated: false)
+                    .frame(width: 48, height: 48)
+                    .overlay(alignment: .topTrailing) {
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(Theme.accent)
+                                .background(Circle().fill(Theme.bg1))
+                                .offset(x: 6, y: -2)
+                        }
+                    }
+                Text(color.label)
+                    .font(.zkSans(11, weight: .medium))
+                    .foregroundColor(isSelected ? Theme.ink1 : Theme.ink3)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            // The sheet is bg2, so a card that isn't chosen sits a step
+            // darker rather than vanishing into it.
+            .background(isSelected ? Theme.bg3 : Theme.bg1)
+            .clipShape(shape)
+            .overlay(shape.stroke(isSelected ? Theme.accent.opacity(0.5) : Color.clear, lineWidth: 1))
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(color.label) egg")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func send() {
+        guard !sending else { return }
+        sending = true
+        sendError = nil
+        sendErrorAt = nil
+        let color = selected
+        let presence = self.presence
+        Task { @MainActor in
+            let ok = await store.changeDmPet(channelId, .invite(color: color))
+            sending = false
+            if ok {
+                onDone()
+            } else if presence.onScreen {
+                // Keep the pick for a retry; say why here, not in the toast
+                // behind the sheet.
+                let message = store.errorText ?? "Couldn't send the invite."
+                sendError = message
+                sendErrorAt = Date()
+                store.errorText = nil
+                // VoiceOver hears nothing else: Send invite only turns back
+                // from "Sending…" and the line appears below the eggs. Say it
+                // (web's role="alert"), at high priority so the button's own
+                // update can't cut it off.
+                var announcement = AttributedString(message)
+                announcement.accessibilitySpeechAnnouncementPriority = .high
+                AccessibilityNotification.Announcement(announcement).post()
+            } else if ownInviteOut {
+                // The picker closed under the request because our own invite
+                // turned up (its event beat a lost or late answer): it went
+                // out, so the toast has nothing to say.
+                store.errorText = nil
+            }
+            // Else the picker has closed (Adopt went away mid-request):
+            // MainView's toast, no longer covered, says why.
+        }
     }
 }
 
@@ -812,12 +1080,12 @@ struct ZekkPetCardSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
             let presence = self.presence
             ZekkPetInviteActions(channelId: channel.id, kind: banner.kind, canAct: canAct,
-                                 locked: banner.locked) { message in
+                                 locked: banner.locked, onError: { message in
                 // Closed since: leave it to the toast.
                 guard presence.onScreen else { return false }
                 setActionError(message)
                 return true
-            }
+            })
             if let actionError { errorLine(actionError) }
         }
     }
@@ -1135,7 +1403,7 @@ private struct ZekkPetStage: View {
             ZekkPetArt(stage: pet.status == .invited ? .egg : pet.stage,
                        mood: pet.mood,
                        progress: ZekkPet.levelProgress(pet).fraction,
-                       themeId: store.themeId,
+                       palette: ZekkPetPalette.forPet(pet.color, channelId: pet.channelId),
                        squashAt: squashAt,
                        hearts: hearts)
                 .frame(width: 140, height: 140)

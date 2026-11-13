@@ -122,6 +122,12 @@ data class ReadyFeatures(
     /** Zekk Pets (GET/POST /users/@me/channels/:id/pet…, DM_PET_UPDATE,
      *  'system_pet' notices). No pet UI at all without it. */
     @SerialName("zekk_pet") val zekkPet: Boolean = false,
+    /** Pets have a colour of their own ([PetDTO.color], the same for both
+     *  people) and POST …/pet/invite takes an optional `{ color }`: Adopt
+     *  opens the egg picker. Without it Adopt invites with no body, as
+     *  before, and a pet with no colour draws in its DM's colour
+     *  ([com.zekktris.data.ZekkPetArt.colorForChannel]). */
+    @SerialName("zekk_pet_color") val zekkPetColor: Boolean = false,
 )
 
 @Serializable
@@ -505,8 +511,8 @@ data class Message(
  *  `durationMs` / `initiatorId`; the disappearing-messages notice (type
  *  'system_disappearing') carries `timerSeconds` (0 = turned off) and
  *  `initiatorId`; the Zekk Pet notice (type 'system_pet', kind 'pet')
- *  carries `event`, `petName`, `stage` and `actorId` (null for what the
- *  server's daily check caused: asleep, ran_away). */
+ *  carries `event`, `petName`, `stage`, `actorId` (null for what the
+ *  server's daily check caused: asleep, ran_away) and `petColor`. */
 @Serializable
 data class MessageMetadata(
     val kind: String? = null,
@@ -519,14 +525,21 @@ data class MessageMetadata(
     val petName: String? = null,
     val stage: String? = null,
     val actorId: String? = null,
+    /** The pet's colour when the notice was posted (a pet colour id). A
+     *  plain string, so one a newer server adds can't fail the decode.
+     *  Absent on notices from before pets had colours and from older
+     *  servers: the glyph then takes the DM's colour
+     *  ([com.zekktris.data.ZekkPet.noticeColor]). */
+    val petColor: String? = null,
 )
 
 // ── Zekk Pet ─────────────────────────────────────────────────────────────────
 // The shared pet of a 1:1 DM (packages/client/src/types.ts PetDTO & co).
 // Server-authoritative: the app shows these values and never works out
-// points, level, status or mood itself. status / stage / mood / task keys stay
-// plain strings so a value a newer server adds can't fail the decode;
-// com.zekktris.data.ZekkPet maps them (unknown → egg / happy / skipped).
+// points, level, status or mood itself. status / stage / mood / task keys /
+// color stay plain strings so a value a newer server adds can't fail the
+// decode; com.zekktris.data.ZekkPet maps them (unknown → egg / happy /
+// skipped / the DM's colour).
 
 /** One person's `chatty` count today, capped at the goal. */
 @Serializable
@@ -559,6 +572,13 @@ data class PetDTO(
     /** Who sent the adoption invite. */
     val invitedBy: String? = null,
     val name: String = "Zekk",
+    /** The pet's own colour (a pet colour id: default | sunset | forest |
+     *  crimson | blossom | amethyst), the same for both people. Null, with
+     *  no default, when an older server sends none; it may also be an id
+     *  this app doesn't know, from a newer one. Either way the pet draws in
+     *  its DM's colour ([com.zekktris.data.ZekkPet.artColor]), never the
+     *  viewer's theme, so both people still see the same egg. */
+    val color: String? = null,
     val level: Int = 0,
     /** egg | baby | kid | teen | adult | legendary. */
     val stage: String = "egg",

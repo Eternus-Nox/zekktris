@@ -1574,6 +1574,19 @@ messagesRouter.post(
             // mid-session instead of only after the next DM-list fetch.
             if (changed) {
               dispatch.dmStreakUpdate({ channelId, recipientIds: [userId, other], streak });
+              // The credit may have earned either person a streak badge
+              // (Inseparable, Marathon, Kindred Spirits). The send's throttled
+              // sync above ran before it committed, and armed the sender's
+              // 60 s throttle; nothing here syncs the other person. So both,
+              // unthrottled: at most once a day per DM. Fire-and-forget.
+              void import('../services/achievements')
+                .then((m) =>
+                  Promise.allSettled([
+                    m.syncAndNotifyAchievements(userId),
+                    m.syncAndNotifyAchievements(other),
+                  ]),
+                )
+                .catch(() => {});
             }
           }
         } catch {
@@ -2381,6 +2394,23 @@ messagesRouter.put(
       // is throttled per (author, message) so a burst of reactions pings once.
       if (m.authorId !== null && m.authorId !== userId) {
         const author = m.authorId;
+        // Crowd Pleaser: someone else's reaction may have brought this
+        // message to a new count of people reacting. Throttled (reactions
+        // come in bursts) and fire-and-forget; your own never count. Only on
+        // a post of the author's own — a welcome row (authored by the
+        // joiner), a webhook's post (by its creator) or a notice never counts
+        // there (achievements.ts `crowd`), so there is nothing to recompute.
+        const kind = m.metadata?.kind;
+        if (
+          (m.type === 'default' || m.type === 'reply') &&
+          m.webhookId === null &&
+          kind !== 'streak_warning' &&
+          kind !== 'poke'
+        ) {
+          void import('../services/achievements')
+            .then((mod) => mod.syncAndNotifyAchievementsThrottled(author))
+            .catch(() => {});
+        }
         void (async () => {
           try {
             if (!(await reactionNotifyLimiter.consume(`${author}:${messageId}`)).ok) return;
@@ -3289,12 +3319,20 @@ messagesRouter.post(
     if (!ctx.isDM && ctx.channel.guildId) {
       await enforceGuildParticipationGates(ctx.channel.guildId, userId);
     }
-    const { channelId, messageId } = await polls.vote({
+    const { channelId, messageId, authorId } = await polls.vote({
       pollId: BigInt(params.pollId),
       optionId: BigInt(params.optionId),
       userId,
     });
     await broadcastPollUpdate(channelId, messageId);
+    // The People Have Spoken: someone else's vote may have brought one of the
+    // author's polls to a new count of voters. Throttled (votes come in
+    // bursts, like sends) and fire-and-forget; a self-vote never counts.
+    if (authorId !== null && authorId !== userId) {
+      void import('../services/achievements')
+        .then((m) => m.syncAndNotifyAchievementsThrottled(authorId))
+        .catch(() => {});
+    }
     return c.body(null, 204);
   },
 );

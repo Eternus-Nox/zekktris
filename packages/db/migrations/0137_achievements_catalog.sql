@@ -1,0 +1,27 @@
+-- Achievements: re-run the silent backfill once, for the families that count
+-- past data.
+--
+-- A user's first achievement sync records their backlog WITHOUT announcing it
+-- (users.achievements_seeded), so a rollout doesn't notify everyone of years
+-- of history. That gate is one-shot: an account seeded long ago announces
+-- every rung of a NEW family on its first sync after the deploy that adds it.
+-- This release adds seven families that all count months of existing data
+-- (Regular, Crowd Pleaser, The People Have Spoken, Kindred Spirits, Now You
+-- See Me, Zekk Keeper, Perfect Day) — 5 to 10 toasts and pushes for any active
+-- account the moment it reconnects.
+--
+-- "achievements_catalog" is the catalog version (ACHIEVEMENT_CATALOG in
+-- apps/api/src/services/achievements.ts) an account's ledger was last
+-- backfilled at. A sync below the current version records the backlog the
+-- code computes silently, once, and stamps the version; every later unlock is
+-- announced as usual. Every existing account starts at 0 (one silent sync),
+-- signup stamps new accounts with the current version (no backlog), and a
+-- future release that adds retroactive families bumps the constant instead of
+-- writing a migration.
+--
+-- A column of its own rather than "UPDATE users SET achievements_seeded =
+-- false": a build from before this one (a rollback) never reads or writes it,
+-- so the accounts such a build syncs can't come back after a roll-forward
+-- with their backlog announced as a burst. NOT NULL DEFAULT 0, so that build
+-- still inserts users without naming it.
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "achievements_catalog" integer DEFAULT 0 NOT NULL;

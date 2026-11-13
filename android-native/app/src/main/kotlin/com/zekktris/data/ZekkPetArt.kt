@@ -2,6 +2,7 @@ package com.zekktris.data
 
 import com.zekktris.data.ZekkPet.Mood
 import com.zekktris.data.ZekkPet.Stage
+import java.math.BigInteger
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
@@ -14,13 +15,15 @@ import kotlin.math.sin
  * Android types. ui/components/ZekkPet.kt turns the list into Canvas calls,
  * and ZekkPetTest checks the numbers per stage and mood.
  *
- * Colours follow the VIEWER's Appearance theme, not the DM: the body is the
- * theme accent, the belly and outline are that accent mixed toward white /
- * black, and the antenna tips take the theme's second colour ([colorsFor]).
- * The eye / mouth / tear / gold inks are fixed.
+ * Colours are the PET's, not the viewer's: a pet has one colour of its own
+ * ([PET_COLORS], stored with it on the server), so both people in the DM see
+ * the same egg whatever Appearance theme each of them uses. The body is the
+ * colour's accent, the belly and outline are that accent mixed toward white /
+ * black, and the antenna tips take its second colour ([colorsFor]). The eye /
+ * mouth / tear / gold inks are fixed.
  */
 object ZekkPetArt {
-    /** Every colour the pet uses. The first four follow the viewer's theme
+    /** Every colour the pet uses. The first four follow the pet's colour
      *  ([colorsFor]); the rest are fixed. */
     enum class Ink { Body, Belly, Outline, Accent, Eye, Highlight, Cheek, Mouth, Tear, Gold, GoldDark, Sparkle, Heart }
 
@@ -44,7 +47,10 @@ object ZekkPetArt {
     const val OUTLINE_WIDTH = 2.5f
 
     /** The point the egg wobbles around and the pet breathes / squashes
-     *  from (just under the feet). */
+     *  from: the ground the hatched stages stand on (just under the feet).
+     *  The egg, centred in the box, turns about it too, 6 units under its
+     *  base (82): one point for every stage, as on web and iOS, and on the
+     *  140 dp pet card that moves the egg's base by under 1 dp. */
     const val GROUND_X = 50f
     const val GROUND_Y = 88f
 
@@ -58,7 +64,7 @@ object ZekkPetArt {
 
     // ── Colours ───────────────────────────────────────────────────────────
 
-    /** The theme-derived colours, 0xRRGGBB. */
+    /** The colours drawn from a pet colour's two accents, 0xRRGGBB. */
     data class Colors(val body: Int, val belly: Int, val outline: Int, val accent: Int)
 
     /** [rgb] mixed [percent]% of the way toward [toward], per channel in sRGB,
@@ -73,10 +79,10 @@ object ZekkPetArt {
         return (ch(rgb, 16) shl 16) or (ch(rgb, 8) shl 8) or ch(rgb, 0)
     }
 
-    /** The pet's colours for a theme whose accents are [accent] / [accent2]
-     *  (0xRRGGBB; any alpha byte is ignored): body = the accent, belly = it
-     *  mixed 55% toward white, outline = 60% toward black, accent = the
-     *  theme's second colour. */
+    /** The pet's colours for the accents [accent] / [accent2] (0xRRGGBB; any
+     *  alpha byte is ignored) — a pet colour's two ([colorsOf]): body = the
+     *  accent, belly = it mixed 55% toward white, outline = 60% toward
+     *  black, accent = the second colour. */
     fun colorsFor(accent: Int, accent2: Int): Colors {
         val a = accent and 0xFFFFFF
         return Colors(
@@ -87,7 +93,93 @@ object ZekkPetArt {
         )
     }
 
-    /** [ink] as 0xRRGGBB under the theme [colors]. */
+    // ── Pet colours ───────────────────────────────────────────────────────
+
+    /** One pet colour (packages/shared/src/pets.ts PET_PALETTES): [id] is
+     *  what PetDTO.color and a notice's petColor carry and the invite sends,
+     *  [label] its name in the egg picker, [accent] / [accent2] (0xRRGGBB)
+     *  the two colours the pet is drawn from ([colorsFor]). */
+    data class PetColor(val id: String, val label: String, val accent: Int, val accent2: Int)
+
+    /** The colour of anything this app can't place: an unparsable DM id, an
+     *  unknown theme. */
+    const val DEFAULT_COLOR = "default"
+
+    /**
+     * Every pet colour, in the egg picker's order (PET_COLOR_IDS). They are
+     * the app's six accent families — each is its theme's accent and second
+     * colour, byte for byte as ui/theme's ZkAccentSchemes has them — so a pet
+     * looks at home in every theme, and one drawn in a family's colour is
+     * exactly the pet that theme used to give it. The ids are stored with
+     * the pet: never rename or remove one (colours may only be added, here
+     * and in the shared table together).
+     */
+    val PET_COLORS: List<PetColor> = listOf(
+        PetColor("default", "Abyssal", 0x3DD7EC, 0x9D7BFF),
+        PetColor("sunset", "Sunset", 0xFF8A3D, 0xFFD13D),
+        PetColor("forest", "Forest", 0x3D9BFF, 0x4FDD8F),
+        PetColor("crimson", "Crimson", 0xFF4D4D, 0x9AA3B8),
+        PetColor("blossom", "Blossom", 0xFF5FA2, 0xFFB088),
+        PetColor("amethyst", "Amethyst", 0xA855F7, 0xF5B942),
+    )
+
+    private val PET_COLORS_BY_ID: Map<String, PetColor> = PET_COLORS.associateBy { it.id }
+
+    /** The order [colorForChannel] picks from, kept apart from [PET_COLORS]
+     *  and frozen: it decides the colour of every pet nobody picked one for
+     *  (the server backfilled the pets from before colours with it), so
+     *  adding a colour must not change it. */
+    private val CHANNEL_COLOR_ORDER = listOf("default", "sunset", "forest", "crimson", "blossom", "amethyst")
+
+    private val CHANNEL_COLOR_COUNT: BigInteger = BigInteger.valueOf(CHANNEL_COLOR_ORDER.size.toLong())
+
+    /** The pet colour [id] names; null for none, or one this app doesn't know
+     *  (a newer server's). */
+    fun petColor(id: String?): PetColor? = id?.let { PET_COLORS_BY_ID[it] }
+
+    fun isColorId(id: String?): Boolean = petColor(id) != null
+
+    /**
+     * A DM's own pet colour: its channel id (a decimal snowflake) mod 6 into
+     * the frozen order, as the server, web and iOS work it out — the colour
+     * of a pet nobody picked one for, and the fallback whenever a pet or a
+     * notice carries no colour this app knows, so both people (on every app)
+     * still see the same egg. Worked out on the whole number, past 64 bits
+     * too, as the shared code's BigInt does; an id that won't parse gets
+     * [DEFAULT_COLOR].
+     */
+    fun colorForChannel(channelId: String): String {
+        val id = channelId.trim().toBigIntegerOrNull() ?: return DEFAULT_COLOR
+        return CHANNEL_COLOR_ORDER[id.abs().mod(CHANNEL_COLOR_COUNT).toInt()]
+    }
+
+    /** The colour to draw a pet (or a pet notice) of [channelId] in: its own
+     *  [color] when it's one this app knows, else its DM's
+     *  ([colorForChannel]). Never the viewer's theme. */
+    fun resolveColor(color: String?, channelId: String): String =
+        petColor(color)?.id ?: colorForChannel(channelId)
+
+    /** The pet's colours for the pet colour [id] (one this app doesn't know
+     *  draws in [DEFAULT_COLOR]). */
+    fun colorsOf(id: String): Colors {
+        val c = petColor(id) ?: PET_COLORS_BY_ID.getValue(DEFAULT_COLOR)
+        return colorsFor(c.accent, c.accent2)
+    }
+
+    /** The colours of a pet of [channelId] whose colour is [color]
+     *  ([resolveColor]). */
+    fun colorsForPet(color: String?, channelId: String): Colors = colorsOf(resolveColor(color, channelId))
+
+    /** Where the egg picker starts: the viewer's own theme family
+     *  ("sunset-oled" → "sunset", "oled" → "default", anything this app
+     *  doesn't know → [DEFAULT_COLOR]). Only the picker's first choice — the
+     *  pet itself never follows anyone's theme. */
+    fun colorForTheme(themeId: String?): String {
+        val family = if (themeId == "oled") DEFAULT_COLOR else themeId?.removeSuffix("-oled")
+        return petColor(family)?.id ?: DEFAULT_COLOR
+    }
+
+    /** [ink] as 0xRRGGBB under the pet's [colors]. */
     fun rgbOf(ink: Ink, colors: Colors): Int = when (ink) {
         Ink.Body -> colors.body
         Ink.Belly -> colors.belly
@@ -153,7 +245,11 @@ object ZekkPetArt {
     )
 
     private val GEOMETRY: Map<Stage, Geometry> = mapOf(
-        Stage.Egg to Geometry(body = el(50, 56, 26, 32), belly = null, eyes = null),
+        // Centred in the 100×100 box (18–82 tall) rather than resting on the
+        // hatched stages' ground line: the egg is mostly seen alone in a small
+        // square (the header chip, notice glyphs, the egg picker), where
+        // sitting 6 units low read as off-centre. Web and iOS use these numbers.
+        Stage.Egg to Geometry(body = el(50, 50, 26, 32), belly = null, eyes = null),
         Stage.Baby to Geometry(
             body = el(50, 60, 24, 22),
             belly = el(50, 66, 14, 10),
@@ -342,7 +438,7 @@ object ZekkPetArt {
     // ── The whole pet ─────────────────────────────────────────────────────
 
     /** The crack across the egg, from [CRACK_AT] progress. */
-    val CRACK: List<Point> = listOf(pt(30, 52), pt(38, 46), pt(45, 54), pt(53, 46), pt(60, 54), pt(70, 48))
+    val CRACK: List<Point> = listOf(pt(30, 46), pt(38, 40), pt(45, 48), pt(53, 40), pt(60, 48), pt(70, 42))
 
     /** Every primitive of the pet, back to front. [progress] (0–1, towards
      *  the next level) only matters on the egg: from [CRACK_AT] the shell
@@ -353,9 +449,9 @@ object ZekkPetArt {
 
         if (stage == Stage.Egg) {
             out += PetShape.Oval(Part.Body, g.body, Ink.Belly, Ink.Outline)
-            out += PetShape.Circle(Part.Spot, 40f, 46f, 5f, Ink.Body)
-            out += PetShape.Circle(Part.Spot, 60f, 60f, 6f, Ink.Body)
-            out += PetShape.Circle(Part.Spot, 46f, 72f, 4f, Ink.Body)
+            out += PetShape.Circle(Part.Spot, 40f, 40f, 5f, Ink.Body)
+            out += PetShape.Circle(Part.Spot, 60f, 54f, 6f, Ink.Body)
+            out += PetShape.Circle(Part.Spot, 46f, 66f, 4f, Ink.Body)
             if (progress >= CRACK_AT) out += PetShape.Lines(Part.Crack, CRACK, Ink.Outline, 2f)
             return out
         }

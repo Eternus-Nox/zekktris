@@ -1117,10 +1117,22 @@ class ApiClient(cookieStorage: PersistentCookieStorage) {
     suspend fun getDmPet(channelId: String): com.zekktris.data.model.DmPetState =
         authorized(HttpMethod.Get, "/users/@me/channels/$channelId/pet").decodeOrThrow()
 
-    /** Invite the other person to adopt a pet. */
-    suspend fun inviteDmPet(channelId: String): com.zekktris.data.model.PetDTO? =
-        authorized(HttpMethod.Post, "/users/@me/channels/$channelId/pet/invite")
-            .decodeOrThrow<com.zekktris.data.model.DmPetWrap>().pet
+    /**
+     * Invite the other person to adopt a pet. [color]: the egg the inviter
+     * picked (a pet colour id; servers with READY features.zekk_pet_color,
+     * others ignore it). Without one the request has no body and no
+     * Content-Type, exactly as before, and the server gives the pet its DM's
+     * colour: the server reads a body-less request as no colour, but a JSON
+     * Content-Type with an empty body is a malformed request, so the two only
+     * ever go together.
+     */
+    suspend fun inviteDmPet(channelId: String, color: String? = null): com.zekktris.data.model.PetDTO? =
+        authorized(HttpMethod.Post, "/users/@me/channels/$channelId/pet/invite") {
+            if (color != null) {
+                contentType(ContentType.Application.Json)
+                setBody(com.zekktris.data.model.PetInviteBody(color))
+            }
+        }.decodeOrThrow<com.zekktris.data.model.DmPetWrap>().pet
 
     /** Accept the other person's invite; the egg appears. Invitee only. */
     suspend fun acceptDmPet(channelId: String): com.zekktris.data.model.PetDTO? =

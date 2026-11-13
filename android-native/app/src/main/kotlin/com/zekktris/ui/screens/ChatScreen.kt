@@ -75,23 +75,26 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Mood
-import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.runtime.DisposableEffect
 import com.zekktris.ui.theme.ZkMono
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.People
-import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.outlined.Timer
+import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
+import androidx.compose.material.icons.outlined.Checklist
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -359,13 +362,19 @@ fun ChatScreen(store: AppStore, state: AppState) {
         )
         Box(Modifier.fillMaxWidth().height(1.dp).background(p.line))
         // Zekk Pet adopt / invite bar (dismissible for the session). Keyed by
-        // channel so a pending action never carries over to another DM.
+        // channel so a pending action (or an open egg picker) never carries
+        // over to another DM. Adopt opens the egg picker only on a server
+        // that keeps the colour (READY features.zekk_pet_color).
         if (petsHere && channelId != null) {
             ZekkPet.banner(petState, state.me?.id, petPeerName)
                 ?.takeIf { ZekkPet.bannerKey(channelId, it.kind) !in state.petBannersDismissed }
                 ?.let { banner ->
                     androidx.compose.runtime.key(channelId) {
-                        PetAdoptBanner(store, channelId, banner, canAct = petState?.canAct ?: true)
+                        PetAdoptBanner(
+                            store, channelId, banner,
+                            canAct = petState?.canAct ?: true,
+                            pickColor = state.zekkPetColorEnabled,
+                        )
                     }
                 }
         }
@@ -1805,8 +1814,9 @@ private fun DisappearingNoticeRow(me: com.zekktris.data.model.SelfUser?, nicknam
 
 /** A Zekk Pet notice ('system_pet'): centered and quiet like the timer
  *  notice, with a small still pet of the stage it reached (asleep for the
- *  asleep notice, lonely when it ran away). No long-press: it can't be edited
- *  or deleted, and it's never grouped or a receipt anchor. */
+ *  asleep notice, lonely when it ran away), in the colour the pet had when
+ *  the notice was posted ([ZekkPet.noticeColor]). No long-press: it can't be
+ *  edited or deleted, and it's never grouped or a receipt anchor. */
 @Composable
 private fun PetNoticeRow(text: String, msg: Message) {
     val (stage, mood) = ZekkPet.noticeArt(msg)
@@ -1815,7 +1825,7 @@ private fun PetNoticeRow(text: String, msg: Message) {
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ZekkPetArt(stage = stage, mood = mood, size = 16.dp, animated = false)
+        ZekkPetArt(stage = stage, mood = mood, color = ZekkPet.noticeColor(msg), size = 16.dp, animated = false)
         Text(
             text, color = ZkInk.ink2, fontFamily = ZkSans, fontSize = 12.sp,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -3429,20 +3439,41 @@ private fun AttachMenuSheet(
     onVoice: () -> Unit,
 ) {
     val p = ZkTheme.palette
+    // The iOS attach menu's three groups, in the same order, words and
+    // outline icons (a checklist for Poll, as on iOS): what you already have
+    // (photo, camera, file), what you make here (voice, poll), and sending
+    // later. A hairline separates the groups; a group with nothing to show
+    // (no media or files allowed) drops out with its line.
+    val haveGroup = allowMedia || allowFiles
+    val makeGroup = allowVoice || allowPoll
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = p.bg2) {
         Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
             if (allowMedia) {
-                SheetAction(Icons.Filled.Image, mediaLabel, onClick = onPhotoVideo)
-                SheetAction(Icons.Filled.PhotoCamera, "Camera", onClick = onCamera)
+                SheetAction(Icons.Outlined.Image, mediaLabel, onClick = onPhotoVideo)
+                SheetAction(Icons.Outlined.PhotoCamera, "Take photo", onClick = onCamera)
             }
             if (allowFiles) {
-                SheetAction(Icons.AutoMirrored.Filled.InsertDriveFile, "File", onClick = onFile)
+                SheetAction(Icons.AutoMirrored.Outlined.InsertDriveFile, "File", onClick = onFile)
             }
-            if (allowVoice) SheetAction(Icons.Filled.Mic, "Voice message", onClick = onVoice)
-            if (allowPoll) SheetAction(Icons.Filled.BarChart, "Poll", onClick = onPoll)
-            SheetAction(Icons.Filled.Schedule, "Schedule message", onClick = onSchedule)
+            if (haveGroup && makeGroup) AttachGroupDivider()
+            if (allowVoice) SheetAction(Icons.Outlined.Mic, "Voice message", onClick = onVoice)
+            if (allowPoll) SheetAction(Icons.Outlined.Checklist, "Poll", onClick = onPoll)
+            if (haveGroup || makeGroup) AttachGroupDivider()
+            SheetAction(Icons.Outlined.Schedule, "Schedule message", onClick = onSchedule)
         }
     }
+}
+
+/** The hairline between the attach sheet's groups, inset to the labels. */
+@Composable
+private fun AttachGroupDivider() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 54.dp, top = 4.dp, bottom = 4.dp)
+            .height(1.dp)
+            .background(ZkTheme.palette.line),
+    )
 }
 
 /** Record + send a voice message. Auto-starts recording on open (mic permission

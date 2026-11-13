@@ -1832,6 +1832,7 @@ final class AppStore: ObservableObject {
         petRefreshTask?.cancel()
         petRefreshTask = nil
         zekkPetEnabled = false
+        zekkPetColorEnabled = false
         dmPets = [:]
         dmPetRevision = [:]
         dismissedPetBanners = []
@@ -6135,6 +6136,11 @@ final class AppStore: ObservableObject {
     /// The server has Zekk Pets (READY features.zekk_pet). The app shows no
     /// pet UI without it.
     @Published private(set) var zekkPetEnabled = false
+    /// Its pets have a colour of their own and the invite takes one (READY
+    /// features.zekk_pet_color): Adopt opens the egg picker. Without it Adopt
+    /// invites straight away with no colour, as before — an older or
+    /// self-hosted server would drop the pick.
+    @Published private(set) var zekkPetColorEnabled = false
     /// Each 1:1 DM's pet, by channel id; absent = not fetched yet. Fed by
     /// loadDmPet (when a 1:1 DM or its pet card opens, on reconnect /
     /// foreground, at the clock boundaries the mood turns on, and after a
@@ -6217,7 +6223,11 @@ final class AppStore: ObservableObject {
     }
 
     enum PetChange {
-        case invite, accept, decline
+        /// `color`: the egg picked in the picker (a ZekkPetPalette colour
+        /// id), nil without one (no picker on this server): the server gives
+        /// the pet its DM's colour.
+        case invite(color: String?)
+        case accept, decline
         case rename(String)
     }
 
@@ -6231,7 +6241,7 @@ final class AppStore: ObservableObject {
         do {
             let pet: PetDTO?
             switch change {
-            case .invite: pet = try await api.inviteDmPet(channelId: channelId)
+            case .invite(let color): pet = try await api.inviteDmPet(channelId: channelId, color: color)
             case .accept: pet = try await api.acceptDmPet(channelId: channelId)
             case .decline:
                 try await api.declineDmPet(channelId: channelId)
@@ -6903,6 +6913,8 @@ final class AppStore: ObservableObject {
             let features = jsonDict(data)?["features"] as? [String: Any]
             let petsOn = features?["zekk_pet"] as? Bool == true
             if zekkPetEnabled != petsOn { zekkPetEnabled = petsOn }
+            let petColorsOn = petsOn && features?["zekk_pet_color"] as? Bool == true
+            if zekkPetColorEnabled != petColorsOn { zekkPetColorEnabled = petColorsOn }
             if petsOn, let c = selectedChannel, c.type == "dm" {
                 Task { await loadDmPet(c.id) }
             }

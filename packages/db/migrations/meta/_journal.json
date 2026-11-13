@@ -946,6 +946,20 @@
       "when": 1785550730000,
       "tag": "0135_dm_streak_prev_days",
       "breakpoints": true
+    },
+    {
+      "idx": 135,
+      "version": "7",
+      "when": 1785637130000,
+      "tag": "0136_dm_pet_color",
+      "breakpoints": true
+    },
+    {
+      "idx": 136,
+      "version": "7",
+      "when": 1785723530000,
+      "tag": "0137_achievements_catalog",
+      "breakpoints": true
     }
   ]
 }

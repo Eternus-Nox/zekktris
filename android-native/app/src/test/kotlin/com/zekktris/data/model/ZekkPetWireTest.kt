@@ -10,10 +10,11 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Zekk Pet on the wire: PetDTO, GET /pet, the change answers, the notice
- *  metadata and READY's flag, as this app decodes them (same Json settings
- *  as ApiClient). A pet that fails to decode would hide the pet UI, so new,
- *  old and unknown shapes must all decode. */
+/** Zekk Pet on the wire: PetDTO (its colour too), GET /pet, the change
+ *  answers, the invite and rename bodies, the notice metadata and READY's
+ *  flags, as this app decodes them (same Json settings as ApiClient). A pet
+ *  that fails to decode would hide the pet UI, so new, old and unknown
+ *  shapes must all decode. */
 class ZekkPetWireTest {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false; coerceInputValues = true; isLenient = true }
 
@@ -150,6 +151,37 @@ class ZekkPetWireTest {
         assertEquals("""{"name":"Biscuit"}""", json.encodeToString(PetRenameBody("Biscuit")))
     }
 
+    private fun withColor(color: String) = active.replace("\"name\":\"Biscuit\"", "\"name\":\"Biscuit\",\"color\":$color")
+
+    @Test fun thePetsOwnColour() {
+        // The colour the inviter picked, the same for both people.
+        val sunset = json.decodeFromString<PetDTO>(withColor("\"sunset\""))
+        assertEquals("sunset", sunset.color)
+        assertEquals("sunset", ZekkPet.artColor(sunset))
+        // An older server sends none, or null: no colour (not "default"), so
+        // the pet draws in its DM's colour — "100" is blossom.
+        for (p in listOf(json.decodeFromString<PetDTO>(active), json.decodeFromString<PetDTO>(withColor("null")))) {
+            assertNull(p.color)
+            assertEquals("blossom", ZekkPet.artColor(p))
+        }
+        // A colour from a newer server decodes as it came (the pet doesn't
+        // fail to decode) and draws in the DM's colour too.
+        val newer = json.decodeFromString<PetDTO>(withColor("\"teal\""))
+        assertEquals("teal", newer.color)
+        assertEquals("Biscuit", newer.name)
+        assertEquals("blossom", ZekkPet.artColor(newer))
+        // It rides along wherever a pet comes: GET /pet, the change answers.
+        assertEquals("sunset", json.decodeFromString<DmPetState>("""{"pet":${withColor("\"sunset\"")},"eligible":false,"streak":9,"minStreak":3}""").pet?.color)
+        assertEquals("forest", json.decodeFromString<DmPetWrap>("""{"pet":${withColor("\"forest\"")}}""").pet?.color)
+    }
+
+    @Test fun theInviteBodyCarriesTheColour() {
+        // No default on the field: with encodeDefaults off, a default value
+        // would be dropped from the request.
+        assertEquals("""{"color":"sunset"}""", json.encodeToString(PetInviteBody("sunset")))
+        assertEquals("""{"color":"default"}""", json.encodeToString(PetInviteBody("default")))
+    }
+
     @Test fun noticeMetadata() {
         val m = json.decodeFromString<Message>(
             """{"id":"900","channelId":"100","createdAt":"2026-11-11T10:00:00Z","authorId":"1","type":"system_pet",
@@ -172,11 +204,38 @@ class ZekkPetWireTest {
         )
         assertNull(asleep.metadata?.actorId)
         assertEquals("Biscuit fell asleep. 😴 Say hi to each other within 2 days to wake it up.", ZekkPet.noticeLine(asleep, "2", "1", "Alex", "Alex"))
+        // Notices from before pets had colours carry none.
+        assertNull(m.metadata?.petColor)
+        assertNull(asleep.metadata?.petColor)
+    }
+
+    @Test fun noticeCarriesThePetsColour() {
+        val m = json.decodeFromString<Message>(
+            """{"id":"902","channelId":"100","createdAt":"2026-11-11T10:00:00Z","authorId":"1","type":"system_pet",
+               "content":"Biscuit hatched!","metadata":{"kind":"pet","event":"hatched","petName":"Biscuit","stage":"baby",
+               "actorId":"1","petColor":"amethyst"}}""",
+        )
+        assertEquals("amethyst", m.metadata?.petColor)
+        assertEquals("amethyst", ZekkPet.noticeColor(m))
+        // One this app doesn't know is kept as it came, and draws in the DM's.
+        val newer = json.decodeFromString<Message>(
+            """{"id":"903","channelId":"100","createdAt":"2026-11-11T10:00:00Z","authorId":"1","type":"system_pet",
+               "content":"Biscuit hatched!","metadata":{"kind":"pet","event":"hatched","petName":"Biscuit","stage":"baby",
+               "actorId":"1","petColor":"teal"}}""",
+        )
+        assertEquals("teal", newer.metadata?.petColor)
+        assertEquals("blossom", ZekkPet.noticeColor(newer))
     }
 
     @Test fun readyFeatureFlag() {
         assertTrue(json.decodeFromString<ReadyFeatures>("""{"presence_activity":true,"zekk_pet":true}""").zekkPet)
         assertFalse(json.decodeFromString<ReadyFeatures>("""{"presence_activity":true}""").zekkPet)
         assertFalse(json.decodeFromString<ReadyFeatures>("{}").zekkPet)
+        // Pet colours (the egg picker): their own flag, off unless sent.
+        val colors = json.decodeFromString<ReadyFeatures>("""{"presence_activity":true,"zekk_pet":true,"zekk_pet_color":true}""")
+        assertTrue(colors.zekkPet)
+        assertTrue(colors.zekkPetColor)
+        assertFalse(json.decodeFromString<ReadyFeatures>("""{"presence_activity":true,"zekk_pet":true}""").zekkPetColor)
+        assertFalse(json.decodeFromString<ReadyFeatures>("{}").zekkPetColor)
     }
 }

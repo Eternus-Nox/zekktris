@@ -121,6 +121,14 @@ export const users = pgTable(
         existing users (their backlog is recorded silently on first sync so a
         rollout doesn't spam them); set true at signup for new users. */
     achievementsSeeded: boolean('achievements_seeded').notNull().default(false),
+    /** The achievement catalog version (ACHIEVEMENT_CATALOG in the API's
+        services/achievements.ts) this user's ledger was last backfilled at.
+        A sync while it is below the current one records the backlog of the
+        families added since SILENTLY, once — a release whose new badges count
+        past data must not announce months of it at the deploy. 0 for every
+        account from before migration 0137; signup stamps the current one.
+        Builds from before the column never touch it. */
+    achievementsCatalog: integer('achievements_catalog').notNull().default(0),
     /** Account-level toggle for achievement-unlock notifications (push + in-app). */
     notifyAchievements: boolean('notify_achievements').notNull().default(true),
     /** Account-level toggle for reaction notifications — a push when someone

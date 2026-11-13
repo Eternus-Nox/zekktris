@@ -1392,7 +1392,8 @@ function PetNotice({
       data-message-id={message.id}
       className="group relative flex items-center justify-center gap-1.5 py-1.5 px-4 text-center text-xs text-ink-2"
     >
-      <ZekkPetArt stage={art.stage} mood={art.mood} size={16} animated={false} />
+      {/* In the notice's own colour (its metadata), not the live pet's. */}
+      <ZekkPetArt stage={art.stage} mood={art.mood} size={16} animated={false} color={art.color} />
       <span>{text}</span>
       <span className="text-ink-3/70">·</span>
       <time

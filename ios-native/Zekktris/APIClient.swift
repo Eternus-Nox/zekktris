@@ -1806,8 +1806,20 @@ extension APIClient {
     }
     /// Invite the other person to adopt a pet. 409 when the DM isn't eligible
     /// (streak under 3 days or broken) or a pet / invite already exists.
-    func inviteDmPet(channelId: String) async throws -> PetDTO? {
-        let wrap: PetWrap = try await send("POST", "/users/@me/channels/\(channelId)/pet/invite")
+    /// `color` is the egg the inviter picked (a ZekkPetPalette colour id;
+    /// servers with READY features.zekk_pet_color, others ignore it). Only
+    /// then is there a JSON body: without one the POST has no body and no
+    /// Content-Type, exactly as before, and the server gives the pet its
+    /// DM's colour.
+    func inviteDmPet(channelId: String, color: String?) async throws -> PetDTO? {
+        let path = "/users/@me/channels/\(channelId)/pet/invite"
+        let wrap: PetWrap
+        if let color {
+            let data = try JSONSerialization.data(withJSONObject: ["color": color])
+            wrap = try await send("POST", path, bodyData: data)
+        } else {
+            wrap = try await send("POST", path)
+        }
         return wrap.pet
     }
     /// Accept the other person's invite; the egg appears. Invitee only.

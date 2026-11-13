@@ -118,3 +118,83 @@ export function normalizePetName(raw: string): string | null {
   if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) return null;
   return name;
 }
+
+// ── Egg colours ────────────────────────────────────────────────────────────
+//
+// A pet has ONE colour of its own, stored with the pet, so both people in
+// the DM see the same egg whatever Appearance theme each of them uses. The
+// colours are the app's six accent families, so a pet still looks at home
+// in every theme. The inviter picks the egg when they send the invite; a
+// pet nobody picked a colour for gets its DM's own colour
+// (petColorForChannel). The iOS and Android apps carry this same table.
+
+export type PetColorId = 'default' | 'sunset' | 'forest' | 'crimson' | 'blossom' | 'amethyst';
+
+/** Every pet colour, in picker order. The id is what dm_pets.color stores
+ *  and PetDTO.color carries: never rename or remove one (colours may only
+ *  be added). Adding one needs no migration, but it does need a new READY
+ *  feature flag that apps check before they offer it: the invite rejects an
+ *  id it doesn't know with a 400, and zekk_pet_color promises only these
+ *  six, so a newer app would otherwise offer an egg an older (self-hosted)
+ *  server can't take. */
+export const PET_COLOR_IDS: ReadonlyArray<PetColorId> = [
+  'default',
+  'sunset',
+  'forest',
+  'crimson',
+  'blossom',
+  'amethyst',
+];
+
+/** Each colour's name and its two accents ("#RRGGBB": the matching theme's
+ *  accent and second colour). Drawn exactly like a theme's pet used to be:
+ *  body = `accent`, belly = `accent` mixed 55% toward white, outline =
+ *  `accent` mixed 60% toward black, antenna tips = `accent2`. */
+export const PET_PALETTES: Readonly<Record<PetColorId, { label: string; accent: string; accent2: string }>> = {
+  default: { label: 'Abyssal', accent: '#3DD7EC', accent2: '#9D7BFF' },
+  sunset: { label: 'Sunset', accent: '#FF8A3D', accent2: '#FFD13D' },
+  forest: { label: 'Forest', accent: '#3D9BFF', accent2: '#4FDD8F' },
+  crimson: { label: 'Crimson', accent: '#FF4D4D', accent2: '#9AA3B8' },
+  blossom: { label: 'Blossom', accent: '#FF5FA2', accent2: '#FFB088' },
+  amethyst: { label: 'Amethyst', accent: '#A855F7', accent2: '#F5B942' },
+};
+
+export function isPetColorId(value: unknown): value is PetColorId {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(PET_PALETTES, value);
+}
+
+/** The order petColorForChannel picks from. Frozen: it decides the colour of
+ *  every pet nobody picked a colour for (the migration that added colours
+ *  backfilled existing pets with it), so adding colours must not change it. */
+const PET_CHANNEL_COLOR_ORDER: ReadonlyArray<PetColorId> = [
+  'default',
+  'sunset',
+  'forest',
+  'crimson',
+  'blossom',
+  'amethyst',
+];
+
+/**
+ * The DM's own pet colour: channel id mod 6 into the frozen order above.
+ * Used for a pet nobody picked a colour for — pets adopted before colours
+ * existed, invites sent from apps without the picker — and by apps as the
+ * fallback when a server sends no colour or one they don't know, so both
+ * people (and every app) still agree. An id that won't parse gets 'default'.
+ */
+export function petColorForChannel(channelId: string | bigint): PetColorId {
+  let id: bigint;
+  try {
+    id = typeof channelId === 'bigint' ? channelId : BigInt(channelId);
+  } catch {
+    return 'default';
+  }
+  if (id < 0n) id = -id;
+  return PET_CHANNEL_COLOR_ORDER[Number(id % 6n)] ?? 'default';
+}
+
+/** The colour to draw a pet (or a pet notice) in: its own colour when it is
+ *  one this app knows, otherwise its DM's colour. */
+export function resolvePetColor(color: string | null | undefined, channelId: string | bigint): PetColorId {
+  return isPetColorId(color) ? color : petColorForChannel(channelId);
+}

@@ -14,7 +14,7 @@ import { relations, sql } from 'drizzle-orm';
 import { users } from './users';
 import { channels } from './channels';
 import { roles } from './guilds';
-import type { PetStage } from '@zekktris/shared/pets';
+import type { PetColorId, PetStage } from '@zekktris/shared/pets';
 import { messageTypeEnum } from './enums';
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -560,6 +560,13 @@ export type MessageMetadataJson =
       /** Who caused it (stringified BigInt); null for events the server's
        *  sweep causes (asleep, ran_away). */
       actorId: string | null;
+      /** The pet's colour when the notice was posted, so the notice shows
+       *  both people the same egg ('ran_away' too, after the row is gone).
+       *  Absent on notices from before migration 0136: clients draw
+       *  resolvePetColor(petColor, the message's channelId). A key of its own
+       *  because the metadata keys are one flat namespace across kinds, and
+       *  `color` is already an Int on embeds. */
+      petColor?: PetColorId;
     };
 
 /** What a 'system_pet' notice reports. Keep IN SYNC with the client

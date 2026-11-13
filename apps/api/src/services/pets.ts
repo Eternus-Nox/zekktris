@@ -40,10 +40,13 @@ import {
   PET_MIN_STREAK,
   PET_TASKS,
   normalizePetName,
+  petColorForChannel,
   petLevelFloor,
   petLevelForPoints,
   petStageForLevel,
   petStageLabel,
+  resolvePetColor,
+  type PetColorId,
   type PetMood,
   type PetStage,
   type PetStatus,
@@ -77,6 +80,10 @@ export interface PetDTO {
   status: PetStatus;
   invitedBy: string | null;
   name: string;
+  /** The pet's own colour, the same for both people (READY
+   *  features.zekk_pet_color): every app draws the egg and every later stage
+   *  in it, never in the viewer's theme. */
+  color: PetColorId;
   level: number;
   stage: PetStage;
   points: number;
@@ -187,6 +194,11 @@ export function petDTO(row: PetRow, now: Date = clock()): PetDTO {
     status: row.status,
     invitedBy: row.invitedBy?.toString() ?? null,
     name: row.name,
+    // Here in the shared head, so the invited egg and the adopted pet both
+    // carry it. A row an older build wrote has none (NULL), and one a newer
+    // build wrote may name a colour this one doesn't know: either way it is
+    // the DM's colour, the one the 0136 backfill gives such rows.
+    color: resolvePetColor(row.color, row.channelId),
   };
   const tail = { today, dayEndsAt: nextUtcMidnight(now).toISOString() };
   if (row.status === 'invited') {
@@ -457,6 +469,9 @@ async function insertNotice(
         petName: input.pet.name,
         stage,
         actorId: input.actorId?.toString() ?? null,
+        // The egg the notice shows, the pet's own colour, as the DTO resolves
+        // it. 'ran_away' is built from the deleted row, so it still has one.
+        petColor: resolvePetColor(input.pet.color, input.pet.channelId),
       },
     },
     tx,
@@ -618,11 +633,13 @@ export async function getPetState(channelId: bigint): Promise<{
 
 /** Invite the other person of a 1:1 DM to adopt a pet. 409 when the streak
  *  isn't alive and PET_MIN_STREAK days, or a pet / open invite exists. Posts
- *  the 'invited' notice. */
+ *  the 'invited' notice. `color` is the egg the inviter picked; without one
+ *  (an app with no picker) the pet gets its DM's colour. */
 export async function invitePet(input: {
   channelId: bigint;
   inviterId: bigint;
   otherId: bigint;
+  color?: PetColorId;
 }): Promise<PetDTO> {
   const now = clock();
   const today = utcDay(now);
@@ -675,6 +692,11 @@ export async function invitePet(input: {
         status: 'invited',
         invitedBy: input.inviterId,
         name: PET_DEFAULT_NAME,
+        // Written out even when nobody picked one, so the pet's colour never
+        // depends on the read-time fallback. Every invite is a fresh row (a
+        // declined, lapsed or run-away pet's is gone), so a re-invite takes
+        // the new pick and nothing carries over from an earlier pet.
+        color: input.color ?? petColorForChannel(input.channelId),
         createdAt: now,
         updatedAt: now,
       })
@@ -948,14 +970,49 @@ export async function recordActivity(args: {
     }
     const pet = petDTO(saved!, now);
     const visible = !sameDTO(petDTO(row, now), pet);
-    if (!visible && notices.length === 0) return null;
+    // A pet badge this may have earned, for both people: a new stage (every
+    // Zekk Keeper rung is a stage's first level, so only a stage change can
+    // reach one), or the day's last task (Perfect Day — a snapshot that the
+    // next day's first activity wipes, so it is recorded now, whatever day
+    // the clock has reached by the time the sync reads it). The late feed
+    // never touches the tasks, and its taskDay is a later day.
+    const allDone = (mask: number) => (mask & PET_ALL_TASKS_MASK) === PET_ALL_TASKS_MASK;
+    const badge =
+      events.includes('hatched') ||
+      events.includes('evolved') ||
+      (next.taskDay === today && allDone(next.tasksDone) && !allDone(todayCounters(row, today).tasksDone));
+    if (!visible && notices.length === 0 && !badge) return null;
     return {
       pet: visible ? pet : undefined,
       notices,
       recipientIds: await listAllRecipients(args.channelId, tx),
+      achievers: badge ? [saved!.userAId, saved!.userBId] : [],
     };
   });
-  if (out) await announce(args.channelId, out.recipientIds, out.notices, out.pet);
+  if (!out) return;
+  try {
+    await announce(args.channelId, out.recipientIds, out.notices, out.pet);
+  } finally {
+    // Even when announce fails (it still rejects to the caller, who logs it):
+    // the commit stands, and a Perfect Day this sync misses is wiped by the
+    // next day's first activity.
+    if (out.achievers.length > 0) syncAchievementsOf(out.achievers);
+  }
+}
+
+/**
+ * After a commit that may have earned a pet badge (Zekk Keeper, Perfect
+ * Day): recompute each person's achievements and announce what's new.
+ * UNTHROTTLED: the send route ran the sender's throttled sync a few ms before
+ * this activity (reading the pet as it was, and arming a 60 s throttle that
+ * would swallow a throttled call now), and nothing on that path syncs the
+ * other person. Rare — a stage takes days, and every task once a day.
+ * Fire-and-forget: it never fails or slows the caller.
+ */
+function syncAchievementsOf(userIds: readonly bigint[]): void {
+  void import('./achievements')
+    .then((m) => Promise.allSettled(userIds.map((id) => m.syncAndNotifyAchievements(id))))
+    .catch(() => {});
 }
 
 // ── Sweep ───────────────────────────────────────────────────────────────────

@@ -41,7 +41,6 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.withTransform
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
@@ -51,7 +50,6 @@ import com.zekktris.data.ZekkPetArt
 import com.zekktris.data.ZekkPetArt.Ink
 import com.zekktris.data.ZekkPetArt.PetShape
 import com.zekktris.data.model.PetDTO
-import com.zekktris.ui.theme.ZkPalette
 import com.zekktris.ui.theme.ZkTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -84,13 +82,11 @@ private val UNSCALED = object : MotionDurationScale {
 @Composable
 private fun rememberMotionEnabled(): Boolean = remember { android.animation.ValueAnimator.areAnimatorsEnabled() }
 
-/** The pet's inks as opaque Compose colours for [palette], indexed by
+/** The pet's inks as opaque Compose colours for its [colors], indexed by
  *  [Ink.ordinal]. A shape's own alpha (the cheeks' [ZekkPetArt.CHEEK_ALPHA])
  *  is applied once, when it is drawn — never baked in here as well. */
-private fun petInks(palette: ZkPalette): List<Color> {
-    val colors = ZekkPetArt.colorsFor(palette.accent.toArgb(), palette.accent2.toArgb())
-    return Ink.entries.map { ink -> Color(ZekkPetArt.rgbOf(ink, colors) or (0xFF shl 24)) }
-}
+private fun petInks(colors: ZekkPetArt.Colors): List<Color> =
+    Ink.entries.map { ink -> Color(ZekkPetArt.rgbOf(ink, colors) or (0xFF shl 24)) }
 
 /**
  * A primitive ready to draw: its path and stroke are built once (in
@@ -202,8 +198,11 @@ fun rememberPetTapState(): PetTapState {
 
 /**
  * The Zekk Pet, drawn natively from the shared geometry ([ZekkPetArt]) at
- * [size] (the art's 100-unit box scaled to it), in the viewer's theme: the
- * colours come from [ZkTheme.palette], so a theme switch recolours it at once.
+ * [size] (the art's 100-unit box scaled to it), in the pet's own [color]: a
+ * pet colour id, already resolved ([ZekkPet.artColor] for a pet,
+ * [ZekkPet.noticeColor] for a notice's glyph). Never the viewer's theme, so
+ * both people see the same egg whatever theme each uses; the theme only
+ * colours the chrome around it.
  *
  * [animated]: the idle motion — a bob of ±2 units every 2.4 s, a slow
  * breathe while asleep, a wobble on the egg every 3 s; off for tiny glyphs
@@ -216,14 +215,17 @@ fun rememberPetTapState(): PetTapState {
 fun ZekkPetArt(
     stage: ZekkPet.Stage,
     mood: ZekkPet.Mood,
+    color: String,
     size: Dp,
     modifier: Modifier = Modifier,
     progress: Float = 0f,
     animated: Boolean = true,
     tap: PetTapState? = null,
 ) {
-    val palette = ZkTheme.palette
-    val inks = remember(palette) { petInks(palette) }
+    // Keyed on the colour: the header pet stays composed from one DM to the
+    // next, and a pet's colour can arrive with a later answer, so the inks
+    // must never outlive the colour they were made for.
+    val inks = remember(color) { petInks(ZekkPetArt.colorsOf(color)) }
     val cracked = stage == ZekkPet.Stage.Egg && progress >= ZekkPetArt.CRACK_AT
     val shapes = remember(stage, mood, cracked) {
         ZekkPetArt.shapes(stage, mood, if (cracked) 1f else 0f).map(::preparePetShape)
@@ -291,12 +293,13 @@ fun ZekkPetArt(
 
 /**
  * The header pet next to the streak pill: the same 28dp as the DM avatar,
- * on the theme's chip surface (an egg while the invite is open, the asleep
- * face when asleep). Opens the pet card. [name]: the pet's name as the
- * viewer sees it, for its spoken label (masked for a supervised child with
- * "Blur swear words" on). Only the chip (and its ripple) is rounded: the pet
- * draws over it unclipped, as on iOS, so a sleeping pet's top Z — up by the
- * chip's corner, and further out as it breathes — isn't shaved off.
+ * in the pet's own colour on the theme's chip surface (an egg while the
+ * invite is open, the asleep face when asleep). Opens the pet card. [name]:
+ * the pet's name as the viewer sees it, for its spoken label (masked for a
+ * supervised child with "Blur swear words" on). Only the chip (and its
+ * ripple) is rounded: the pet draws over it unclipped, as on iOS, so a
+ * sleeping pet's top Z — up by the chip's corner, and further out as it
+ * breathes — isn't shaved off.
  */
 @Composable
 fun DmPetButton(pet: PetDTO, onClick: () -> Unit, name: String = pet.name) {
@@ -317,6 +320,7 @@ fun DmPetButton(pet: PetDTO, onClick: () -> Unit, name: String = pet.name) {
         ZekkPetArt(
             stage = ZekkPet.displayStage(pet),
             mood = ZekkPet.Mood.of(pet.mood),
+            color = ZekkPet.artColor(pet),
             size = 28.dp,
             progress = ZekkPet.artProgress(pet),
         )

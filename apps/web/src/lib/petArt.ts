@@ -8,17 +8,23 @@
  * picture: no React, no DOM. ZekkPetArt.tsx turns the list into elements, and
  * the vitest suite (test/zekkPet.test.ts) checks the numbers per stage.
  *
- * Colours follow the VIEWER's Appearance theme, not the DM: the body is the
- * theme accent, the belly and outline are that accent mixed toward white /
- * black, and the antenna tips take the theme's second colour. They're CSS
- * custom properties (--zk-pet-*, index.css) built on the theme's
- * --c-accent / --c-accent-2 channels, so a theme switch recolours every pet
- * on screen at once. The eye / mouth / tear / gold inks are fixed.
+ * Colours belong to the PET, not to whoever looks at it: a pet has one
+ * colour of its own (PetDTO.color, picked by the inviter; a notice carries
+ * the colour its pet had when it was posted), so both people see the same
+ * egg whatever Appearance theme each of them uses, on every app. The colours
+ * are the app's six accent families (PET_PALETTES, shared with the server
+ * and the native apps): the body is the accent, the belly and outline are
+ * that accent mixed toward white / black, and the antenna tips take the
+ * second colour (petPalette). The shapes reference them as CSS custom
+ * properties (--zk-pet-*), which ZekkPetArt sets on its <svg> from the pet's
+ * colour. The eye / mouth / tear / gold inks are fixed.
  */
 
-import type { PetMood, PetStage } from '@zekktris/client';
+import { PET_PALETTES, isPetColorId, type PetColorId, type PetMood, type PetStage } from '@zekktris/client';
 
-/** The theme-derived colours of the pet, as CSS values. */
+/** The pet's four colours, as CSS values: custom properties that ZekkPetArt
+    sets on its <svg> from the pet's own colour (petPalette). Art drawn
+    without a colour falls back to the :root values (index.css). */
 export const PET_COLORS = {
   body: 'var(--zk-pet-body)',
   belly: 'var(--zk-pet-belly)',
@@ -26,7 +32,7 @@ export const PET_COLORS = {
   accent: 'var(--zk-pet-accent)',
 } as const;
 
-/** Inks shared by every theme. The cheeks are drawn at 70% opacity. */
+/** Inks shared by every pet colour. The cheeks are drawn at 70% opacity. */
 export const PET_INK = {
   eye: '#1D1D2B',
   highlight: '#FFFFFF',
@@ -43,8 +49,11 @@ export const PET_CHEEK_OPACITY = 0.7;
 /** Body / limb outline and every stroked face line. */
 export const PET_OUTLINE_WIDTH = 2.5;
 
-/** The point the egg wobbles around and the pet breathes / squashes from
-    (just under the feet). */
+/** The point the egg wobbles around and the pet breathes / squashes from:
+    the ground the hatched stages stand on (just under the feet). The egg,
+    centred in the box, turns about it too, 6 units under its base (82): one
+    point for every stage, as on iOS and Android, and on the 140 px pet card
+    that moves the egg's base by under 1 px. */
 export const PET_GROUND = { x: 50, y: 88 } as const;
 
 /** Where the tap heart starts, and how far it rises while it fades. */
@@ -54,17 +63,21 @@ export const PET_HEART_RISE = 20;
 /** Egg progress (towards level 1) from which the shell shows a crack. */
 export const PET_CRACK_AT = 0.8;
 
+/** A pet's four colours as "#RRGGBB" (the --zk-pet-* properties). */
+export interface PetPalette {
+  body: string;
+  belly: string;
+  outline: string;
+  accent: string;
+}
+
 /**
- * The hex colours the --zk-pet-* properties resolve to for a theme whose
- * accents are `accent` / `accent2` ("#RRGGBB"): a per-channel sRGB lerp,
- * rounded half up — exactly what `color-mix(in srgb, …)` computes, and what
- * the iOS and Android apps compute natively. The browser does the mixing on
- * the web; this mirror lets the test suite hold the CSS to the shared table.
+ * The hex colours of a pet whose accents are `accent` / `accent2`
+ * ("#RRGGBB"): a per-channel sRGB lerp, rounded half up — exactly what
+ * `color-mix(in srgb, …)` computes (the :root fallback in index.css), and
+ * what the iOS and Android apps compute natively.
  */
-export function petColorsForAccents(
-  accent: string,
-  accent2: string,
-): { body: string; belly: string; outline: string; accent: string } {
+export function petColorsForAccents(accent: string, accent2: string): PetPalette {
   const rgb = (hex: string) => {
     const v = hex.replace('#', '');
     return [0, 2, 4].map((i) => parseInt(v.slice(i, i + 2), 16));
@@ -80,6 +93,28 @@ export function petColorsForAccents(
     outline: hex(mix(a, 0, 0.6)),
     accent: hex(rgb(accent2)),
   };
+}
+
+// Worked out once (and shared, so frozen): notice glyphs ask for a palette
+// on every render.
+const PALETTES = new Map<PetColorId, Readonly<PetPalette>>();
+
+/**
+ * The colours a pet of colour `color` is drawn in: its PET_PALETTES accents
+ * mixed as above, so a pet's colour looks exactly like the matching theme's
+ * pet used to. null for no colour or an id this app doesn't know — callers
+ * resolve the pet's colour first (resolvePetColor, which falls back to the
+ * DM's colour), so that only happens to art drawn without one.
+ */
+export function petPalette(color: string | null | undefined): Readonly<PetPalette> | null {
+  if (!isPetColorId(color)) return null;
+  let palette = PALETTES.get(color);
+  if (!palette) {
+    const { accent, accent2 } = PET_PALETTES[color];
+    palette = Object.freeze(petColorsForAccents(accent, accent2));
+    PALETTES.set(color, palette);
+  }
+  return palette;
 }
 
 // ── Geometry per stage ────────────────────────────────────────────────────
@@ -153,7 +188,12 @@ const ADULT: PetGeometry = {
 
 const GEOMETRY: Record<PetStage, PetGeometry> = {
   egg: {
-    body: { cx: 50, cy: 56, rx: 26, ry: 32 },
+    // Centred in the 100×100 box (18–82 tall), not resting on the ground
+    // line the hatched stages stand on: the egg is usually seen alone in a
+    // small square (the DM header chip, notice glyphs, the egg picker), where
+    // sitting 6 units low read as off-centre. Its spots and crack below sit
+    // on the same shell. The iOS and Android apps use the same numbers.
+    body: { cx: 50, cy: 50, rx: 26, ry: 32 },
     belly: null,
     eyes: null,
     feet: [],
@@ -459,20 +499,20 @@ export function petShapes({
 
   if (stage === 'egg') {
     out.push(ellipse('body', g.body, c.belly, c.outline));
-    out.push(circle('spot', 40, 46, 5, c.body));
-    out.push(circle('spot', 60, 60, 6, c.body));
-    out.push(circle('spot', 46, 72, 4, c.body));
+    out.push(circle('spot', 40, 40, 5, c.body));
+    out.push(circle('spot', 60, 54, 6, c.body));
+    out.push(circle('spot', 46, 66, 4, c.body));
     if (progress >= PET_CRACK_AT) {
       out.push(
         polyline(
           'crack',
           [
-            [30, 52],
-            [38, 46],
-            [45, 54],
-            [53, 46],
-            [60, 54],
-            [70, 48],
+            [30, 46],
+            [38, 40],
+            [45, 48],
+            [53, 40],
+            [60, 48],
+            [70, 42],
           ],
           c.outline,
           2,
