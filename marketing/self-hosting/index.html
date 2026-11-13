@@ -1,0 +1,1407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Self-hosting guide — Zekktris</title>
+<meta name="description" content="Run your own Zekktris server with one command: by your domain, just your public IP, or on your home network. What you need, installing, connecting the apps, calls, updates, backups and troubleshooting." />
+<meta name="theme-color" content="#0a0f1c" />
+<meta name="color-scheme" content="dark" />
+<meta property="og:type" content="article" />
+<meta property="og:title" content="Run your own Zekktris server" />
+<meta property="og:description" content="The complete self-hosting guide: one command, your machine, your data." />
+<link rel="icon" href="../../icon.svg" type="image/svg+xml" />
+<link rel="icon" href="../../favicon-32.png" sizes="32x32" type="image/png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg-0:#0a0f1c; --bg-1:#0e1422; --bg-2:#131a2a; --bg-3:#1c2438;
+    --ink-1:#f3f6fa; --ink-2:#b5becf; --ink-3:#7a849a;
+    --cyan:#3dd7ec; --violet:#9d7bff; --magenta:#ec5fb5; --amber:#f5b942;
+    --line:#2a3450; --code-bg:#070b15;
+    --glow: 0 0 40px rgba(61,215,236,.25);
+    --display:"Syne",sans-serif; --body:"Hanken Grotesk",system-ui,sans-serif; --mono:"JetBrains Mono",monospace;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  /* overflow-x:clip, never hidden: hidden turns body into its own scroll box,
+     and then the sticky nav and table of contents have nothing to stick to. */
+  html { scroll-behavior:smooth; overflow-x:clip; }
+  body {
+    background:var(--bg-0); color:var(--ink-2);
+    font-family:var(--body); line-height:1.65; font-size:1rem;
+    -webkit-font-smoothing:antialiased; overflow-x:clip;
+  }
+  body::before {
+    content:""; position:fixed; inset:0; z-index:-2; pointer-events:none;
+    background:
+      radial-gradient(60vw 60vw at 12% -8%, rgba(61,215,236,.14), transparent 60%),
+      radial-gradient(55vw 55vw at 92% 6%, rgba(157,123,255,.14), transparent 60%),
+      radial-gradient(70vw 70vw at 50% 120%, rgba(236,95,181,.08), transparent 60%);
+  }
+  body::after {
+    content:""; position:fixed; inset:0; z-index:-1; pointer-events:none; opacity:.4;
+    background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:64px 64px;
+    -webkit-mask-image:radial-gradient(circle at 50% 0%, #000 0%, transparent 60%);
+    mask-image:radial-gradient(circle at 50% 0%, #000 0%, transparent 60%);
+  }
+  a { color:inherit; text-decoration:none; }
+  a:focus-visible, button:focus-visible, summary:focus-visible { outline:2px solid var(--cyan); outline-offset:3px; border-radius:8px; }
+  .code pre:focus-visible, .tbl-wrap:focus-visible { outline:2px solid var(--cyan); outline-offset:-2px; }
+  .wrap { width:100%; max-width:1120px; margin-inline:auto; padding-inline:clamp(1rem,4vw,2.5rem); }
+  .grad-text {
+    background:linear-gradient(110deg,var(--cyan),var(--violet) 55%,var(--magenta));
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; color:transparent;
+  }
+  .eyebrow { font-family:var(--mono); font-size:.72rem; letter-spacing:.32em; text-transform:uppercase; color:var(--cyan); margin-bottom:1.1rem; }
+  .vh { position:absolute !important; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; }
+  .skip { position:absolute; left:1rem; top:-4rem; z-index:100; background:var(--bg-2); color:var(--ink-1);
+    border:1px solid var(--cyan); border-radius:10px; padding:.6rem 1rem; font-weight:600; }
+  .skip:focus { top:.75rem; }
+
+  /* ── Nav (same as the home page) ── */
+  header.nav {
+    position:sticky; top:0; z-index:50; backdrop-filter:blur(14px);
+    background:rgba(10,15,28,.8); border-bottom:1px solid transparent; transition:border-color .3s;
+  }
+  header.nav.scrolled { border-bottom-color:var(--line); }
+  .nav-in { display:flex; align-items:center; gap:1.5rem; height:68px; }
+  .brand { display:inline-flex; align-items:center; font-family:var(--display); font-weight:800; font-size:1.15rem; letter-spacing:-.01em;
+    background:linear-gradient(120deg,#3dd7ec,#9d7bff,#ec5fb5); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .nav-links { margin-left:auto; display:flex; gap:1.8rem; align-items:center; }
+  .nav-links a { color:var(--ink-2); font-weight:500; font-size:.94rem; transition:color .2s; }
+  .nav-links a:hover, .nav-links a[aria-current="page"] { color:var(--ink-1); }
+  .nav-links a[aria-current="page"] { box-shadow:inset 0 -2px 0 var(--cyan); padding-bottom:.2rem; }
+  .btn {
+    display:inline-flex; align-items:center; gap:.5rem; font-weight:600; font-family:var(--body);
+    border-radius:11px; padding:.7rem 1.25rem; font-size:.94rem; cursor:pointer; border:1px solid transparent;
+    transition:transform .15s, box-shadow .2s, background .2s, border-color .2s; white-space:nowrap;
+  }
+  .btn-primary { background:linear-gradient(120deg,var(--cyan),var(--violet)); color:#06101c; box-shadow:var(--glow); }
+  .btn-primary:hover { transform:translateY(-2px); box-shadow:0 0 56px rgba(61,215,236,.4); }
+  .nav-links a.btn-primary, .nav-links a.btn-primary:hover { color:#06101c; }
+  .btn-ghost { background:rgba(255,255,255,.03); color:var(--ink-1); border-color:var(--line); }
+  .btn-ghost:hover { transform:translateY(-2px); border-color:rgba(61,215,236,.55); background:rgba(61,215,236,.06); }
+  .nav-toggle { display:none; margin-left:auto; background:none; border:0; color:var(--ink-1); cursor:pointer; padding:.35rem; }
+
+  /* ── Guide hero ── */
+  .g-hero { padding:3.6rem 0 2.6rem; }
+  .crumbs { font-family:var(--mono); font-size:.74rem; letter-spacing:.06em; color:var(--ink-3); margin-bottom:1.6rem; }
+  .crumbs a { color:var(--ink-2); }
+  .crumbs a:hover { color:var(--cyan); }
+  .crumbs span[aria-hidden] { margin:0 .5rem; }
+  .crumbs span[aria-current] { color:var(--ink-2); }
+  .g-hero h1 { font-family:var(--display); font-weight:800; color:var(--ink-1); font-size:clamp(2.3rem,6vw,4rem);
+    line-height:1.04; letter-spacing:-.025em; margin-bottom:1.2rem; max-width:820px; text-wrap:balance; }
+  .g-hero .lead { font-size:clamp(1.05rem,2vw,1.22rem); max-width:700px; margin-bottom:2rem; }
+  .facts { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.8rem; margin-bottom:2rem; max-width:900px; }
+  .fact { border:1px solid var(--line); border-radius:14px; background:linear-gradient(180deg,var(--bg-1),rgba(14,20,34,.4)); padding:.9rem 1rem; }
+  .fact b { display:block; font-family:var(--display); font-weight:700; color:var(--ink-1); font-size:1.02rem; line-height:1.3; }
+  .fact span { font-size:.82rem; color:var(--ink-3); line-height:1.45; display:block; margin-top:.2rem; }
+  .quick { max-width:760px; border:1px solid rgba(61,215,236,.3); border-radius:18px; padding:1.3rem;
+    background:linear-gradient(180deg,rgba(61,215,236,.07),rgba(157,123,255,.04) 70%,rgba(14,20,34,.3)); box-shadow:0 30px 90px -50px rgba(61,215,236,.55); }
+  .quick h2 { font-family:var(--display); font-weight:700; color:var(--ink-1); font-size:1.1rem; margin-bottom:.2rem; }
+  .quick > p { font-size:.94rem; }
+  .quick .code { margin:1rem 0 .9rem; }
+  .quick .callout { margin:0 0 1rem; }
+  .quick-links { display:flex; flex-wrap:wrap; gap:.8rem; }
+
+  /* ── Layout: table of contents + article ── */
+  .doc { display:grid; grid-template-columns:232px minmax(0,1fr); gap:3.2rem; align-items:start; padding-bottom:4rem; }
+  .toc-d { position:sticky; top:92px; max-height:calc(100vh - 112px); overflow:auto; padding:0 .2rem 1rem 0; }
+  /* The side contents stick near the top-left, over the page's cyan glow,
+     where --ink-3 drops under 4.5:1. So its text uses --ink-2. */
+  .toc-title { font-family:var(--mono); font-size:.7rem; letter-spacing:.24em; text-transform:uppercase; color:var(--ink-2); margin:0 0 .8rem .85rem; }
+  .toc-list { list-style:none; counter-reset:toc; }
+  .toc-list li { counter-increment:toc; }
+  .toc-list a { display:flex; gap:.6rem; padding:.34rem .7rem .34rem .85rem; border-left:2px solid var(--line); color:var(--ink-2);
+    font-size:.88rem; line-height:1.35; transition:color .15s, border-color .15s, background .15s; }
+  .toc-list a::before { content:counter(toc, decimal-leading-zero); font-family:var(--mono); font-size:.7rem; padding-top:.12rem; }
+  .toc-list a:hover { color:var(--ink-1); }
+  .toc-list a[aria-current="location"] { color:var(--cyan); border-left-color:var(--cyan); background:linear-gradient(90deg,rgba(61,215,236,.09),transparent); }
+  .toc-list a[aria-current="location"]::before { color:var(--cyan); }
+  .toc-m { display:none; border:1px solid var(--line); border-radius:14px; background:var(--bg-1); margin-bottom:1.6rem; }
+  .toc-m summary { cursor:pointer; list-style:none; padding:.9rem 1rem; font-weight:600; color:var(--ink-1); display:flex; justify-content:space-between; align-items:center; }
+  .toc-m summary::-webkit-details-marker { display:none; }
+  .toc-m summary::after { content:"+"; font-family:var(--mono); color:var(--cyan); font-size:1.1rem; }
+  .toc-m[open] summary::after { content:"−"; }
+  .toc-m .toc-list { padding:0 .6rem .9rem .3rem; columns:2; column-gap:1rem; }
+  .toc-m .toc-list li { break-inside:avoid; }
+
+  /* ── Article ── */
+  .article { min-width:0; max-width:780px; }
+  .doc-sec { padding:2.6rem 0; border-top:1px solid var(--line); scroll-margin-top:84px; }
+  .doc-sec:first-child { border-top:0; padding-top:.4rem; }
+  .sec-num { font-family:var(--mono); font-size:.7rem; letter-spacing:.26em; text-transform:uppercase; color:var(--cyan); margin-bottom:.55rem; }
+  .article h2 { font-family:var(--display); font-weight:800; color:var(--ink-1); font-size:clamp(1.55rem,3.2vw,2rem); letter-spacing:-.015em; line-height:1.15; margin-bottom:1rem; text-wrap:balance; }
+  .article h3 { font-family:var(--display); font-weight:700; color:var(--ink-1); font-size:1.12rem; line-height:1.3; margin:1.9rem 0 .6rem; }
+  .article h4 { font-family:var(--body); font-weight:600; color:var(--ink-1); font-size:1rem; margin:1.2rem 0 .4rem; }
+  .article p { margin-bottom:1rem; text-wrap:pretty; }
+  .article ul, .article ol { margin:0 0 1rem; padding-left:1.3rem; }
+  .article ul { list-style:disc; }
+  .article ul ul { list-style:circle; }
+  .article li { margin:.4rem 0; padding-left:.15rem; }
+  .article li::marker { color:var(--cyan); }
+  .article li > ul { margin:.4rem 0 .2rem; }
+  .article strong { color:var(--ink-1); font-weight:600; }
+  .article a, .quick a.inline { color:var(--cyan); text-decoration:underline; text-decoration-color:rgba(61,215,236,.4); text-underline-offset:3px; }
+  .article a:hover { text-decoration-color:var(--cyan); }
+  .article a.btn { text-decoration:none; color:#06101c; }
+  .article a.btn-ghost { color:var(--ink-1); }
+  code { font-family:var(--mono); font-size:.86em; color:var(--ink-1); background:rgba(255,255,255,.05);
+    border:1px solid var(--line); border-radius:6px; padding:.06em .36em; overflow-wrap:anywhere; }
+  kbd { font-family:var(--mono); font-size:.82em; color:var(--ink-1); border:1px solid var(--line); border-bottom-width:2px; border-radius:6px; padding:.02em .4em; background:var(--bg-2); }
+
+  /* Code blocks with a Copy button */
+  .code { margin:.9rem 0 1.2rem; border:1px solid var(--line); border-radius:12px; background:var(--code-bg); overflow:hidden; }
+  .code-head { display:flex; align-items:center; justify-content:space-between; gap:.6rem; padding:.32rem .45rem .32rem .9rem;
+    border-bottom:1px solid var(--line); background:rgba(255,255,255,.02); }
+  .code-head span { font-family:var(--mono); font-size:.68rem; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-3); }
+  .copy { font-family:var(--mono); font-size:.72rem; font-weight:500; padding:.28rem .7rem; border-radius:8px; border:1px solid var(--line);
+    background:var(--bg-2); color:var(--ink-2); cursor:pointer; transition:color .15s, border-color .15s; min-width:4.6rem; }
+  .copy:hover { color:var(--ink-1); border-color:rgba(61,215,236,.55); }
+  .copy.done { color:var(--cyan); border-color:var(--cyan); }
+  .code pre { margin:0; padding:.95rem 1.05rem; overflow-x:auto; font-family:var(--mono); font-size:.84rem; line-height:1.7;
+    color:var(--ink-1); white-space:pre; tab-size:2; -webkit-overflow-scrolling:touch;
+    /* Edge shadows appear only while there's more to scroll to. */
+    background:
+      linear-gradient(90deg, var(--code-bg) 30%, rgba(7,11,21,0)) left / 40px 100% no-repeat local,
+      linear-gradient(270deg, var(--code-bg) 30%, rgba(7,11,21,0)) right / 40px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, rgba(61,215,236,.28), transparent) left / 12px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, rgba(61,215,236,.28), transparent) right / 12px 100% no-repeat scroll,
+      var(--code-bg); }
+  .code pre code { background:none; border:0; padding:0; font-size:inherit; color:inherit; overflow-wrap:normal; }
+  .code .cm { color:var(--ink-3); }
+  .code.danger { border-color:rgba(236,95,181,.45); }
+  .code.danger .code-head span { color:var(--magenta); }
+
+  /* Callouts */
+  .callout { display:grid; grid-template-columns:22px minmax(0,1fr); gap:.75rem; border:1px solid var(--line); border-left-width:3px;
+    border-radius:12px; padding:.9rem 1rem; margin:1.1rem 0 1.3rem; background:var(--bg-1); font-size:.95rem; }
+  .callout svg { width:20px; height:20px; margin-top:.15rem; }
+  .callout p { margin:0 0 .5rem; }
+  .callout p:last-child, .callout ul:last-child { margin-bottom:0; }
+  .callout .label { color:var(--ink-1); font-weight:600; }
+  .callout.tip { border-left-color:var(--cyan); background:linear-gradient(90deg,rgba(61,215,236,.07),var(--bg-1) 70%); }
+  .callout.tip svg { color:var(--cyan); }
+  .callout.warn { border-left-color:var(--amber); background:linear-gradient(90deg,rgba(245,185,66,.08),var(--bg-1) 70%); }
+  .callout.warn svg { color:var(--amber); }
+  .callout.note { border-left-color:var(--violet); background:linear-gradient(90deg,rgba(157,123,255,.09),var(--bg-1) 70%); }
+  .callout.note svg { color:var(--violet); }
+
+  /* Numbered steps */
+  ol.steps { list-style:none; padding:0; margin:1.4rem 0 1.6rem; counter-reset:step; }
+  ol.steps > li { position:relative; counter-increment:step; margin:0 0 0 1.05rem; padding:0 0 1.5rem 2.15rem; border-left:1px dashed var(--line); }
+  ol.steps > li:last-child { border-left-color:transparent; padding-bottom:.2rem; }
+  ol.steps > li::before { content:counter(step); position:absolute; left:-1.05rem; top:-.15rem; width:2.1rem; height:2.1rem; border-radius:50%;
+    display:grid; place-items:center; font-family:var(--mono); font-weight:500; font-size:.9rem; color:#06101c;
+    background:linear-gradient(120deg,var(--cyan),var(--violet)); box-shadow:0 0 0 4px var(--bg-0); }
+  ol.steps > li > h3 { margin-top:.05rem; }
+
+  /* Reach options */
+  .opts { display:grid; gap:1rem; margin:1.3rem 0 1.6rem; }
+  .opt { border:1px solid var(--line); border-radius:16px; background:linear-gradient(180deg,var(--bg-1),rgba(14,20,34,.45)); padding:1.2rem 1.3rem; }
+  .opt-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:.4rem 1rem; margin-bottom:.85rem; }
+  .opt-head .n { font-family:var(--mono); font-size:.7rem; letter-spacing:.2em; color:var(--cyan); }
+  .opt-head h3 { margin:0; font-size:1.15rem; }
+  .opt-head code { margin-left:auto; }
+  .opt dl { display:grid; grid-template-columns:8.2rem minmax(0,1fr); gap:.45rem 1rem; font-size:.94rem; }
+  .opt dt { color:var(--ink-3); font-family:var(--mono); font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; padding-top:.22rem; }
+  .opt dd { margin:0; }
+
+  /* Tables */
+  .tbl-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:12px; margin:1rem 0 1.3rem; -webkit-overflow-scrolling:touch;
+    background:
+      linear-gradient(90deg, var(--bg-1) 30%, rgba(14,20,34,0)) left / 40px 100% no-repeat local,
+      linear-gradient(270deg, var(--bg-1) 30%, rgba(14,20,34,0)) right / 40px 100% no-repeat local,
+      radial-gradient(farthest-side at 0 50%, rgba(61,215,236,.28), transparent) left / 12px 100% no-repeat scroll,
+      radial-gradient(farthest-side at 100% 50%, rgba(61,215,236,.28), transparent) right / 12px 100% no-repeat scroll,
+      var(--bg-1); }
+  table.tbl code { white-space:nowrap; overflow-wrap:normal; }
+  table.tbl { width:100%; border-collapse:collapse; font-size:.9rem; }
+  table.tbl th, table.tbl td { padding:.62rem .85rem; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  table.tbl thead th { font-family:var(--display); font-weight:700; color:var(--ink-1); font-size:.86rem; background:rgba(255,255,255,.02); }
+  table.tbl tbody th { color:var(--ink-1); font-weight:600; }
+  table.tbl tr:last-child th, table.tbl tr:last-child td { border-bottom:0; }
+  table.tbl td.c, table.tbl th.c { text-align:center; }
+  .tick { color:var(--cyan); font-weight:700; }
+  .dash { color:var(--ink-3); }
+
+  /* Q&A / troubleshooting */
+  .qa-group { margin-top:1.6rem; }
+  details.qa { border:1px solid var(--line); border-radius:12px; background:var(--bg-1); margin:.55rem 0; transition:border-color .15s; }
+  details.qa[open] { border-color:rgba(61,215,236,.35); }
+  details.qa > summary { cursor:pointer; list-style:none; padding:.85rem 1rem; font-weight:600; color:var(--ink-1);
+    display:grid; grid-template-columns:minmax(0,1fr) auto; gap:1rem; align-items:start; line-height:1.45; }
+  details.qa > summary::-webkit-details-marker { display:none; }
+  details.qa > summary::after { content:"+"; font-family:var(--mono); color:var(--cyan); font-size:1.05rem; line-height:1.3; }
+  details.qa[open] > summary::after { content:"−"; }
+  details.qa > summary:hover { color:#fff; }
+  .qa-body { padding:0 1rem 1rem; font-size:.95rem; }
+  .qa-body > :last-child { margin-bottom:0; }
+  .qa-body .code { margin-bottom:.4rem; }
+
+  /* Small command table */
+  .cmds td:first-child { white-space:nowrap; }
+
+  footer { border-top:1px solid var(--line); padding:3rem 0 2.6rem; }
+  .foot-in { display:flex; flex-wrap:wrap; gap:1.2rem 2rem; align-items:center; justify-content:space-between; }
+  .foot-links { display:flex; flex-wrap:wrap; gap:.6rem 1.6rem; }
+  .foot-in a { color:var(--ink-3); font-size:.9rem; transition:color .2s; }
+  .foot-in a:hover { color:var(--cyan); }
+  .foot-in a.brand, .foot-in a.brand:hover { color:transparent; }
+  .foot-meta { margin-top:1.6rem; }
+  .foot-meta small { color:var(--ink-3); font-size:.82rem; line-height:1.7; }
+
+  .to-top { position:fixed; right:clamp(1rem,3vw,1.6rem); bottom:clamp(1rem,3vw,1.6rem); z-index:40; display:inline-flex; align-items:center; gap:.35rem;
+    font-family:var(--mono); font-size:.74rem; color:var(--ink-1); background:rgba(19,26,42,.92); border:1px solid var(--line); border-radius:999px;
+    padding:.5rem .85rem; opacity:0; transform:translateY(8px); pointer-events:none; transition:opacity .2s, transform .2s, border-color .2s; }
+  .to-top.show { opacity:1; transform:none; pointer-events:auto; }
+  .to-top:hover { border-color:var(--cyan); }
+
+  @media (max-width:1080px){
+    .doc { grid-template-columns:minmax(0,1fr); gap:0; }
+    .toc-d { display:none; }
+    .toc-m { display:block; }
+    .article { max-width:none; }
+  }
+  @media (max-width:860px){
+    .nav-links { display:none; }
+    .nav-links.open { display:flex; position:absolute; top:68px; left:0; right:0; flex-direction:column; align-items:flex-start; gap:1.1rem;
+      background:var(--bg-1); border-bottom:1px solid var(--line); padding:1.4rem clamp(1rem,4vw,2.5rem); }
+    .nav-toggle { display:block; }
+    .facts { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
+  @media (max-width:600px){
+    .g-hero { padding-top:2.4rem; }
+    .toc-m .toc-list { columns:1; }
+    .opt dl { grid-template-columns:minmax(0,1fr); gap:.15rem; }
+    .opt dd { margin-bottom:.55rem; }
+    .opt-head code { margin-left:0; }
+    .code pre { font-size:.8rem; padding:.85rem .9rem; }
+    .quick-links .btn { width:100%; justify-content:center; }
+    table.tbl th, table.tbl td { padding:.55rem .6rem; }
+  }
+  @media (max-width:380px){
+    .facts { grid-template-columns:minmax(0,1fr); }
+    /* "Troubleshooting" is one long word: keep it inside a 320px screen. */
+    .article h2 { font-size:1.4rem; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    html { scroll-behavior:auto; }
+    .btn, .to-top { transition:none; }
+    .btn-primary:hover, .btn-ghost:hover { transform:none; }
+  }
+</style>
+</head>
+<body id="top">
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a href="../" class="brand">Zekktris</a>
+    <button class="nav-toggle" id="navToggle" type="button" aria-label="Menu" aria-expanded="false" aria-controls="navLinks">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+    <nav class="nav-links" id="navLinks" aria-label="Main">
+      <a href="../#features">Features</a>
+      <a href="./" aria-current="page">Self-host</a>
+      <a href="../#compare">Compare</a>
+      <a href="../#download" class="btn btn-primary" style="padding:.55rem 1.1rem;">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<!-- HERO -->
+<div class="g-hero">
+  <div class="wrap">
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="../">Zekktris</a><span aria-hidden="true">/</span><span aria-current="page">Self-hosting guide</span></nav>
+    <div class="eyebrow">Self-hosting guide</div>
+    <h1>Run your own <span class="grad-text">Zekktris server</span></h1>
+    <p class="lead">Zekktris runs on zekktris.com, and anyone can run their own server too: free, on a machine you control, set up with one command. This guide takes you from a bare machine to a running server, then through the apps, calls, updates and backups.</p>
+
+    <div class="facts" role="list">
+      <div class="fact" role="listitem"><b>Linux + Docker</b><span>Any distribution, with Docker Compose v2</span></div>
+      <div class="fact" role="listitem"><b>2 GB memory</b><span>The practical minimum</span></div>
+      <div class="fact" role="listitem"><b>5 GB free disk</b><span>Plus room for uploads</span></div>
+      <div class="fact" role="listitem"><b>Free software</b><span>GNU AGPL-3.0, nothing for sale</span></div>
+    </div>
+
+    <section class="quick" aria-labelledby="quick-title">
+      <h2 id="quick-title">Quick start</h2>
+      <p>On a Linux machine with Docker, run these three lines and answer the installer's questions.</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>git clone https://github.com/Eternus-Nox/zekktris.git
+cd zekktris
+./install.sh</code></pre>
+      </div>
+      <div class="callout note" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></svg>
+        <p><span class="label">The public repository opens soon.</span> Until then, this link only works for people who've been given access.</p>
+      </div>
+      <div class="quick-links">
+        <a class="btn btn-primary" href="#install">Step-by-step install</a>
+        <a class="btn btn-ghost" href="#requirements">What you need</a>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="wrap doc">
+  <aside class="toc-d" aria-label="Guide sections">
+    <nav aria-label="On this page">
+      <p class="toc-title">On this page</p>
+      <ol class="toc-list">
+        <li><a href="#what-you-get">What you get</a></li>
+        <li><a href="#requirements">What you need</a></li>
+        <li><a href="#choose">How people reach it</a></li>
+        <li><a href="#install">Install it</a></li>
+        <li><a href="#installer-changes">What the installer changes</a></li>
+        <li><a href="#admin">Your admin account</a></li>
+        <li><a href="#signups">Who can sign up</a></li>
+        <li><a href="#apps">Connect the apps</a></li>
+        <li><a href="#calls">Voice and video calls</a></li>
+        <li><a href="#email">Email</a></li>
+        <li><a href="#notifications">Notifications</a></li>
+        <li><a href="#updating">Updating</a></li>
+        <li><a href="#backups">Backups and restore</a></li>
+        <li><a href="#health">Health check</a></li>
+        <li><a href="#proxy">Behind Cloudflare or a proxy</a></li>
+        <li><a href="#troubleshooting">Troubleshooting</a></li>
+        <li><a href="#security">Security notes</a></li>
+        <li><a href="#uninstall">Uninstalling</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ol>
+    </nav>
+  </aside>
+
+  <details class="toc-m">
+    <summary>On this page</summary>
+    <nav aria-label="On this page (compact)">
+      <ol class="toc-list">
+        <li><a href="#what-you-get">What you get</a></li>
+        <li><a href="#requirements">What you need</a></li>
+        <li><a href="#choose">How people reach it</a></li>
+        <li><a href="#install">Install it</a></li>
+        <li><a href="#installer-changes">What the installer changes</a></li>
+        <li><a href="#admin">Your admin account</a></li>
+        <li><a href="#signups">Who can sign up</a></li>
+        <li><a href="#apps">Connect the apps</a></li>
+        <li><a href="#calls">Voice and video calls</a></li>
+        <li><a href="#email">Email</a></li>
+        <li><a href="#notifications">Notifications</a></li>
+        <li><a href="#updating">Updating</a></li>
+        <li><a href="#backups">Backups and restore</a></li>
+        <li><a href="#health">Health check</a></li>
+        <li><a href="#proxy">Behind Cloudflare or a proxy</a></li>
+        <li><a href="#troubleshooting">Troubleshooting</a></li>
+        <li><a href="#security">Security notes</a></li>
+        <li><a href="#uninstall">Uninstalling</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ol>
+    </nav>
+  </details>
+
+  <article class="article">
+
+    <!-- 1 ─────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="what-you-get" aria-labelledby="h-what-you-get">
+      <p class="sec-num">01 · Overview</p>
+      <h2 id="h-what-you-get">What you get</h2>
+      <p>Your server is its own place. Accounts, servers, messages and uploads live on your machine. An account on zekktris.com doesn't carry over, so everyone signs up on yours. The iPhone and Android apps can switch to your server from their sign-in screens (the desktop app from its next update), and the web app is served straight from it.</p>
+      <p>The installer sets up one Docker Compose stack of five containers:</p>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th scope="col">Container</th><th scope="col">What it does</th></tr></thead>
+          <tbody>
+            <tr><th scope="row"><code>zekktris-proxy</code></th><td>Caddy 2.11.4. Serves the web app, gets HTTPS certificates by itself, and routes the API, the live connection and call setup.</td></tr>
+            <tr><th scope="row"><code>zekktris-api</code></th><td>The Zekktris server (Node.js 20), with the API and the realtime gateway. It applies database updates by itself when it starts, and runs as an unprivileged user.</td></tr>
+            <tr><th scope="row"><code>zekktris-db</code></th><td>PostgreSQL 16, which holds every account, message and server.</td></tr>
+            <tr><th scope="row"><code>zekktris-cache</code></th><td>Redis 7, for short-lived state only. Nothing in it needs backing up.</td></tr>
+            <tr><th scope="row"><code>zekktris-livekit</code></th><td>LiveKit 1.9.12, your own voice and video server. It's bundled and on by default.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Everything worth keeping is in one data folder (<code>data/</code> inside the zekktris folder, or <code>/mnt/user/appdata/zekktris</code> on Unraid), plus the <code>.env</code> settings file the installer writes. The containers restart by themselves, so the server comes back after a reboot once Docker is running.</p>
+      <p>Zekktris is free software under the GNU AGPL-3.0 licence, so you can run it, change it and share it.</p>
+    </section>
+
+    <!-- 2 ─────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="requirements" aria-labelledby="h-requirements">
+      <p class="sec-num">02 · Before you start</p>
+      <h2 id="h-requirements">What you need</h2>
+      <ul>
+        <li><strong>A machine that stays switched on, running Linux</strong> (any distribution): a spare PC, a Raspberry Pi 4 or 5, a NAS such as Unraid, or a small VPS.</li>
+        <li><strong>macOS and Windows (through WSL)</strong> are fine for trying it out. Voice and video need Docker's host networking, which only fully works on Linux, so on those systems chat works for everyone but calls may only work on that machine.</li>
+        <li><strong>Memory:</strong> 2 GB is the practical minimum. The installer warns you if there's less.</li>
+        <li><strong>Disk:</strong> keep at least 5 GB free. Building the images needs about 3 GB, and the health check flags anything under 5 GB. On top of that, leave room for uploads (each file can be up to 100 MB by default).</li>
+        <li><strong>Docker</strong> with the Docker Compose v2 plugin (the <code>docker compose</code> command), which the backup and update scripts rely on. On Linux (not Unraid) the installer can install Docker for you, but only if you say yes. On macOS use Docker Desktop or colima; on Unraid, turn Docker on in Settings.</li>
+        <li><strong>git, curl, openssl and awk.</strong> These are usually already there.</li>
+        <li><strong>For people outside your home:</strong> a public IPv4 address where you can forward ports on the router (a VPS already has one), and optionally a domain name. A home-network-only server needs neither.</li>
+      </ul>
+      <p>Check Docker with:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>docker --version &amp;&amp; docker compose version</code></pre>
+      </div>
+    </section>
+
+    <!-- 3 ─────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="choose" aria-labelledby="h-choose">
+      <p class="sec-num">03 · Decide</p>
+      <h2 id="h-choose">Choose how people reach your server</h2>
+      <p>The installer offers three ways. Choose one with a flag, or answer its question with 1, 2 or 3. You can switch later.</p>
+
+      <div class="opts">
+        <div class="opt">
+          <div class="opt-head"><span class="n">OPTION 1</span><h3>Just your public IP</h3><code>./install.sh --ip</code></div>
+          <dl>
+            <dt>Your address</dt>
+            <dd>Looks like <code>https://203.0.113.5</code>. You don't need a domain, and HTTPS is still free and automatic: Caddy gets a Let's Encrypt certificate for the IP address itself. These certificates last 6 days, and Caddy renews them every couple of days.</dd>
+            <dt>You need</dt>
+            <dd>A real public IPv4 address. At home, the web and call ports must be forwarded to the server (the installer does it for you if the router supports UPnP).</dd>
+            <dt>Good for</dt>
+            <dd>A public IP or a VPS, without a domain. It's the installer's default when it finds a public IP.</dd>
+            <dt>Worth knowing</dt>
+            <dd>If your internet provider changes your IP, your server's address changes too. Run <code>./install.sh --reconfigure --ip</code>, and everyone re-enters the new address. A free dynamic-DNS name (for example from duckdns.org) used with the domain option avoids this. Passkeys can't work on a bare IP address, so they're hidden.</dd>
+          </dl>
+        </div>
+        <div class="opt">
+          <div class="opt-head"><span class="n">OPTION 2</span><h3>A domain name</h3><code>./install.sh --domain chat.example.com</code></div>
+          <dl>
+            <dt>Your address</dt>
+            <dd><code>https://chat.example.com</code>, with an ordinary Let's Encrypt certificate.</dd>
+            <dt>You need</dt>
+            <dd>A DNS "A" record that points the name at your public IP. The installer checks it and warns you if it points somewhere else. The ports are the same as for the IP option.</dd>
+            <dt>Good for</dt>
+            <dd>An address that never changes for your users, and passkeys in the browser.</dd>
+            <dt>Worth knowing</dt>
+            <dd>If the name is proxied by Cloudflare (orange cloud), switch it to "DNS only" for the first setup (see <a href="#proxy">Behind Cloudflare or another proxy</a>).</dd>
+          </dl>
+        </div>
+        <div class="opt">
+          <div class="opt-head"><span class="n">OPTION 3</span><h3>Home network only</h3><code>./install.sh --lan</code></div>
+          <dl>
+            <dt>Your address</dt>
+            <dd><code>http://&lt;this machine's LAN address&gt;:5550</code>, for example <code>http://192.168.1.20:5550</code>. Nobody outside your network can connect, and the router isn't touched.</dd>
+            <dt>You need</dt>
+            <dd>Nothing extra.</dd>
+            <dt>Good for</dt>
+            <dd>Trying Zekktris out, or a household server. It's the installer's default when it can't find a public IP or finds carrier-grade NAT.</dd>
+            <dt>Worth knowing</dt>
+            <dd>The apps work fully there, calls included. A web browser can chat, but browsers only allow calls, push notifications and passkeys over HTTPS, so use the apps for calls.</dd>
+          </dl>
+        </div>
+      </div>
+
+      <h3>Ports</h3>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr><th scope="col">Port</th><th scope="col">Used for</th><th scope="col" class="c">IP or domain<br><small>(forward on the router)</small></th><th scope="col" class="c">Home network<br><small>(this machine only)</small></th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">TCP 80</th><td>Web, and HTTPS certificate checks</td><td class="c tick">✓</td><td class="c dash">—</td></tr>
+            <tr><th scope="row">TCP 443</th><td>Web over HTTPS</td><td class="c tick">✓</td><td class="c dash">—</td></tr>
+            <tr><th scope="row">UDP 443</th><td>Faster HTTP/3 (optional)</td><td class="c tick">✓</td><td class="c dash">—</td></tr>
+            <tr><th scope="row">TCP 5550</th><td>Web over plain http</td><td class="c dash">—</td><td class="c tick">✓</td></tr>
+            <tr><th scope="row">TCP 7881</th><td>Call audio and video (fallback)</td><td class="c tick">✓</td><td class="c tick">✓</td></tr>
+            <tr><th scope="row">UDP 7882</th><td>Call audio and video</td><td class="c tick">✓</td><td class="c tick">✓</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Never forward port 7880: it's the voice server's internal port (see <a href="#calls">Voice and video calls</a>).</p>
+
+      <div class="callout warn" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5h.01"/></svg>
+        <div>
+          <p><span class="label">Carrier-grade NAT.</span> Some internet providers share one public IP between many customers. Then port forwarding can't reach your machine from outside, and the installer tells you so. Your options are to ask your provider for a public IPv4 address (often free or cheap), use a VPS, or run a home-network install meanwhile.</p>
+          <p>The installer also mentions Cloudflare Tunnel and Tailscale. A Cloudflare Tunnel can carry the website and chat, but not call audio and video.</p>
+        </div>
+      </div>
+      <div class="callout tip" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/></svg>
+        <p><span class="label">You can switch later.</span> <code>./install.sh --reconfigure</code> asks again, or pass the new option, such as <code>./install.sh --domain chat.example.com</code>. Your secrets and data are kept, and people re-enter the new address in their apps.</p>
+      </div>
+    </section>
+
+    <!-- 4 ─────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="install" aria-labelledby="h-install">
+      <p class="sec-num">04 · Install</p>
+      <h2 id="h-install">Install it</h2>
+      <ol class="steps">
+        <li>
+          <h3>Get the code onto the server</h3>
+          <div class="code">
+            <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+            <pre><code>git clone https://github.com/Eternus-Nox/zekktris.git
+cd zekktris</code></pre>
+          </div>
+          <div class="callout note" role="note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></svg>
+            <p><span class="label">The public repository opens soon.</span> Until then, this link only works for people who've been given access.</p>
+          </div>
+          <p>Keep this folder. It's a git checkout, and the update script updates it in place later. Every command in this guide runs from it.</p>
+        </li>
+        <li>
+          <h3>Run the installer</h3>
+          <div class="code">
+            <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+            <pre><code>./install.sh</code></pre>
+          </div>
+          <p>Or choose how people reach it up front, with one of these:</p>
+          <ul>
+            <li>Just your public IP: <code>./install.sh --ip</code></li>
+            <li>A domain name: <code>./install.sh --domain chat.example.com</code></li>
+            <li>Home network only: <code>./install.sh --lan</code></li>
+          </ul>
+          <p>Run it as yourself or as root. If your user can only use Docker through sudo, the installer uses sudo for Docker by itself. Later on:</p>
+          <ul>
+            <li>run the <code>docker compose</code> commands in this guide with sudo too, or join the docker group first (<code>sudo usermod -aG docker $(whoami)</code>, then log out and back in);</li>
+            <li>run the scripts in <code>scripts/</code> (<code>update.sh</code>, <code>backup.sh</code>, <code>restore.sh</code> and <code>doctor.sh</code>) with sudo even if you're in the docker group. The maintenance agent behind the Admin panel's buttons runs them as root, and the backups it takes can only be read by root. If you're root already, as on Unraid or many VPSs, leave out <code>sudo</code>.</li>
+          </ul>
+        </li>
+        <li>
+          <h3>Answer its questions</h3>
+          <p>You only see the ones that apply to you:</p>
+          <ul>
+            <li>On macOS or WSL: <strong>"Continue anyway?"</strong>, because calls may only work on that machine.</li>
+            <li>If Docker is missing on Linux: <strong>"Download get.docker.com and run it as root now?"</strong> The default is No. Say yes, or install Docker from your distribution's packages and run the installer again.</li>
+            <li><strong>"How should people reach your server?"</strong> 1, 2 or 3. Skipped if you passed <code>--ip</code>, <code>--domain</code> or <code>--lan</code>.</li>
+            <li>The domain name, or your public IP or LAN address if it couldn't work them out.</li>
+            <li>If another program already uses the ports (often nginx or Apache): <strong>"Continue anyway?"</strong> The default is No; stop that program first.</li>
+            <li><strong>"Admin email:"</strong>, then the admin password: at least 8 characters, typed twice, hidden.</li>
+            <li><strong>"Where should the database and uploads live?"</strong> The default is <code>data/</code> in the zekktris folder (<code>/mnt/user/appdata/zekktris</code> on Unraid).</li>
+            <li>If ufw or firewalld is running: <strong>"Open the Zekktris ports in ufw?"</strong> (or firewalld).</li>
+            <li>If your router supports UPnP: <strong>"Ask the router to forward the ports to this machine (UPnP)?"</strong> If it doesn't, the installer lists the ports to forward by hand and waits for you to press <kbd>Enter</kbd>. Tip: also give the server a fixed ("reserved") address in the router's DHCP settings.</li>
+          </ul>
+        </li>
+        <li>
+          <h3>Let it finish</h3>
+          <p>The first build takes several minutes. Then the installer starts the server, waits for its startup checks, creates your admin account and, for the IP and domain options, waits up to 4 minutes for the HTTPS certificate.</p>
+          <p>If the certificate isn't there yet, it shows what Caddy reported. Usually ports 80 and 443 aren't forwarded yet, or the provider blocks incoming port 80. Fix that, and Caddy picks it up by itself within a few minutes.</p>
+        </li>
+        <li>
+          <h3>Open your server</h3>
+          <p>At the end the installer prints your address, how to sign in, what to type in the apps, and the commands for updates, health checks and logs. Open the address and sign in with the admin email and password you chose.</p>
+        </li>
+      </ol>
+
+      <h3>Installing without questions</h3>
+      <p>For scripts and automation:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>./install.sh --yes --domain chat.example.com --admin-email you@example.com --admin-password-file ~/zekktris-admin-password</code></pre>
+      </div>
+      <p>With <code>--yes</code>, or without a terminal, you must pass <code>--admin-email</code>, and the password comes from the first line of <code>--admin-password-file</code> or from the <code>ZEKKTRIS_ADMIN_PASSWORD</code> environment variable. It's never passed as a command-line argument. <code>--yes</code> takes the recommended answer everywhere, except that it never runs Docker's install script, and it stops if the ports are taken. Delete the password file afterwards.</p>
+
+      <h3>All the options</h3>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th scope="col">Option</th><th scope="col">What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>--ip</code>, or <code>--ip 203.0.113.5</code></td><td>Reachable at your public IP</td></tr>
+            <tr><td><code>--domain chat.example.com</code></td><td>Reachable at your domain</td></tr>
+            <tr><td><code>--lan</code></td><td>Home network only</td></tr>
+            <tr><td><code>--yes</code></td><td>Take the recommended answer everywhere</td></tr>
+            <tr><td><code>--admin-email you@example.com</code></td><td>The admin account the installer creates</td></tr>
+            <tr><td><code>--admin-password-file /path</code></td><td>Its password (first line); or set <code>ZEKKTRIS_ADMIN_PASSWORD</code></td></tr>
+            <tr><td><code>--data-dir /path</code></td><td>Where the database and uploads live</td></tr>
+            <tr><td><code>--no-upnp</code></td><td>Don't ask the router to open ports</td></tr>
+            <tr><td><code>--reconfigure</code></td><td>Change how an existing install is reached</td></tr>
+            <tr><td><code>--no-start</code></td><td>Write the configuration, but don't start anything</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><code>./install.sh --help</code> lists them too.</p>
+
+      <div class="callout tip" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/></svg>
+        <p><span class="label">Running it again is safe.</span> With an existing <code>.env</code> it keeps your settings, only fills in what's missing, saves a copy of the old <code>.env</code> next to it, then rebuilds and restarts. Your secrets and data are never replaced. (<code>./scripts/setup.sh</code> still works too; it just runs the installer.)</p>
+      </div>
+    </section>
+
+    <!-- 5 ─────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="installer-changes" aria-labelledby="h-installer-changes">
+      <p class="sec-num">05 · No surprises</p>
+      <h2 id="h-installer-changes">What the installer changes</h2>
+      <p>So you know exactly what it did:</p>
+      <ul>
+        <li><code>.env</code> in the zekktris folder, readable only by you. On a first install it's copied from <code>.env.example</code> and given fresh random secrets: <code>DB_PASSWORD</code>, <code>JWT_SECRET</code>, <code>JWT_REFRESH_SECRET</code> and <code>FIELD_ENCRYPTION_KEY</code>. It also sets <code>APPDATA_PATH</code> (your data folder), <code>ACME_EMAIL</code> (your admin email) and <code>ALLOW_REGISTRATION=open</code>.</li>
+        <li>Filled in only when they're empty: a voice key pair made just for your server (<code>LIVEKIT_API_KEY</code> and <code>LIVEKIT_API_SECRET</code>), <code>LIVEKIT_IMAGE_TAG=v1.9.12</code>, and the browser-notification keys (<code>VAPID_PUBLIC_KEY</code>, <code>VAPID_PRIVATE_KEY</code> and <code>VAPID_CONTACT_EMAIL</code>).</li>
+        <li>The address settings for the option you chose (in the table below).</li>
+        <li>The data folder, with <code>db</code>, <code>uploads</code>, <code>caddy-data</code>, <code>caddy-config</code>, <code>desktop-updates</code>, <code>backups</code> and <code>control</code> inside, plus a <code>secrets</code> folder in the zekktris folder.</li>
+        <li>Only if you agree: Docker itself, rules in ufw or firewalld, and port forwards on your router over UPnP (labelled "Zekktris").</li>
+        <li>Two images built from source on your machine (<code>zekktris-api</code> and <code>zekktris-proxy</code>; there are no prebuilt images), and the five containers.</li>
+        <li>Your admin account.</li>
+        <li>When you run it again: a copy of the previous <code>.env</code>, named <code>.env.bak.&lt;date-time&gt;</code>.</li>
+      </ul>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th scope="col">Setting</th><th scope="col">IP</th><th scope="col">Domain</th><th scope="col">Home network</th></tr></thead>
+          <tbody>
+            <tr><th scope="row"><code>PUBLIC_URL</code></th><td><code>https://&lt;your IP&gt;</code></td><td><code>https://&lt;your domain&gt;</code></td><td><code>http://&lt;LAN address&gt;:5550</code></td></tr>
+            <tr><th scope="row"><code>SITE_ADDRESS</code></th><td><code>https://&lt;your IP&gt;</code></td><td><code>https://&lt;your domain&gt;</code></td><td><code>:5550</code></td></tr>
+            <tr><th scope="row"><code>TLS_MODE</code></th><td><code>ip</code></td><td><code>none</code></td><td><code>none</code></td></tr>
+            <tr><th scope="row"><code>PUBLIC_IP</code></th><td><code>&lt;your IP&gt;</code></td><td>empty</td><td>empty</td></tr>
+            <tr><th scope="row"><code>HTTP_PORT</code></th><td><code>80</code></td><td><code>80</code></td><td><code>5550</code></td></tr>
+            <tr><th scope="row"><code>HTTPS_PORT</code></th><td><code>443</code></td><td><code>443</code></td><td><code>5551</code></td></tr>
+            <tr><th scope="row"><code>COOKIE_SECURE</code></th><td><code>true</code></td><td><code>true</code></td><td><code>false</code></td></tr>
+            <tr><th scope="row"><code>LIVEKIT_USE_EXTERNAL_IP</code></th><td><code>true</code></td><td><code>true</code></td><td><code>false</code></td></tr>
+            <tr><th scope="row"><code>LIVEKIT_HOST</code></th><td>empty</td><td>empty</td><td><code>&lt;LAN address&gt;</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>It also looks a few things up: your public IP through api.ipify.org (falling back to ipv4.icanhazip.com and ifconfig.me), your domain's DNS through dns.google, and your router's UPnP support from a throwaway alpine container, so nothing extra is installed on the machine.</p>
+      <p>It doesn't add any scheduled jobs. <code>sudo ./scripts/doctor.sh --fix</code> does that, if you want them (see <a href="#health">Health check and the maintenance agent</a>).</p>
+    </section>
+
+    <!-- 6 ─────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="admin" aria-labelledby="h-admin">
+      <p class="sec-num">06 · Run it</p>
+      <h2 id="h-admin">Your admin account</h2>
+      <p>You don't register the admin. Once the server is healthy, the installer creates that account itself, already verified and already an admin, with the email and password you gave it. Open your server's address and sign in.</p>
+      <p>Registration is already open while the installer runs, so it only ever creates a brand-new account. If someone registered your admin email first, the install stops instead of making them admin.</p>
+
+      <h3>The Admin panel</h3>
+      <p>In the web app, click the shield icon in the left rail, or go to <code>/admin</code> on your address. Admins see Overview, Users, Servers, Storage, Security, Perks and Backup &amp; Maintenance.</p>
+      <ul>
+        <li><strong>Staff:</strong> open an account from Admin → Users to make it an Administrator or a Moderator. Moderators only see Users, Servers and Security.</li>
+        <li><strong>Perk tiers:</strong> everything in Zekktris is free, cosmetics included. Scout, Guardian and Legend are tiers you give people, from Admin → Users → open an account → Perk tier, for 1, 3 or 6 months, or forever. They raise streaming quality:</li>
+      </ul>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th scope="col">Tier</th><th scope="col">Screen sharing</th><th scope="col">Camera</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Everyone</th><td>Up to 720p at 30 fps</td><td>Up to 1080p</td></tr>
+            <tr><th scope="row">Scout</th><td>Up to 1080p at 60 fps</td><td>Up to 1080p</td></tr>
+            <tr><th scope="row">Guardian</th><td>Up to 2K at 60 fps</td><td>Up to 2K</td></tr>
+            <tr><th scope="row">Legend</th><td>Up to 4K at 60 fps</td><td>Up to 4K</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Those are the defaults. Change what each tier adds, and optional per-tier upload limits, in Admin → Perks.</p>
+
+      <h3>No admin account?</h3>
+      <p>To make an existing account an admin, or to create one by hand, run this on the server. It doesn't restart anything:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>docker compose exec -w /app/apps/api api node --import tsx/esm scripts/create-admin.ts --email you@example.com</code></pre>
+      </div>
+      <p>It asks for a password twice (hidden). If that email already has an account with a verified address, it's made admin and its password is left alone, so just press <kbd>Enter</kbd>.</p>
+      <p><code>./install.sh --admin-email you@example.com</code> does the same, and a plain <code>./install.sh</code> re-run asks for an admin while the server has none. Both run the whole installer again, though, which rebuilds the images and restarts anything that changed.</p>
+      <p>To only check whether the server has an admin:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>docker compose exec -w /app/apps/api api node --import tsx/esm scripts/create-admin.ts --check</code></pre>
+      </div>
+    </section>
+
+    <!-- 7 ─────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="signups" aria-labelledby="h-signups">
+      <p class="sec-num">07 · Access</p>
+      <h2 id="h-signups">Who can sign up</h2>
+      <p><code>ALLOW_REGISTRATION</code> in <code>.env</code> decides who can make an account:</p>
+      <ul>
+        <li><code>open</code>: anyone who can reach your server can sign up. This is what the installer sets.</li>
+        <li><code>invite-only</code>: signing up needs a sign-up code.</li>
+        <li><code>closed</code>: nobody can sign up.</li>
+      </ul>
+      <p>To change it, edit <code>.env</code> and apply it:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>docker compose up -d</code></pre>
+      </div>
+      <p>The iPhone and Android apps read this before anyone signs in: on a closed server they say "This server isn't taking new sign-ups". On an invite-only server, people type their code into the sign-up form.</p>
+
+      <h3>Creating sign-up codes</h3>
+      <p>There's no admin screen for sign-up codes yet. You can create one in the database (this one works 5 times):</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>docker compose exec db psql -U commune -d commune -c "INSERT INTO signup_codes (code, max_uses) VALUES ('pick-a-long-random-code', 5);"</code></pre>
+      </div>
+      <p>Then share <code>https://chat.example.com/register?code=pick-a-long-random-code</code> (with your own address). The sign-up page fills the code in.</p>
+      <div class="callout tip" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/></svg>
+        <p><span class="label">A simple private server.</span> On a closed server the only new accounts are admins made with the create-admin command. So leave it open until your people have joined, then switch to <code>closed</code>.</p>
+      </div>
+    </section>
+
+    <!-- 8 ─────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="apps" aria-labelledby="h-apps">
+      <p class="sec-num">08 · Your people</p>
+      <h2 id="h-apps">Connect the apps</h2>
+      <p>Every app starts on zekktris.com. Get them here:</p>
+      <ul>
+        <li>iPhone and iPad: the <a href="https://testflight.apple.com/join/a3a3jDDK" target="_blank" rel="noopener noreferrer">TestFlight beta<span class="vh"> (opens in a new tab)</span></a></li>
+        <li>Android: <a href="https://zekktris.com/desktop/updates/Zekktris.apk">Zekktris.apk</a> (Android 8 or later)</li>
+        <li>Desktop: <a href="https://zekktris.com/desktop/updates/Zekktris.exe">Windows</a>, <a href="https://zekktris.com/desktop/updates/Zekktris.dmg">macOS</a> and <a href="https://zekktris.com/desktop/updates/Zekktris.AppImage">Linux</a></li>
+      </ul>
+      <p>Then point the app at your server. On iPhone and Android the switch is on the sign-in screens, so sign out first; an account belongs to the server that made it.</p>
+      <ul>
+        <li><strong>iPhone and iPad:</strong> on the sign-in or sign-up screen, tap <strong>Server: zekktris.com · Change</strong>, type your address and tap <strong>Connect</strong>. For a home-network server, allow it when iOS asks to find devices on your local network (or turn Zekktris on under Settings → Privacy &amp; Security → Local Network), then tap Connect again. Widgets, Siri, the share sheet and the Apple Watch app all follow the server the iPhone app uses.</li>
+        <li><strong>Android:</strong> on the welcome screen, tap <strong>Server: zekktris.com · Change</strong>, type the address and tap <strong>Connect</strong>.</li>
+        <li><strong>Desktop:</strong> use the tray icon's <strong>Change server…</strong>, or <strong>Server: … · Change</strong> at the bottom of the sign-in page. Type the address and click <strong>Connect</strong>. Zekktris restarts on the new server, and you sign in there. The desktop app keeps updating itself from zekktris.com either way.</li>
+        <li><strong>Web:</strong> just open your address in a browser.</li>
+      </ul>
+      <div class="callout note" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></svg>
+        <p><span class="label">Don't see the Server row?</span> Update the app first; the switch needs a recent version. The desktop app gets it in its next update. Until then, open your server's address in a web browser.</p>
+      </div>
+
+      <h3>What to type</h3>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th scope="col">Your install</th><th scope="col">Type this</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">Domain</th><td><code>chat.example.com</code></td></tr>
+            <tr><th scope="row">IP</th><td><code>203.0.113.5</code></td></tr>
+            <tr><th scope="row">Home network</th><td><code>192.168.1.20:5550</code> (or <code>http://192.168.1.20:5550</code>)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>If you leave out <code>http://</code> or <code>https://</code>, the apps try HTTPS first. For a home-network address they then try plain http, on the port you typed, or on ports 80 and 5550 if you typed none. Plain <code>http://</code> is only accepted for home-network addresses (10.x.x.x, 172.16.x.x to 172.31.x.x, 192.168.x.x, localhost and .local names); anything on the internet has to use HTTPS.</p>
+      <p>Before switching, each app checks that the address really answers as a Zekktris server, so a typo can't leave it pointing at nothing. <strong>Go back to zekktris.com</strong>, in the same place, switches back.</p>
+
+      <h3>Signing in</h3>
+      <p>Passwords and two-factor codes work on every server. The iPhone and Android apps only offer passkey sign-in on zekktris.com. On your own server, passkeys work in a web browser when the server has a domain name.</p>
+    </section>
+
+    <!-- 9 ─────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="calls" aria-labelledby="h-calls">
+      <p class="sec-num">09 · Voice &amp; video</p>
+      <h2 id="h-calls">Voice and video calls</h2>
+      <p>Calls run on your own server: the bundled <code>zekktris-livekit</code> container, using a key pair the installer made just for your server. No outside account is needed.</p>
+
+      <h3>How a call connects</h3>
+      <ul>
+        <li>Call setup goes through your normal address (at <code>/livekit</code>, on the same HTTPS certificate), so it needs no extra port.</li>
+        <li>The audio and video themselves go straight to the server on two ports: <strong>UDP 7882</strong>, the main media port, and <strong>TCP 7881</strong>, a fallback for networks that block UDP.</li>
+        <li>People on the same network as the server reach it directly. Everyone else needs both ports forwarded on your router to the server, and allowed in every firewall on the way, including a VPS provider's firewall panel, which the installer can't see. The installer opens them in ufw or firewalld and on the router (UPnP) when you let it, or lists them for you.</li>
+      </ul>
+      <div class="callout warn" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5h.01"/></svg>
+        <p><span class="label">Never forward port 7880.</span> It's the voice server's internal port. On a normal Linux install it only listens on the machine itself and on Docker's internal bridge.</p>
+      </div>
+
+      <h3>If calls don't work</h3>
+      <ul>
+        <li><strong>People can join a voice channel, but nobody outside your network hears or sees anything, and the call keeps reconnecting</strong> (LiveKit reports "negotiation timed out"): UDP 7882 and TCP 7881 aren't reachable. Forward and open them.</li>
+        <li><strong>Calls stopped working for outside people after your public IP changed:</strong> the voice server only looks up its public address when it starts. <code>sudo ./scripts/doctor.sh</code> spots this, and <code>sudo ./scripts/doctor.sh --fix</code> restarts the voice server and installs a watchdog that checks every 5 minutes and restarts it after a change. A restart drops every call in progress, including ones on your home network that were still working.</li>
+        <li><strong>The web and desktop apps say "Voice isn't set up on this server yet"</strong> (the iPhone app says "presence only — voice isn't configured on the server", and Android "Voice not available"): the voice keys are missing from <code>.env</code> (for example a hand-written one). Run <code>./install.sh</code> again; it fills in a fresh pair and restarts. Setting only one of <code>LIVEKIT_API_KEY</code> and <code>LIVEKIT_API_SECRET</code> stops the server at its startup checks.</li>
+        <li><strong>In a web browser on a home-network (http) server:</strong> browsers only allow the microphone and camera over HTTPS. Use the apps there. The desktop app treats your home-network server as secure, so calls work in it.</li>
+      </ul>
+      <p>Good to know: no relay (TURN) server is bundled, so someone on a network that blocks both UDP 7882 and TCP 7881 can't get call audio or video. And calls show your server's public IP to the people in them, even if the website sits behind Cloudflare.</p>
+
+      <h3>Prefer LiveKit Cloud?</h3>
+      <p>Set these in <code>.env</code>, then run <code>docker compose up -d</code>. The bundled voice server then goes unused.</p>
+      <div class="code">
+        <div class="code-head"><span>.env</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>LIVEKIT_WS_URL=wss://&lt;project&gt;.livekit.cloud
+LIVEKIT_API_KEY=&lt;that project's key&gt;
+LIVEKIT_API_SECRET=&lt;that project's secret&gt;
+LIVEKIT_HTTP_URL=https://&lt;project&gt;.livekit.cloud</code></pre>
+      </div>
+    </section>
+
+    <!-- 10 ────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="email" aria-labelledby="h-email">
+      <p class="sec-num">10 · Optional</p>
+      <h2 id="h-email">Email: password resets and verification</h2>
+      <p>Email is optional. Without it everything works except what needs a message in someone's inbox:</p>
+      <ul>
+        <li>New accounts count as verified straight away.</li>
+        <li>"Forgot password" says: "Password reset is not available — this server has no email configured. Contact your server operator."</li>
+        <li>People can't change their account's email address, and admins can't send someone a reset link.</li>
+        <li>A teen linking a parent or guardian can only choose someone who already has an account on your server; there's no email invitation.</li>
+      </ul>
+      <p>To turn it on, add an SMTP relay to <code>.env</code>. Any provider works, for example Resend, Brevo, SendGrid or Mailgun:</p>
+      <div class="code">
+        <div class="code-head"><span>.env</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>SMTP_HOST=smtp.resend.com
+SMTP_PORT=587
+SMTP_USER=resend
+SMTP_PASS=your-api-key
+SMTP_FROM=noreply@your-domain.com
+SMTP_SECURE=false</code></pre>
+      </div>
+      <p>Then apply it:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>docker compose up -d</code></pre>
+      </div>
+      <ul>
+        <li><code>SMTP_FROM</code> must be a plain email address. A display name such as <code>Zekktris &lt;noreply@your-domain.com&gt;</code> stops the server from starting. Use an address on a domain your provider has verified.</li>
+        <li>Use <code>SMTP_SECURE=true</code> for port 465; leave it <code>false</code> for 587.</li>
+        <li>Cloudflare Email Routing can't send mail. You need a real sending service.</li>
+      </ul>
+      <p>Once email is on, new sign-ups get a verification link and have to confirm their address. Accounts created while email was off were already marked verified.</p>
+    </section>
+
+    <!-- 11 ────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="notifications" aria-labelledby="h-notifications">
+      <p class="sec-num">11 · Alerts</p>
+      <h2 id="h-notifications">Notifications</h2>
+      <ul>
+        <li><strong>In a web browser:</strong> notifications work on your server. The installer generated its web-push keys (<code>VAPID_PUBLIC_KEY</code> and <code>VAPID_PRIVATE_KEY</code>). Never change them once people have turned notifications on, because that breaks every existing subscription. Browsers only offer push over HTTPS, so this needs the IP or domain option.</li>
+        <li><strong>In the desktop app:</strong> notifications pop up while the app is running, on any server.</li>
+        <li><strong>In the official iPhone and Android apps:</strong> lock-screen push notifications only come from servers that hold the official apps' push keys (Apple's for iOS, the app's Firebase project for Android). A self-hosted server can't have those, so phones don't get push notifications from your server, and an iPhone won't ring for a call while the app is closed. Everything else in the apps works, and the apps' server picker says the same.</li>
+      </ul>
+      <p><code>.env</code> also has <code>APNS_*</code> settings for Apple, and you can add <code>FCM_PROJECT_ID</code>, <code>FCM_CLIENT_EMAIL</code> and <code>FCM_PRIVATE_KEY</code> for Firebase. They only help if you build and sign your own copies of the apps with your own Apple and Firebase accounts.</p>
+    </section>
+
+    <!-- 12 ────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="updating" aria-labelledby="h-updating">
+      <p class="sec-num">12 · Keep it current</p>
+      <h2 id="h-updating">Updating</h2>
+      <p>See what an update would bring, with database changes called out. This touches nothing:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ./scripts/update.sh --check</code></pre>
+      </div>
+      <p>Then update:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ./scripts/update.sh</code></pre>
+      </div>
+      <p>A real update:</p>
+      <ol>
+        <li>fetches the latest code from the repository's master branch and lists the new commits;</li>
+        <li>stops first if a file you edited locally is also changed by the update, and tells you which;</li>
+        <li>takes a backup of the database and settings (<code>--no-backup</code> skips it; don't);</li>
+        <li>rebuilds, restarts the server and waits for its startup checks;</li>
+        <li>if the new version doesn't come up healthy, puts the previous code back and restarts it by itself.</li>
+      </ol>
+      <p>Database updates apply themselves when the new server starts, and rolling the code back doesn't undo them. That's what the backup is for. An update that stopped halfway is picked up again by the next run.</p>
+      <p>Admins can do the same from <strong>Admin → Backup &amp; Maintenance → Update &amp; restart</strong>, once the maintenance agent is installed (see <a href="#health">Health check and the maintenance agent</a>; if you cloned the code as your normal user, do the one-time git step there too).</p>
+      <div class="callout tip" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/></svg>
+        <p><span class="label">Changed something in <code>.env</code>?</span> Apply it with <code>docker compose up -d</code>. (<code>docker compose restart</code> doesn't re-read <code>.env</code>.)</p>
+      </div>
+      <p>Updates come from github.com/Eternus-Nox/zekktris; until the public repository opens, fetching them needs access too. If <code>update.sh</code> can't reach it, it says so and just rebuilds the code you already have.</p>
+    </section>
+
+    <!-- 13 ────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="backups" aria-labelledby="h-backups">
+      <p class="sec-num">13 · Be safe</p>
+      <h2 id="h-backups">Backups and restore</h2>
+      <p>A full backup:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ./scripts/backup.sh</code></pre>
+      </div>
+      <p>A quick one, without attachments:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ./scripts/backup.sh --no-uploads</code></pre>
+      </div>
+      <p>And a check that the newest one would restore:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ./scripts/restore.sh --check</code></pre>
+      </div>
+      <p>Use <code>sudo</code> for these even if you're in the docker group: backups taken from the Admin panel or on a schedule belong to root, and nobody else can open them. (Leave it out if you're root already.)</p>
+      <ul>
+        <li><code>backup.sh</code> writes one bundle with everything needed to rebuild the server: a database dump, the uploads, <code>.env</code> (including the encryption key some database fields need) and the secrets folder.</li>
+        <li><code>--no-uploads</code> leaves out attachments. It takes seconds instead of minutes, but on its own it can't bring back images and files.</li>
+        <li>Bundles go to the <code>backups</code> folder inside your data folder, named <code>zekktris-&lt;date&gt;-&lt;time&gt;.tar.gz</code> and readable only by the user who took them (root, with sudo or from the Admin panel). <code>backup.sh</code> keeps the newest 7 (change that with, for example, <code>--keep 14</code>). Every update also adds a database-only bundle, so copy your full bundles somewhere else.</li>
+        <li><code>restore.sh --check</code> opens the newest bundle (or the one you name) and checks that the database dump inside is intact. A backup you've never checked is a hope, not a backup.</li>
+        <li>Copy bundles off the machine, and treat each one like the server itself: it holds every message, account and secret.</li>
+      </ul>
+
+      <h3>Automatic backups</h3>
+      <p><strong>Admin → Backup &amp; Maintenance</strong> has buttons for a database backup, a full backup and verifying the newest one, plus a switch for automatic backups: every night at 03:30 a database-only one, and every Sunday at 04:00 a full one. They need the maintenance agent (see <a href="#health">Health check and the maintenance agent</a>). The <strong>Export server configuration</strong> button on that page only exports settings (no users or messages); it isn't a backup.</p>
+
+      <h3>Restoring</h3>
+      <p>Into an empty server (it refuses one that already has accounts):</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ./scripts/restore.sh /path/to/zekktris-20261113-033000.tar.gz</code></pre>
+      </div>
+      <p>Over whatever is there:</p>
+      <div class="code danger">
+        <div class="code-head"><span>Terminal · replaces data</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ./scripts/restore.sh --force /path/to/zekktris-20261113-033000.tar.gz</code></pre>
+      </div>
+      <div class="callout warn" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.5h.01"/></svg>
+        <p><span class="label"><code>--force</code> replaces the whole database,</span> so every message and account since that bundle is gone. A <code>--no-uploads</code> bundle only belongs on a server whose uploads folder is still there.</p>
+      </div>
+
+      <h3>Moving to a new machine</h3>
+      <ol>
+        <li>Install Zekktris there with <code>./install.sh</code>.</li>
+        <li>Copy the bundle over.</li>
+        <li>Run <code>sudo ./scripts/restore.sh --force</code> with it (<code>--force</code> because the fresh install already has your admin account).</li>
+      </ol>
+      <p>The restore brings back the old <code>.env</code>, keeping only the new machine's data-folder path, so the server keeps its old address settings. If the new machine is reached differently, run <code>./install.sh --reconfigure</code> afterwards.</p>
+    </section>
+
+    <!-- 14 ────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="health" aria-labelledby="h-health">
+      <p class="sec-num">14 · Keep it healthy</p>
+      <h2 id="h-health">Health check and the maintenance agent</h2>
+      <p>Check the server (this only reports):</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ./scripts/doctor.sh</code></pre>
+      </div>
+      <p>Repair what's safe to repair:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ./scripts/doctor.sh --fix</code></pre>
+      </div>
+      <p>If you're root, as on Unraid or many VPSs, leave out <code>sudo</code>. Otherwise keep it, even for the check: it looks at root's scheduled jobs and opens root's backups.</p>
+      <p><strong>If you cloned the code as your normal user,</strong> also run this once, from the zekktris folder:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo git config --system --add safe.directory "$(pwd)"</code></pre>
+      </div>
+      <p>The maintenance agent runs as root from its schedule, and git refuses to work in a folder that belongs to another user, so without this the Admin panel's <strong>Update &amp; restart</strong> fails. <code>sudo ./scripts/doctor.sh --fix</code> can't spot it, because under sudo git still trusts your own folder. The <strong>Check &amp; repair setup</strong> button in Admin → Backup &amp; Maintenance can: the agent runs it as root, and it fixes this too.</p>
+      <p><code>doctor.sh</code> on its own checks Docker Compose and git, free disk space (it flags under 5 GB), the data folders, the scheduled jobs, that the api, db, cache and proxy containers are running and the API answers, that visitor addresses look right behind Cloudflare, whether the voice server advertises your current public IP, and that a recent, readable backup exists. It exits with an error while anything is wrong, so it also works from cron.</p>
+      <div class="callout note" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></svg>
+        <p><span class="label">On a brand-new server</span> it reports four problems until you run <code>--fix</code> once: a missing <code>control/status</code> folder in the data folder (the agent makes it on its first run), no maintenance agent, no voice-address watchdog, and no backups.</p>
+      </div>
+      <p><code>--fix</code> creates missing folders, schedules the maintenance agent (every minute) and the voice-address watchdog (every 5 minutes), restarts the voice server if its public address is out of date, takes a first database backup if there are none, and, when it runs as root without sudo, fixes git's "dubious ownership" refusal. It never rebuilds or restarts the whole stack; that's the update script's job.</p>
+      <p>Run <code>--fix</code> with sudo: the maintenance agent is meant to run from root's schedule, and it writes its logs to <code>/var/log</code>. The agent is what carries out the Admin → Backup &amp; Maintenance buttons. The API only drops a small request naming one of a fixed list of actions, so it never gets control of Docker. The agent needs a Linux host.</p>
+      <div class="callout tip" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/></svg>
+        <p><span class="label">On Unraid,</span> a reboot can drop these scheduled jobs. Run <code>./scripts/doctor.sh --fix</code> again after a reboot, then turn <strong>Automatic backups</strong> back on in Admin → Backup &amp; Maintenance (of the scheduled jobs, <code>doctor.sh</code> only puts back the agent and the watchdog).</p>
+      </div>
+
+      <h3>Day to day</h3>
+      <div class="tbl-wrap">
+        <table class="tbl cmds">
+          <thead><tr><th scope="col">Command</th><th scope="col">What it shows</th></tr></thead>
+          <tbody>
+            <tr><td><code>docker compose ps</code></td><td>What's running, and whether it's healthy</td></tr>
+            <tr><td><code>docker compose logs -f api</code></td><td>The server's log, live (<kbd>Ctrl</kbd>+<kbd>C</kbd> to stop)</td></tr>
+            <tr><td><code>docker compose logs proxy</code></td><td>What Caddy reported, including HTTPS certificates</td></tr>
+            <tr><td><code>curl -s https://chat.example.com/health</code></td><td>With your own address, it should answer <code>{"status":"ok", …}</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 15 ────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="proxy" aria-labelledby="h-proxy">
+      <p class="sec-num">15 · Advanced</p>
+      <h2 id="h-proxy">Behind Cloudflare or another proxy</h2>
+      <p>By default Caddy is the front door (<code>EDGE_PROXY=none</code>). It takes each visitor's address from the connection itself, and no request header can change it. Rate limits, bans and the sessions list rely on that.</p>
+
+      <h3>Cloudflare's proxy (orange cloud) in front of a domain install</h3>
+      <ul>
+        <li>For the first install, set the DNS record to "DNS only", so Let's Encrypt can reach your server and the installer's DNS check passes.</li>
+        <li>To turn the orange cloud back on afterwards, set Cloudflare's SSL mode to "Full (strict)", add <code>EDGE_PROXY=cloudflare</code> to <code>.env</code>, and run <code>docker compose up -d proxy</code>.</li>
+        <li>Turn off Cloudflare features that add scripts to pages (Rocket Loader, Zaraz, automatic Web Analytics, JavaScript bot detections). The app only lets its own scripts run, and Rocket Loader can leave a blank page.</li>
+      </ul>
+
+      <h3>Cloudflare Tunnel, or your own nginx or Traefik handling HTTPS</h3>
+      <p>Caddy then serves plain HTTP on port 5550, and <code>PUBLIC_URL</code> is the public https address. The installer has no tunnel option, so the simplest route is <code>./install.sh --lan</code>, then set these in <code>.env</code>:</p>
+      <div class="code">
+        <div class="code-head"><span>.env</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>PUBLIC_URL=https://chat.example.com
+COOKIE_SECURE=true
+SITE_ADDRESS=:5550
+HTTP_PORT=5550
+HTTPS_PORT=5551
+TLS_MODE=none
+EDGE_PROXY=cloudflare
+LIVEKIT_USE_EXTERNAL_IP=true
+LIVEKIT_HOST=</code></pre>
+      </div>
+      <p>Use <code>EDGE_PROXY=cloudflare</code> only for Cloudflare; leave it at <code>none</code> for nginx or Traefik. For calls from outside, forward UDP 7882 and TCP 7881 to the server. Then apply it with <code>docker compose up -d</code>.</p>
+      <ul>
+        <li>Run the Cloudflare Tunnel connector (cloudflared) on the server itself: directly on the machine, pointed at <code>http://localhost:5550</code>, or in a Docker container on it, pointed at <code>http://&lt;the server's LAN address&gt;:5550</code>. With <code>EDGE_PROXY=cloudflare</code>, Caddy only trusts Cloudflare's own addresses and Docker's internal network, so a connector on another machine makes every visitor look like that machine.</li>
+        <li>Point nginx or Traefik at <code>http://localhost:5550</code> on the same machine, or <code>http://&lt;the server's LAN address&gt;:5550</code> from another one. Never use a container's own IP; it changes whenever the container is recreated. The tunnel or proxy must pass WebSocket connections through (the app uses <code>/gateway</code> and <code>/livekit</code>).</li>
+        <li>On a VPS, Docker opens port 5550 to the internet even with ufw on, so anyone can still reach the server over plain http, around Cloudflare or your proxy. Block TCP 5550 in your provider's firewall panel, or allow only your proxy's address there. A tunnel or proxy on the same machine doesn't go through that firewall, so it keeps working.</li>
+        <li>Don't run <code>./install.sh --reconfigure</code> or <code>./install.sh --domain</code> on this server afterwards: they rewrite the address settings, and the tunnel stops reaching it. A plain <code>./install.sh</code> re-run keeps your address settings.</li>
+        <li>Only set <code>EDGE_PROXY=cloudflare</code> when every outside request comes through Cloudflare. Anywhere else, visitors could choose their own address. <code>./scripts/doctor.sh</code> and <code>./scripts/update.sh</code> warn you if they see tunnel traffic without it.</li>
+        <li><code>EDGE_PROXY</code> only accepts <code>none</code> or <code>cloudflare</code>. Behind nginx, Traefik or similar, every visitor looks like the proxy's address to rate limits, bans and the sessions list.</li>
+      </ul>
+      <div class="callout note" role="note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></svg>
+        <p><span class="label">Calls never pass through Cloudflare.</span> The voice server has to be reachable on your public IP (UDP 7882 and TCP 7881). So behind carrier-grade NAT, a tunnel makes chat reachable from anywhere, but calls only work on your own network.</p>
+      </div>
+    </section>
+
+    <!-- 16 ────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="troubleshooting" aria-labelledby="h-troubleshooting">
+      <p class="sec-num">16 · When things go wrong</p>
+      <h2 id="h-troubleshooting">Troubleshooting</h2>
+      <p>Find the symptom, open it, and do what it says.</p>
+
+      <div class="qa-group">
+        <h3>Installing</h3>
+        <details class="qa">
+          <summary>The installer says "Docker is installed but not usable by …"</summary>
+          <div class="qa-body">
+            <p>Start Docker, or add yourself to the docker group, then log out and back in:</p>
+            <div class="code">
+              <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+              <pre><code>sudo usermod -aG docker $(whoami)</code></pre>
+            </div>
+          </div>
+        </details>
+        <details class="qa">
+          <summary>The installer says ports are "Already in use by another program"</summary>
+          <div class="qa-body"><p>Another web server (often nginx or Apache) holds them. Stop it, or keep it and put Zekktris behind it (see <a href="#proxy">Behind Cloudflare or another proxy</a>).</p></div>
+        </details>
+        <details class="qa">
+          <summary>The installer says "No certificate yet"</summary>
+          <div class="qa-body"><p>Forward TCP 80 and 443 to the server (and open them in a VPS provider's firewall), check that your domain's A record points at your public IP, and know that some providers block incoming port 80. Caddy keeps retrying by itself; see what it says with <code>docker compose logs proxy</code>.</p></div>
+        </details>
+        <details class="qa">
+          <summary>The installer warns about carrier-grade NAT</summary>
+          <div class="qa-body"><p>Port forwarding can't reach you. Ask your provider for a public IPv4 address, use a VPS, or keep a home-network install.</p></div>
+        </details>
+      </div>
+
+      <div class="qa-group">
+        <h3>Signing in and connecting</h3>
+        <details class="qa">
+          <summary>You sign in and are signed straight back out</summary>
+          <div class="qa-body"><p><code>COOKIE_SECURE</code> has to match <code>PUBLIC_URL</code>: <code>true</code> for <code>https://</code>, <code>false</code> for <code>http://</code>. Fix <code>.env</code>, then run <code>docker compose up -d</code>.</p></div>
+        </details>
+        <details class="qa">
+          <summary>An app says "Something answered at that address, but it isn't a Zekktris server."</summary>
+          <div class="qa-body">
+            <p>The address reaches something else: your router's page, another web server, the wrong port, or a proxy that doesn't pass <code>/api</code> through. This should print JSON containing <code>"software":"zekktris"</code> (use your own address):</p>
+            <div class="code">
+              <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+              <pre><code>curl -s https://chat.example.com/api/v1/instance/info</code></pre>
+            </div>
+          </div>
+        </details>
+        <details class="qa">
+          <summary>An app says "That server's HTTPS certificate isn't valid."</summary>
+          <div class="qa-body"><p>The certificate hasn't been issued yet; see "No certificate yet" above.</p></div>
+        </details>
+        <details class="qa">
+          <summary>An app refuses plain http://</summary>
+          <div class="qa-body"><p>Use <code>https://</code> for anything on the internet. Plain <code>http://</code> only works for home-network addresses.</p></div>
+        </details>
+        <details class="qa">
+          <summary>An app says "Couldn't reach that server."</summary>
+          <div class="qa-body"><p>Check the address and port, that the server is running (<code>docker compose ps</code>), and that the ports are forwarded. On iPhone, for a home-network server, allow Local Network access for Zekktris.</p></div>
+        </details>
+        <details class="qa">
+          <summary>Everyone shows the same IP in the sessions list, or one person's rate limit hits everyone</summary>
+          <div class="qa-body"><p>You're behind Cloudflare without <code>EDGE_PROXY=cloudflare</code>. Add it to <code>.env</code>, then run <code>docker compose up -d proxy</code>.</p></div>
+        </details>
+        <details class="qa">
+          <summary>A blank page behind Cloudflare</summary>
+          <div class="qa-body"><p>Turn off Rocket Loader and other script-adding features, then reload.</p></div>
+        </details>
+      </div>
+
+      <div class="qa-group">
+        <h3>Calls</h3>
+        <details class="qa">
+          <summary>People join a call, but nobody outside your network hears or sees anything</summary>
+          <div class="qa-body"><p>UDP 7882 and TCP 7881 aren't reachable from outside. Forward and open them. If your public IP changed recently, run <code>sudo ./scripts/doctor.sh --fix</code>.</p></div>
+        </details>
+        <details class="qa">
+          <summary>"Voice isn't set up on this server yet", "presence only" or "Voice not available"</summary>
+          <div class="qa-body"><p>That's how the web and desktop apps, the iPhone app and the Android app say the voice keys are missing from <code>.env</code>. Run <code>./install.sh</code> again.</p></div>
+        </details>
+        <details class="qa">
+          <summary>Calls don't work in a web browser on a home-network server</summary>
+          <div class="qa-body"><p>Browsers need HTTPS for the microphone and camera. Use the apps, or move to the IP or domain option.</p></div>
+        </details>
+      </div>
+
+      <div class="qa-group">
+        <h3>Running the server</h3>
+        <details class="qa">
+          <summary>"Password reset is not available — this server has no email configured"</summary>
+          <div class="qa-body"><p>Set up email (see <a href="#email">Email</a>).</p></div>
+        </details>
+        <details class="qa">
+          <summary>The server won't start, or keeps restarting</summary>
+          <div class="qa-body"><p><code>docker compose logs api</code> shows its startup checks and which one failed. Usually it's a bad <code>.env</code> value: <code>SMTP_FROM</code> with a display name, <code>JWT_SECRET</code> equal to <code>JWT_REFRESH_SECRET</code>, or only one of the two voice keys set.</p></div>
+        </details>
+        <details class="qa">
+          <summary>Port forwards disappeared after a router restart</summary>
+          <div class="qa-body"><p>A plain <code>./install.sh</code> re-run doesn't touch the router. Run it with your option again (<code>./install.sh --ip</code>, or <code>./install.sh --domain chat.example.com</code>), or use <code>./install.sh --reconfigure</code>.</p></div>
+        </details>
+        <details class="qa">
+          <summary>Your provider changed your public IP (IP option)</summary>
+          <div class="qa-body"><p>Run <code>./install.sh --reconfigure --ip</code>, and everyone re-enters the new address.</p></div>
+        </details>
+        <details class="qa">
+          <summary>update.sh or doctor.sh says git refuses the directory ("dubious ownership")</summary>
+          <div class="qa-body">
+            <p>Git won't work in a folder that belongs to another user, and the maintenance agent behind the Admin panel's buttons runs as root. Fix it once, from the zekktris folder:</p>
+            <div class="code">
+              <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+              <pre><code>sudo git config --system --add safe.directory "$(pwd)"</code></pre>
+            </div>
+            <p>As root without sudo (as on Unraid), <code>./scripts/doctor.sh --fix</code> does this for you, and so does <strong>Check &amp; repair setup</strong> in Admin → Backup &amp; Maintenance. <code>sudo ./scripts/doctor.sh --fix</code> doesn't: under sudo, git still trusts your own folder, so it never sees the problem.</p>
+          </div>
+        </details>
+        <details class="qa">
+          <summary>Admin → Backup &amp; Maintenance says "The maintenance agent isn't running"</summary>
+          <div class="qa-body"><p>Run <code>sudo ./scripts/doctor.sh --fix</code> on the server. (The cron line the panel shows uses a path from inside the container; <code>doctor.sh</code> installs the right one.)</p></div>
+        </details>
+        <details class="qa">
+          <summary>After an update or a restore, <code>docker compose up -d</code> stops with "container zekktris-api is unhealthy"</summary>
+          <div class="qa-body"><p>The server is still handing its uploads folder over to its own user (a one-time step on older installs). Wait until <code>docker compose logs api</code> shows "api-entrypoint: handed" and <code>docker compose ps</code> shows the api as healthy, then run <code>docker compose up -d</code> again.</p></div>
+        </details>
+        <details class="qa">
+          <summary>You changed <code>.env</code> and nothing happened</summary>
+          <div class="qa-body"><p>Apply it with <code>docker compose up -d</code>. <code>docker compose restart</code> doesn't re-read <code>.env</code>.</p></div>
+        </details>
+      </div>
+    </section>
+
+    <!-- 17 ────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="security" aria-labelledby="h-security">
+      <p class="sec-num">17 · Security</p>
+      <h2 id="h-security">Security notes</h2>
+      <ul>
+        <li><code>.env</code> holds every secret: the database password, the sign-in token keys, the field-encryption key, and the voice and push keys. It's readable only by you; never share it or commit it. The <code>.env.bak.*</code> and <code>.env.before-restore-*</code> copies hold the same secrets.</li>
+        <li>Backup bundles hold the whole database plus <code>.env</code> and the secrets folder, and are written readable only by the user who took them (root, with sudo or from the Admin panel). A copy of a bundle is a copy of your server, so store it safely.</li>
+        <li><code>FIELD_ENCRYPTION_KEY</code> encrypts two-factor secrets and bot signing secrets in the database. Keep it stable: if it's lost, people have to set up two-factor again. It's in <code>.env</code> and in every bundle.</li>
+        <li>Registration starts open, so anyone who can reach your server can sign up. See <a href="#signups">Who can sign up</a>.</li>
+        <li>Only forward the ports listed in this guide, and never 7880. Docker publishes the web ports past ufw and firewalld, so the host firewall doesn't hide them.</li>
+        <li>The Zekktris server process runs as an unprivileged user. It only falls back to root, and says so in its log, if it can't take over the uploads folder. The root-run maintenance agent only carries out a fixed list of actions; the API can only queue a request naming one, so it never gets control of Docker.</li>
+        <li>Visitor addresses are only taken from a proxy when you say one is in front (<code>EDGE_PROXY=cloudflare</code>), and only from Cloudflare.</li>
+        <li>Calls reveal your server's public IP to the people in them, even behind Cloudflare.</li>
+        <li>Two clean-up jobs are on by default, and they really delete things:
+          <ul>
+            <li>Accounts nobody has opened the app with for 365 days are deleted. Admins and server owners are skipped, and messages stay, shown as from a deleted user. Set <code>INACTIVITY_TTL_DAYS=0</code> to turn this off.</li>
+            <li>The full-size copies of images older than 90 days are removed, and a small thumbnail stays in their place. Messages stay, pinned messages are skipped, and attachments without a thumbnail (videos, other files and voice notes) are kept. Set <code>ATTACHMENT_RETENTION_DAYS=0</code> to keep everything, or <code>ATTACHMENT_RETENTION_DRY_RUN=true</code> to preview first.</li>
+          </ul>
+          Apply changes with <code>docker compose up -d</code>.</li>
+        <li>Your server's Terms and Privacy pages show the default Zekktris terms, with a notice that the server is run independently by its own administrators, who are responsible for it and for their users' data.</li>
+        <li>Zekktris is licensed under the GNU AGPL-3.0. If you run a modified version for other people, set <code>SOURCE_CODE_URL</code> in <code>.env</code> to where your changed source can be downloaded; the web app links to it from the Terms and Privacy pages.</li>
+        <li>The installer only runs Docker's install script after you explicitly say yes, and never takes the admin password as a command-line argument.</li>
+        <li>Webhook tokens are masked in the proxy's logs.</li>
+        <li>What the scripts contact: your public IP is looked up through api.ipify.org (with ipv4.icanhazip.com and ifconfig.me as fallbacks or cross-checks), and the installer checks your domain's DNS through dns.google.</li>
+      </ul>
+    </section>
+
+    <!-- 18 ────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="uninstall" aria-labelledby="h-uninstall">
+      <p class="sec-num">18 · Moving on</p>
+      <h2 id="h-uninstall">Uninstalling</h2>
+      <p>Take a last backup first if you might want the data later (the server has to be running), and copy it somewhere safe:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ./scripts/backup.sh</code></pre>
+      </div>
+      <p>To stop Zekktris and remove its containers, while keeping your data where it is:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>docker compose down</code></pre>
+      </div>
+      <p>To remove everything, permanently, run this from the zekktris folder:</p>
+      <div class="code danger">
+        <div class="code-head"><span>Terminal · deletes everything</span></div>
+        <pre><code>docker compose down --rmi all
+cd ..
+sudo rm -rf zekktris</code></pre>
+      </div>
+      <p>That deletes the zekktris folder, including the default data folder inside it (database, uploads, certificates and backups). <code>sudo</code> is needed because some of those files belong to the containers' users. If you chose another data folder (<code>--data-dir</code>, or <code>/mnt/user/appdata/zekktris</code> on Unraid), delete that too.</p>
+      <p>Then tidy up what lives outside the folder:</p>
+      <ul>
+        <li><strong>Scheduled jobs,</strong> if you ran <code>doctor.sh --fix</code> or turned on automatic backups: open root's schedule with <code>sudo crontab -e</code> and delete the lines ending in <code># zekktris-agent</code>, <code># zekktris-livekit</code> and <code># zekktris-backup</code>. Their logs are <code>/var/log/zk-agent.log</code>, <code>/var/log/zk-livekit.log</code> and <code>/var/log/zk-backup.log</code>.</li>
+        <li><strong>Router:</strong> remove the port forwards. The installer's UPnP ones are labelled "Zekktris".</li>
+        <li><strong>Firewall:</strong> close the ports the installer opened. For example, with ufw:</li>
+      </ul>
+      <div class="code">
+        <div class="code-head"><span>Terminal · ufw</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo ufw delete allow 7882/udp</code></pre>
+      </div>
+      <p>Or with firewalld:</p>
+      <div class="code">
+        <div class="code-head"><span>Terminal · firewalld</span><button class="copy" type="button">Copy</button></div>
+        <pre><code>sudo firewall-cmd --permanent --remove-port=7882/udp
+sudo firewall-cmd --reload</code></pre>
+      </div>
+      <p>Repeat for each port: TCP 80, 443 and 7881 and UDP 443 and 7882 (for a home-network install: TCP 5550 and 7881, and UDP 7882).</p>
+    </section>
+
+    <!-- 19 ────────────────────────────────────────────────────────── -->
+    <section class="doc-sec" id="faq" aria-labelledby="h-faq">
+      <p class="sec-num">19 · Questions</p>
+      <h2 id="h-faq">FAQ</h2>
+      <details class="qa">
+        <summary>Is it really free?</summary>
+        <div class="qa-body"><p>Yes. Zekktris is free software under the GNU AGPL-3.0, and nothing in it costs money: cosmetics are free on every account, and you give out the perk tiers for higher-quality streaming free of charge. You only pay for your own hardware or VPS, if you use one.</p></div>
+      </details>
+      <details class="qa">
+        <summary>Does my zekktris.com account work on my server?</summary>
+        <div class="qa-body"><p>No. Each server stands on its own, so people sign up on yours. Servers aren't linked either: people on your server can't message people on zekktris.com, and Discovery lists only your server's communities.</p></div>
+      </details>
+      <details class="qa">
+        <summary>Will phones get notifications from my server?</summary>
+        <div class="qa-body"><p>Not lock-screen push notifications in the official iPhone and Android apps: those only come from servers that hold the apps' push keys. Browsers get notifications over HTTPS, and the desktop app shows them while it's running. See <a href="#notifications">Notifications</a>.</p></div>
+      </details>
+      <details class="qa">
+        <summary>Do passkeys work on my server?</summary>
+        <div class="qa-body"><p>In a web browser, on a server with a domain name. Not on a bare IP or a home-network address, and the iPhone and Android apps only offer passkeys on zekktris.com. Passwords and two-factor codes work everywhere. Passkeys are tied to your server's address, so after a move to a new domain people add them again.</p></div>
+      </details>
+      <details class="qa">
+        <summary>Can I run it on a Raspberry Pi or a NAS?</summary>
+        <div class="qa-body"><p>Yes: any Linux machine that stays on, such as a Raspberry Pi 4 or 5 or an Unraid NAS, with Docker and at least 2 GB of memory. On Unraid the data folder defaults to <code>/mnt/user/appdata/zekktris</code>.</p></div>
+      </details>
+      <details class="qa">
+        <summary>Can I try it on my Mac or Windows PC?</summary>
+        <div class="qa-body"><p>Yes, with Docker Desktop or colima on a Mac, or WSL on Windows. Chat works for everyone, but calls may only work on that machine, because voice and video need Docker's host networking, which only fully works on Linux. For a real server, use Linux.</p></div>
+      </details>
+      <details class="qa">
+        <summary>Does anything get deleted automatically?</summary>
+        <div class="qa-body"><p>Two clean-up jobs are on by default: accounts nobody has opened the app with for 365 days are deleted (admins and server owners are skipped), and the full-size copies of images older than 90 days are removed, leaving a thumbnail (messages stay, pinned messages are skipped, and videos, other files and voice notes are kept). Set <code>INACTIVITY_TTL_DAYS=0</code> or <code>ATTACHMENT_RETENTION_DAYS=0</code> in <code>.env</code> to turn them off. See <a href="#security">Security notes</a>.</p></div>
+      </details>
+      <details class="qa">
+        <summary>How do I give someone 4K screen sharing?</summary>
+        <div class="qa-body"><p>Admin → Users → open their account → Perk tier. Legend unlocks 4K by default (Guardian 2K, Scout 1080p at 60 fps). Perks are free, and you choose what each one unlocks in Admin → Perks.</p></div>
+      </details>
+      <details class="qa">
+        <summary>Can I keep my server private?</summary>
+        <div class="qa-body"><p>Yes. Set <code>ALLOW_REGISTRATION</code> to <code>invite-only</code> or <code>closed</code>, or pick the home-network option so nobody outside can reach it. See <a href="#signups">Who can sign up</a>.</p></div>
+      </details>
+      <details class="qa">
+        <summary>Where's the source code?</summary>
+        <div class="qa-body"><p>Zekktris is licensed under the GNU AGPL-3.0, and its public repository, github.com/Eternus-Nox/zekktris, opens soon. If you run a modified version for other people, set <code>SOURCE_CODE_URL</code> in <code>.env</code> to where your changed source can be downloaded.</p></div>
+      </details>
+    </section>
+  </article>
+</div>
+
+</main>
+
+<footer>
+  <div class="wrap foot-in">
+    <a href="../" class="brand" style="font-size:1rem;">Zekktris</a>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="../#features">Features</a>
+      <a href="./" aria-current="page">Self-hosting guide</a>
+      <a href="../#compare">Compare</a>
+      <a href="../#download">Download</a>
+    </nav>
+  </div>
+  <div class="wrap foot-meta">
+    <small>Free for everyone · No ads · Private by design. Zekktris is free software under the GNU AGPL-3.0; the public code repository opens soon. © Zekktris.</small>
+  </div>
+</footer>
+
+<a href="#top" class="to-top" id="toTop"><span aria-hidden="true">↑</span> Top</a>
+<p id="copyStatus" class="vh" role="status" aria-live="polite"></p>
+
+<script>
+  // Nav border on scroll + "back to top" button
+  const nav = document.getElementById('nav');
+  const toTop = document.getElementById('toTop');
+  const onScroll = () => {
+    nav.classList.toggle('scrolled', scrollY > 8);
+    toTop.classList.toggle('show', scrollY > 900);
+  };
+  addEventListener('scroll', onScroll, { passive:true });
+  onScroll();
+
+  // Mobile menu
+  const links = document.getElementById('navLinks');
+  const toggle = document.getElementById('navToggle');
+  const setMenu = (open) => { links.classList.toggle('open', open); toggle.setAttribute('aria-expanded', String(open)); };
+  toggle.addEventListener('click', () => setMenu(!links.classList.contains('open')));
+  links.addEventListener('click', e => { if (e.target.closest('a')) setMenu(false); });
+  addEventListener('keydown', e => { if (e.key === 'Escape' && links.classList.contains('open')) { setMenu(false); toggle.focus(); } });
+
+  // Compact table of contents closes once a section is picked.
+  const tocM = document.querySelector('.toc-m');
+  if (tocM) tocM.addEventListener('click', e => { if (e.target.closest('a')) tocM.open = false; });
+
+  // Highlight the section being read in the side table of contents.
+  const tocLinks = Array.from(document.querySelectorAll('.toc-d a'));
+  const byId = new Map(tocLinks.map(a => [a.getAttribute('href').slice(1), a]));
+  if ('IntersectionObserver' in window && tocLinks.length) {
+    const spy = new IntersectionObserver(entries => {
+      entries.forEach(en => {
+        if (!en.isIntersecting) return;
+        const link = byId.get(en.target.id);
+        if (!link) return;
+        tocLinks.forEach(a => a.removeAttribute('aria-current'));
+        link.setAttribute('aria-current', 'location');
+      });
+    }, { rootMargin:'-15% 0px -75% 0px' });
+    document.querySelectorAll('.doc-sec[id]').forEach(s => spy.observe(s));
+  }
+
+  // Code blocks and tables that scroll sideways get a tab stop, so keyboard
+  // users can scroll them too (only the ones that actually overflow).
+  const scrollers = Array.from(document.querySelectorAll('.code pre, .tbl-wrap'));
+  const markScrollable = () => scrollers.forEach(el => {
+    const scrolls = el.scrollWidth > el.clientWidth + 1;
+    if (scrolls) {
+      el.setAttribute('tabindex', '0');
+      if (el.classList.contains('tbl-wrap')) { el.setAttribute('role', 'region'); el.setAttribute('aria-label', 'Table (scrolls sideways)'); }
+    } else {
+      el.removeAttribute('tabindex');
+      if (el.classList.contains('tbl-wrap')) { el.removeAttribute('role'); el.removeAttribute('aria-label'); }
+    }
+  });
+  let resizeTimer;
+  addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(markScrollable, 150); });
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(markScrollable);
+  markScrollable();
+
+  // Copy buttons. The Clipboard API needs a secure page (https); on a plain
+  // http home-network server fall back to a hidden textarea, and if even that
+  // fails, select the text so it can be copied by hand.
+  const status = document.getElementById('copyStatus');
+  const fallbackCopy = (text) => {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.top = '-1000px'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  };
+  const selectText = (el) => {
+    const range = document.createRange(); range.selectNodeContents(el);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  };
+  document.querySelectorAll('.code').forEach(block => {
+    const btn = block.querySelector('.copy');
+    const code = block.querySelector('pre code') || block.querySelector('pre');
+    if (!btn || !code) return;
+    // Name each button after its own command, so screen-reader users can tell
+    // the Copy buttons in one section apart.
+    const lines = code.textContent.replace(/\n+$/, '').split('\n');
+    const first = lines[0].trim();
+    const more = lines.length - 1;
+    // Not shortened: the two create-admin commands only differ at the end.
+    btn.setAttribute('aria-label', 'Copy: ' + first
+      + (more ? ' (and ' + more + ' more line' + (more > 1 ? 's' : '') + ')' : ''));
+    let timer;
+    const finish = (ok) => {
+      btn.textContent = ok ? 'Copied' : 'Select';
+      btn.classList.toggle('done', ok);
+      if (!ok) selectText(code);
+      status.textContent = ok ? 'Copied to the clipboard.' : 'Couldn’t copy. The text is selected, so copy it by hand.';
+      clearTimeout(timer);
+      timer = setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done'); status.textContent = ''; }, 1800);
+    };
+    btn.addEventListener('click', () => {
+      const text = code.textContent.replace(/\n+$/, '');
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(() => finish(true), () => finish(fallbackCopy(text)));
+      } else {
+        finish(fallbackCopy(text));
+      }
+    });
+  });
+</script>
+</body>
+</html>

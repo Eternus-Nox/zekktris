@@ -570,9 +570,11 @@ export function AdminAccountPage({
           {panel === 'gift' && (
             <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-line">
               <select value={giftTier} onChange={(e) => setGiftTier(e.target.value as typeof giftTier)} className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1" aria-label="Perk tier">
-                <option value="scout">Scout ($2)</option>
-                <option value="guardian">Guardian ($5)</option>
-                <option value="legend">Legend ($10)</option>
+                {/* Plain names, as on iOS and Android: tiers are free perks staff
+                    give out, so the old "$2 / $5 / $10" prices are gone. */}
+                <option value="scout">Scout</option>
+                <option value="guardian">Guardian</option>
+                <option value="legend">Legend</option>
               </select>
               <select value={giftDuration} onChange={(e) => setGiftDuration(e.target.value as typeof giftDuration)} className="text-xs bg-bg-3 border border-line rounded px-1.5 py-1 text-ink-1" aria-label="Perk tier duration">
                 <option value="1m">1 month</option>

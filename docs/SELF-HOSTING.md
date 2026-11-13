@@ -49,6 +49,9 @@ cd zekktris
 
 (A git checkout is what `./scripts/update.sh` updates later.)
 
+The public repository opens soon. Until then, this clone (and `update.sh`'s
+fetch) only works for people who've been given access.
+
 ---
 
 ## 2. First run (one command)
@@ -116,9 +119,10 @@ SITE_ADDRESS=https://chat.example.com
 HTTP_PORT=80
 HTTPS_PORT=443
 COOKIE_SECURE=true
-# optional, helps with cert-renewal notices:
-ACME_EMAIL=you@example.com
 ```
+
+(Let's Encrypt registration is anonymous; `ACME_EMAIL` isn't used for
+certificates — see the global block at the top of `ops/Caddyfile`.)
 
 Then make sure your DNS A record points at the server and ports 80 + 443 are
 open, and apply:
@@ -190,12 +194,17 @@ instance hosts its own SFU with no external account.
   the client's signaling protocol; change it deliberately with
   `LIVEKIT_IMAGE_TAG`.
 
-Prefer a managed SFU? Set `LIVEKIT_WS_URL=wss://<project>.livekit.cloud` plus
-its `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`; the bundled container then goes
+Prefer a managed SFU? Set `LIVEKIT_WS_URL=wss://<project>.livekit.cloud` and
+`LIVEKIT_HTTP_URL=https://<project>.livekit.cloud` (the api's room-admin calls,
+such as kicks and moves, go there; it defaults to the bundled SFU) plus its
+`LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`; the bundled container then goes
 unused (you can stop it).
 
-If LiveKit keys are blank, the app still runs — voice channels just show "audio
-not configured".
+If both LiveKit keys are blank, the app still runs, but voice has no audio:
+the web and desktop apps say "Voice isn't set up on this server yet", the
+iPhone app "presence only — voice isn't configured on the server", and
+Android "Voice not available". Setting only one of the two (or a published
+pair) makes the api refuse to start at its startup checks.
 
 ### Email (password resets & verification)
 
@@ -205,17 +214,23 @@ Point at any SMTP relay (Resend, Brevo, SendGrid, etc.):
 SMTP_HOST=smtp.resend.com
 SMTP_USER=resend
 SMTP_PASS=your-api-key
-SMTP_FROM=Zekktris <noreply@example.com>
+SMTP_FROM=noreply@example.com
 ```
 
-Without SMTP, password-reset just returns a "email isn't enabled" message —
-everything else works.
+`SMTP_FROM` must be a bare address: a display name such as
+`Zekktris <noreply@example.com>` fails validation and the api won't start.
+
+Without SMTP, password reset says "Password reset is not available — this
+server has no email configured" — everything else works.
 
 ### Push notifications
 
 The installer already generated `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` for
-you, so push works out of the box. (Don't regenerate them once people have
-subscribed — it invalidates their subscriptions.)
+you, so browser (web) push works out of the box — over HTTPS, which means the
+IP and domain options. (Don't regenerate them once people have subscribed — it
+invalidates their subscriptions.) The official iOS and Android apps get no
+push from a self-hosted server: APNs and FCM need the app owner's keys, so on
+phones notifications only arrive while the app is open.
 
 ---
 
@@ -261,7 +276,8 @@ Maintenance**, the admin's verify/restore buttons and `./scripts/doctor.sh` all
 read. (Before this was unified, `backup.sh` wrote to `<repo>/backups/`; move any
 bundles left there.) The admin page can also schedule a nightly database-only
 and a weekly full backup once the host agent is installed
-(`./scripts/doctor.sh --fix`). **Copy bundles off the machine** — a backup on the
+(`sudo ./scripts/doctor.sh --fix` — the agent runs from root's crontab and logs
+to `/var/log`). **Copy bundles off the machine** — a backup on the
 disk that died is not a backup.
 
 A bundle holds the whole database, `.env` (with the field-encryption keys) and
@@ -272,7 +288,9 @@ To move to a new machine, set it up with `./install.sh`, copy the bundle over,
 and run `./scripts/restore.sh --force <bundle>`. The restore applies the
 bundle's `.env` (keeping this machine's `APPDATA_PATH`) **before** it starts the
 database, sets the database password to the bundle's, and stops with an error
-rather than reporting success on a half-restored instance.
+rather than reporting success on a half-restored instance. That `.env` carries
+the old machine's address settings too, so if the new machine is reached
+differently, run `./install.sh --reconfigure` afterwards.
 
 ---
 
@@ -283,8 +301,8 @@ rather than reporting success on a half-restored instance.
 | Can register but never stay logged in | `COOKIE_SECURE` doesn't match `PUBLIC_URL` scheme. https→true, http→false. |
 | HTTPS cert never issues | DNS A record not pointing here, or ports 80/443 closed. `docker compose logs proxy`. |
 | API won't start | Check `docker compose logs api` — usually a bad `.env` value (e.g. equal JWT secrets, or a missing required var). |
-| Voice channels say "audio not configured" | LiveKit not set — see §5. |
-| Password reset says email isn't enabled | SMTP not configured — see §5. |
+| Joining voice says "Voice isn't set up on this server yet" (iPhone: "presence only", Android: "Voice not available") | LiveKit keys not set — see §5. |
+| Password reset says no email is configured | SMTP not configured — see §5. |
 | No admin account | `docker compose exec -w /app/apps/api api node --import tsx/esm scripts/create-admin.ts --email you@example.com` (see §3). |
 | Everyone shares one IP in the sessions list / rate limits hit everyone | Behind Cloudflare without `EDGE_PROXY=cloudflare` — see §4. |
 | `docker compose up -d` says `container zekktris-api is unhealthy` after an update or restore | The api's one-time handover of `uploads/` is still running (§9). Wait for `api-entrypoint: handed …` in `docker compose logs api` and for the api to show `healthy` in `docker compose ps`, then run `docker compose up -d` again. |
@@ -332,11 +350,11 @@ docker compose down               # stop everything (data persists)
 - **Webhook tokens** are masked in Caddy's logs (`/api/webhooks/<id>/REDACTED`).
 - **LiveKit Cloud credential in the git history.** Early versions of the setup
   script committed a LiveKit Cloud API key/secret pair (key id
-  `APIAMD7Sj5psuK4`). This repository is public, so that pair must be treated
-  as known to everyone. Zekktris refuses to start with it and `install.sh`
-  replaces it, but **that does not revoke it**: whoever owns that LiveKit Cloud
-  project must delete that key on the project's API-keys page in the LiveKit
-  Cloud dashboard. Until then anyone can mint tokens for that project's
-  rooms. Self-hosters who never used LiveKit Cloud have nothing to do.
+  `APIAMD7Sj5psuK4`). That history goes public with this repository, so that
+  pair must be treated as known to everyone. Zekktris refuses to start with
+  it and `install.sh` replaces it, but **that does not revoke it**: whoever
+  owns that LiveKit Cloud project must delete that key on the project's
+  API-keys page in the LiveKit Cloud dashboard. Until then anyone can mint
+  tokens for that project's rooms. Self-hosters who never used LiveKit Cloud have nothing to do.
 
 That's it — a single host, one command to start, and one bundle to back up.

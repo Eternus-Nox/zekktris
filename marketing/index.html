@@ -4,11 +4,20 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Zekktris — your community, your rules</title>
-<meta name="description" content="Zekktris is a private, full-featured chat platform — voice, video, and communities, with end-to-end-encrypted DMs, no ads, and no tracking." />
+<meta name="description" content="Zekktris is a free chat app for communities, friends and families: servers, voice, video and DMs you can end-to-end encrypt. No ads, nothing for sale, and you can run it on your own server." />
 <meta name="theme-color" content="#0a0f1c" />
+<meta name="color-scheme" content="dark" />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="Zekktris — your community, your rules" />
+<meta property="og:description" content="A free chat app for communities, friends and families. Voice, video, DMs you can end-to-end encrypt, no ads, and you can run your own server." />
+<link rel="icon" href="/icon.svg" type="image/svg+xml" />
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Hanken+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<!-- The reveal animation only hides content when scripts run, so the page
+     still reads fine with JavaScript off. -->
+<script>document.documentElement.classList.add('js');</script>
 <style>
   :root {
     --bg-0:#0a0f1c; --bg-1:#0e1422; --bg-2:#131a2a; --bg-3:#1c2438;
@@ -19,11 +28,13 @@
     --display:"Syne",sans-serif; --body:"Hanken Grotesk",system-ui,sans-serif; --mono:"JetBrains Mono",monospace;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
-  html { scroll-behavior:smooth; overflow-x:hidden; }
+  /* overflow-x:clip, never hidden: hidden turns body into its own scroll box,
+     and then the sticky nav has nothing to stick to. */
+  html { scroll-behavior:smooth; overflow-x:clip; }
   body {
     background:var(--bg-0); color:var(--ink-2);
     font-family:var(--body); line-height:1.6;
-    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+    -webkit-font-smoothing:antialiased; overflow-x:clip;
   }
   /* Atmospheric plasma background */
   body::before {
@@ -41,6 +52,7 @@
     mask-image:radial-gradient(circle at 50% 30%, #000 0%, transparent 70%);
   }
   a { color:inherit; text-decoration:none; }
+  a:focus-visible, button:focus-visible { outline:2px solid var(--cyan); outline-offset:3px; border-radius:8px; }
   /* Page container: full width with auto side gutters that scale with the
      screen (min ~1rem on phones, up to 2.5rem), centered, capped at 1120px.
      The padding-based gutter keeps everything a small, consistent distance
@@ -55,6 +67,10 @@
     font-family:var(--mono); font-size:.72rem; letter-spacing:.32em; text-transform:uppercase;
     color:var(--cyan); margin-bottom:1.1rem;
   }
+  .vh { position:absolute !important; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; }
+  .skip { position:absolute; left:1rem; top:-4rem; z-index:100; background:var(--bg-2); color:var(--ink-1);
+    border:1px solid var(--cyan); border-radius:10px; padding:.6rem 1rem; font-weight:600; }
+  .skip:focus { top:.75rem; }
 
   /* ── Nav ── */
   header.nav {
@@ -72,11 +88,14 @@
   .btn {
     display:inline-flex; align-items:center; gap:.5rem; font-weight:600; font-family:var(--body);
     border-radius:11px; padding:.7rem 1.25rem; font-size:.94rem; cursor:pointer; border:1px solid transparent;
-    transition:transform .15s, box-shadow .2s, background .2s, border-color .2s; white-space:nowrap;
+    transition:transform .15s, box-shadow .2s, background .2s, border-color .2s, color .2s; white-space:nowrap;
   }
   .btn-primary { background:linear-gradient(120deg,var(--cyan),var(--violet)); color:#06101c; box-shadow:var(--glow); }
   .btn-primary:hover { transform:translateY(-2px); box-shadow:0 0 56px rgba(61,215,236,.4); }
-  .nav-toggle { display:none; margin-left:auto; background:none; border:0; color:var(--ink-1); cursor:pointer; }
+  .nav-links a.btn-primary, .nav-links a.btn-primary:hover { color:#06101c; }
+  .btn-ghost { background:rgba(255,255,255,.03); color:var(--ink-1); border-color:var(--line); }
+  .btn-ghost:hover { transform:translateY(-2px); border-color:rgba(61,215,236,.55); background:rgba(61,215,236,.06); }
+  .nav-toggle { display:none; margin-left:auto; background:none; border:0; color:var(--ink-1); cursor:pointer; padding:.35rem; }
 
   /* ── Hero ── */
   .hero { padding:5.5rem 0 4rem; text-align:center; position:relative; }
@@ -84,7 +103,8 @@
     font-family:var(--display); font-weight:800; color:var(--ink-1);
     font-size:clamp(2.6rem,7vw,5rem); line-height:1.02; letter-spacing:-.025em; margin-bottom:1.4rem;
   }
-  .hero p.lead { font-size:clamp(1.05rem,2.2vw,1.3rem); max-width:640px; margin:0 auto 2.2rem; color:var(--ink-2); }
+  .hero p.lead { font-size:clamp(1.05rem,2.2vw,1.3rem); max-width:660px; margin:0 auto 2.2rem; color:var(--ink-2); text-wrap:balance; }
+  .hero p.lead b { color:var(--ink-1); font-weight:600; }
   .hero .cta { display:flex; gap:1rem; justify-content:center; flex-wrap:wrap; }
   .pill-row { display:flex; gap:.6rem; justify-content:center; flex-wrap:wrap; margin-bottom:1.8rem; }
   .pill { font-family:var(--mono); font-size:.74rem; letter-spacing:.05em; color:var(--ink-2);
@@ -114,13 +134,33 @@
   .mock-msg .tx .l { height:8px; border-radius:5px; background:var(--bg-3); opacity:.6; margin-bottom:.4rem; }
 
   /* ── Sections ── */
-  section { padding:5.5rem 0; position:relative; }
+  section { padding:5.5rem 0; position:relative; scroll-margin-top:40px; }
   .sec-head { max-width:680px; margin:0 auto 3rem; text-align:center; }
-  .sec-head h2 { font-family:var(--display); font-weight:800; color:var(--ink-1); font-size:clamp(1.9rem,4vw,2.8rem); letter-spacing:-.02em; line-height:1.1; margin-bottom:1rem; }
-  .sec-head p { font-size:1.05rem; }
+  .sec-head h2 { font-family:var(--display); font-weight:800; color:var(--ink-1); font-size:clamp(1.9rem,4vw,2.8rem); letter-spacing:-.02em; line-height:1.1; margin-bottom:1rem; text-wrap:balance; }
+  .sec-head p { font-size:1.05rem; text-wrap:pretty; }
+  .card h3, .new-card h3 { text-wrap:balance; }
+  .card p, .new-card p, .sh-list li { text-wrap:pretty; }
 
-  /* Pillars */
-  .pillars { display:grid; grid-template-columns:repeat(3,1fr); gap:1.1rem; }
+  /* What's new */
+  #new { padding-top:2rem; }
+  .new-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1.1rem; }
+  .new-card {
+    position:relative; border-radius:16px; padding:1.5rem;
+    background:linear-gradient(180deg,rgba(61,215,236,.07),rgba(157,123,255,.04) 60%,rgba(14,20,34,.4));
+    border:1px solid rgba(61,215,236,.26); transition:transform .2s, border-color .2s, box-shadow .2s;
+  }
+  .new-card:hover { transform:translateY(-4px); border-color:rgba(61,215,236,.5); box-shadow:0 24px 60px -28px rgba(61,215,236,.45); }
+  .new-top { display:flex; align-items:center; justify-content:space-between; gap:.75rem; margin-bottom:1rem; }
+  .new-card .ic { width:40px; height:40px; border-radius:12px; display:grid; place-items:center;
+    background:rgba(157,123,255,.12); border:1px solid rgba(157,123,255,.3); color:var(--violet); }
+  .new-card .ic svg { width:21px; height:21px; }
+  .badge-new { font-family:var(--mono); font-size:.64rem; font-weight:500; letter-spacing:.2em; text-transform:uppercase;
+    color:#06101c; background:linear-gradient(120deg,var(--cyan),var(--violet)); border-radius:999px; padding:.2rem .62rem .2rem .7rem; }
+  .new-card h3 { font-family:var(--display); font-weight:700; color:var(--ink-1); font-size:1.12rem; line-height:1.25; margin-bottom:.45rem; }
+  .new-card p { font-size:.93rem; }
+
+  /* Feature cards */
+  .pillars { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:1.1rem; }
   .card {
     background:linear-gradient(180deg,var(--bg-1),rgba(14,20,34,.4)); border:1px solid var(--line);
     border-radius:16px; padding:1.6rem; transition:transform .2s, border-color .2s, box-shadow .2s;
@@ -147,6 +187,42 @@
   .partial { color:var(--violet); }
   .cmp-note { font-size:.78rem; color:var(--ink-3); margin-top:1rem; text-align:center; font-family:var(--mono); }
 
+  /* Self-host */
+  .sh-grid { display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr); gap:3rem; align-items:center; }
+  .sh-copy .eyebrow { margin-bottom:.9rem; }
+  .sh-copy h2 { font-family:var(--display); font-weight:800; color:var(--ink-1); font-size:clamp(1.9rem,4vw,2.8rem); letter-spacing:-.02em; line-height:1.1; margin-bottom:1rem; text-wrap:balance; }
+  .sh-copy .sh-lead { font-size:1.05rem; margin-bottom:1.8rem; }
+  .sh-list { list-style:none; display:grid; gap:1.05rem; }
+  .sh-list li { display:grid; grid-template-columns:30px minmax(0,1fr); gap:.85rem; align-items:start; font-size:.95rem; }
+  .sh-list .tick { width:30px; height:30px; border-radius:9px; display:grid; place-items:center;
+    background:rgba(61,215,236,.1); border:1px solid rgba(61,215,236,.24); color:var(--cyan); }
+  .sh-list .tick svg { width:16px; height:16px; }
+  .sh-list b { color:var(--ink-1); font-weight:600; }
+  .sh-list code, .sh-note code { font-family:var(--mono); font-size:.84em; color:var(--ink-1);
+    background:rgba(255,255,255,.05); border:1px solid var(--line); border-radius:6px; padding:.05em .35em; }
+  .sh-cta { display:flex; gap:1rem; flex-wrap:wrap; margin-top:2.2rem; }
+  .sh-note { font-size:.9rem; color:var(--ink-2); margin-top:1.4rem; padding:.8rem 1rem; border:1px solid var(--line);
+    border-left:3px solid var(--violet); border-radius:12px; background:linear-gradient(90deg,rgba(157,123,255,.09),var(--bg-1) 70%); }
+  .sh-note b { color:var(--ink-1); font-weight:600; }
+  .term {
+    border:1px solid var(--line); border-radius:18px; overflow:hidden; background:#070b15;
+    box-shadow:0 40px 100px -40px rgba(0,0,0,.85), var(--glow);
+  }
+  .term .bar { height:38px; display:flex; align-items:center; gap:.4rem; padding:0 .9rem; border-bottom:1px solid var(--line); }
+  .term .bar i { width:11px; height:11px; border-radius:50%; display:inline-block; }
+  .term .bar span { margin-left:auto; font-family:var(--mono); font-size:.7rem; color:var(--ink-3); letter-spacing:.06em; }
+  .term pre { font-family:var(--mono); font-size:.78rem; line-height:1.75; color:var(--ink-2); padding:1.1rem 1.2rem 1.2rem;
+    white-space:pre-wrap; overflow-wrap:anywhere; }
+  .term .pr { color:var(--cyan); }
+  .term .hi { color:var(--ink-1); }
+  .term .dim { color:var(--ink-3); }
+  .term .ok { color:#4fdd8f; }
+  .modes { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.6rem; padding:0 1.2rem 1.2rem; }
+  .mode { border:1px solid var(--line); border-radius:12px; padding:.75rem .8rem; background:var(--bg-1); }
+  .mode b { display:block; color:var(--ink-1); font-family:var(--display); font-weight:700; font-size:.9rem; margin-bottom:.2rem; }
+  .mode code { display:block; font-family:var(--mono); font-size:.7rem; color:var(--cyan); overflow-wrap:anywhere; margin-bottom:.25rem; }
+  .mode span { font-size:.76rem; color:var(--ink-3); line-height:1.45; display:block; }
+
   /* Download */
   #download { text-align:center; }
   /* Mobile / Desktop download groups — kept separate since the platforms differ. */
@@ -161,6 +237,8 @@
   .dl svg { width:34px; height:34px; color:var(--ink-1); }
   .dl b { color:var(--ink-1); font-family:var(--display); font-weight:700; }
   .dl span { font-size:.78rem; color:var(--ink-3); font-family:var(--mono); }
+  .dl-notes { max-width:680px; margin:1.6rem auto 0; display:grid; gap:.5rem; font-size:.86rem; color:var(--ink-3); }
+  .dl-notes b { color:var(--ink-2); font-weight:600; }
 
   .mobile-guide { max-width:680px; margin:2.6rem auto 0; background:var(--bg-1); border:1px solid var(--line); border-radius:16px; padding:1.6rem; text-align:left; }
   .mobile-guide h3 { font-family:var(--display); font-weight:700; color:var(--ink-1); font-size:1.15rem; margin-bottom:.45rem; }
@@ -169,22 +247,29 @@
   .mguide-cols ol { margin:0; padding-left:1.15rem; font-size:.88rem; color:var(--ink-2); line-height:1.7; }
   .mguide-cols strong { color:var(--ink-1); font-weight:600; }
 
-  footer { border-top:1px solid var(--line); padding:3rem 0; }
-  .foot-in { display:flex; flex-wrap:wrap; gap:1.5rem; align-items:center; justify-content:space-between; }
+  footer { border-top:1px solid var(--line); padding:3rem 0 2.6rem; }
+  .foot-in { display:flex; flex-wrap:wrap; gap:1.2rem 2rem; align-items:center; justify-content:space-between; }
+  .foot-links { display:flex; flex-wrap:wrap; gap:.6rem 1.6rem; }
   .foot-in a { color:var(--ink-3); font-size:.9rem; transition:color .2s; }
   .foot-in a:hover { color:var(--cyan); }
-  .foot-in small { color:var(--ink-3); font-size:.82rem; }
+  .foot-in a.brand, .foot-in a.brand:hover { color:transparent; }
+  .foot-meta { margin-top:1.6rem; }
+  .foot-meta small { color:var(--ink-3); font-size:.82rem; line-height:1.7; }
 
-  /* reveal */
-  .reveal { opacity:0; transform:translateY(24px); transition:opacity .7s cubic-bezier(.2,.7,.2,1), transform .7s cubic-bezier(.2,.7,.2,1); }
-  .reveal.in { opacity:1; transform:none; }
+  /* reveal (only when scripts run — see the 'js' class in <head>) */
+  .js .reveal { opacity:0; transform:translateY(24px); transition:opacity .7s cubic-bezier(.2,.7,.2,1), transform .7s cubic-bezier(.2,.7,.2,1); }
+  .js .reveal.in { opacity:1; transform:none; }
 
+  @media (max-width:1000px){
+    .new-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
   @media (max-width:860px){
     .nav-links { display:none; }
-    .nav-links.open { display:flex; position:absolute; top:68px; left:0; right:0; flex-direction:column; gap:1.1rem;
+    .nav-links.open { display:flex; position:absolute; top:68px; left:0; right:0; flex-direction:column; align-items:flex-start; gap:1.1rem;
       background:var(--bg-1); border-bottom:1px solid var(--line); padding:1.4rem clamp(1rem,4vw,2.5rem); }
     .nav-toggle { display:block; }
     .pillars { grid-template-columns:1fr; }
+    .sh-grid { grid-template-columns:1fr; gap:2.4rem; }
     .mguide-cols { grid-template-columns:1fr; }
     .hero-mock .body { grid-template-columns:54px 1fr; }
     .mock-side { display:none; }
@@ -199,6 +284,10 @@
     table.cmp tbody th { font-size:.8rem; }
     table.cmp td { font-size:.78rem; }
   }
+  @media (max-width:600px){
+    .new-grid { grid-template-columns:1fr; }
+    .modes { grid-template-columns:1fr; }
+  }
   @media (max-width:430px){
     /* Very small phones — squeeze a little harder so the three columns
        never overflow even on a 320–360px screen. */
@@ -206,19 +295,33 @@
     table.cmp thead th { font-size:.8rem; }
     table.cmp tbody th { font-size:.73rem; }
     table.cmp td { font-size:.71rem; }
+    /* "Your community." is one unbreakable line; at the desktop minimum
+       (2.6rem) it ran ~60px past a 360px screen and got clipped. */
+    .hero h1 { font-size:clamp(1.8rem,9vw,2.6rem); }
+    .hero .cta .btn { width:100%; justify-content:center; }
+    .sh-cta .btn { width:100%; justify-content:center; }
+  }
+  @media (prefers-reduced-motion: reduce){
+    html { scroll-behavior:auto; }
+    .js .reveal, .js .reveal.in { opacity:1; transform:none; transition:none; }
+    .card, .new-card, .dl, .btn { transition:none; }
+    .card:hover, .new-card:hover, .dl:hover, .btn-primary:hover, .btn-ghost:hover { transform:none; }
   }
 </style>
 </head>
-<body>
+<body id="top">
+<a class="skip" href="#main">Skip to content</a>
 
 <!-- NAV -->
 <header class="nav" id="nav">
   <div class="wrap nav-in">
-    <a href="#" class="brand">Zekktris</a>
-    <button class="nav-toggle" id="navToggle" aria-label="Menu">
-      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    <a href="#top" class="brand">Zekktris</a>
+    <button class="nav-toggle" id="navToggle" type="button" aria-label="Menu" aria-expanded="false" aria-controls="navLinks">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
     </button>
-    <nav class="nav-links" id="navLinks">
+    <nav class="nav-links" id="navLinks" aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="self-hosting/">Self-host</a>
       <a href="#compare">Compare</a>
       <a href="/">Log in</a>
       <a href="#download" class="btn btn-primary" style="padding:.55rem 1.1rem;">Download</a>
@@ -226,19 +329,23 @@
   </div>
 </header>
 
+<main id="main">
+
 <!-- HERO -->
 <section class="hero">
   <div class="wrap">
-    <div class="eyebrow reveal">Private by design · No ads · No paywalled basics</div>
+    <div class="eyebrow reveal">Free for everyone · No ads · Run it yourself</div>
     <h1 class="reveal">Your community.<br><span class="grad-text">Your space. Your rules.</span></h1>
-    <p class="lead reveal">Zekktris is a full-featured chat platform — voice, video, and communities, with <b style="color:var(--ink-1)">end-to-end-encrypted DMs</b>. No ads. No tracking. No paywalled basics.</p>
+    <p class="lead reveal">Zekktris is a free chat app for communities, friends and families: servers, voice, video and screen sharing, with <b>DMs you can end-to-end encrypt</b>. No ads, nothing for sale, and you can <b>run it on your own server</b>.</p>
     <div class="pill-row reveal">
-      <span class="pill"><b>✦</b> End-to-end encrypted DMs</span>
-      <span class="pill"><b>✦</b> No ads, ever</span>
+      <span class="pill"><b>✦</b> Free for everyone</span>
+      <span class="pill"><b>✦</b> Opt-in encrypted DMs &amp; calls</span>
+      <span class="pill"><b>✦</b> Run your own server</span>
       <span class="pill"><b>✦</b> On every device</span>
     </div>
     <div class="cta reveal">
       <a href="#download" class="btn btn-primary">Download Zekktris</a>
+      <a href="#self-host" class="btn btn-ghost">Run your own server</a>
     </div>
 
     <div class="hero-mock reveal" aria-hidden="true">
@@ -261,106 +368,234 @@
   </div>
 </section>
 
-<!-- WHY DIFFERENT -->
-<section id="different">
+<!-- WHAT'S NEW -->
+<section id="new" aria-labelledby="new-title">
   <div class="wrap">
     <div class="sec-head reveal">
-      <div class="eyebrow">Why we're different</div>
-      <h2>Everything built in. Nothing held back.</h2>
-      <p>Voice, video, real privacy, and the controls families actually need — every core feature ships to everyone. No ads, no "boost to unlock", nothing for sale — and you can run your own server.</p>
+      <div class="eyebrow">Just landed</div>
+      <h2 id="new-title">What's new</h2>
+      <p>The latest additions, free like everything else.</p>
+    </div>
+    <div class="new-grid">
+      <article class="new-card reveal">
+        <div class="new-top">
+          <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8c3.6 0 6.6 5.3 6.6 10.1a6.6 6.6 0 0 1-13.2 0C5.4 8.1 8.4 2.8 12 2.8z"/><path d="M7.6 12.4l2.1 1.6 2.3-2.2 2.3 2.2 2.1-1.6"/></svg></div>
+          <span class="badge-new">New</span>
+        </div>
+        <h3>Zekk Pet</h3>
+        <p>Keep a DM streak going for three days and you can adopt a pet together. You both see the same egg, and small daily tasks like saying hi, chatting and poking each other raise it from Baby to Legendary.</p>
+      </article>
+      <article class="new-card reveal">
+        <div class="new-top">
+          <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 10v3.5l2.4 2.1M10 2.5h4M12 2.5V6"/></svg></div>
+          <span class="badge-new">New</span>
+        </div>
+        <h3>Disappearing messages</h3>
+        <p>Set a DM's messages to vanish for both of you once they've been read: after 30 seconds, a day, four weeks or a time you choose. A stopwatch marks each one.</p>
+      </article>
+      <article class="new-card reveal">
+        <div class="new-top">
+          <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5.5h2.5V7A3.5 3.5 0 0 1 16.4 10.5M7 5.5H4.5V7a3.5 3.5 0 0 0 3.1 3.5M12 14v4M8.5 21h7M9.5 18h5"/></svg></div>
+          <span class="badge-new">New</span>
+        </div>
+        <h3>Seven new achievement families</h3>
+        <p>Regular, Crowd Pleaser, The People Have Spoken, Kindred Spirits, Now You See Me, Zekk Keeper and Perfect Day join the badges you can earn and show on your profile.</p>
+      </article>
+      <article class="new-card reveal">
+        <div class="new-top">
+          <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l2.6 5.4 5.9.8-4.3 4.1 1.1 5.9L12 16.4l-5.3 2.8 1.1-5.9-4.3-4.1 5.9-.8z"/></svg></div>
+          <span class="badge-new">New</span>
+        </div>
+        <h3>Free for everyone</h3>
+        <p>Nothing costs money. Themes, avatar frames and name tags are free on every account, sharper screen sharing comes as a free perk, and there are no ads.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- FEATURES -->
+<section id="features" aria-labelledby="features-title">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <div class="eyebrow">Everything included</div>
+      <h2 id="features-title">Everything built in. Nothing held back.</h2>
+      <p>Voice, video, real privacy and the controls families need, on every account. No "boost to unlock", no paid tier, no ads.</p>
     </div>
     <div class="pillars">
-      <div class="card reveal">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="8" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 8h.01M7 17h.01"/></svg></div>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="8" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 8h.01M7 17h.01"/></svg></div>
         <h3>Communities, your way</h3>
-        <p>Servers with text, voice &amp; stage channels, threads, forums, roles, reaction roles, and fine-grained permissions — organize your people exactly how you like, with the tools to keep things running.</p>
-      </div>
-      <div class="card reveal">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></div>
+        <p>Servers with text, voice, stage, forum and link channels, threads, events with RSVPs, your own emoji and stickers, and Discovery to help new people find you.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg></div>
+        <h3>Roles &amp; moderation</h3>
+        <p>34 permissions with per-channel overrides and reaction roles, plus AutoMod filters for words, links, mention spam and repeated messages, timeouts, member reports and an exportable audit log.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="8" width="16" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01M9.5 16h5M2 12.5v2M22 12.5v2"/></svg></div>
+        <h3>Bots &amp; webhooks</h3>
+        <p>Add bots with slash commands, and pipe in alerts from GitHub Actions, Uptime Kuma or anything that posts Discord- or Slack-style webhooks.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7"/></svg></div>
         <h3>Voice, video &amp; stage</h3>
-        <p>Crystal-clear voice channels, 1:1 calls, stage channels, and screen share come standard — hop in with a click. Everyone streams at 720p; server admins can give perk tiers for up to 4K at 60 fps.</p>
-      </div>
-      <div class="card reveal">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+        <p>Drop into voice channels with noise suppression and push-to-talk, call any DM or group DM, and host stage talks where the audience raises a hand to speak.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4M9 9.5l3-3 3 3M12 6.5v6"/></svg></div>
+        <h3>Screen share up to 4K</h3>
+        <p>Share a screen or window from desktop, a browser or Android at 720p for everyone. Free perks unlock 1080p at 60&nbsp;fps, 2K or 4K, handed out by whoever runs your Zekktris server: the Zekktris team on zekktris.com, or you if you host your own.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
         <h3>Rich messaging</h3>
-        <p>Reactions, replies, edits, pins, polls, stickers, and voice messages — plus scheduled messages, saved bookmarks, and photo, video &amp; file sharing. Everything you'd expect, all included.</p>
-      </div>
-      <div class="card reveal">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/></svg></div>
-        <h3>Private by design</h3>
-        <p>End-to-end-encrypted DMs and calls (AES-256), friend-gated DMs and calls, and zero behavioural profiling. People you don't know can't ring you unless you opt in.</p>
-      </div>
-      <div class="card reveal">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><path d="M17.5 8.5l1.8 1.8L23 7"/></svg></div>
-        <h3>Parental controls</h3>
-        <p>Link a child account and stay in the loop — restrict servers, DMs, and calls, set watch-words, and review a flagged-message feed. Built in, not bolted on.</p>
-      </div>
-      <div class="card reveal">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C9 6 7 8 7 12a5 5 0 0 0 10 0c0-2-1-3-1-3-.5 1.5-1.5 2-2.5 2 .5-3-1.5-6-1.5-9z"/></svg></div>
-        <h3>Streaks &amp; achievements</h3>
-        <p>Keep a daily messaging streak going with the people you talk to most, and earn achievements that show off on your profile. A little spark that makes staying in touch fun.</p>
-      </div>
-      <div class="card reveal">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21v-4a4 4 0 014-4h10a4 4 0 014 4v4"/><circle cx="12" cy="7" r="4"/></svg></div>
-        <h3>No ads. Never the product.</h3>
-        <p>You'll never be the product. No promoted content, no paywalled basics, no "boost to unlock." Every feature ships to everyone, cosmetics included — perk tiers only raise stream quality.</p>
-      </div>
-      <div class="card reveal">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12.5" r="2.5"/><path d="M12 22a10 10 0 110-20"/></svg></div>
-        <h3>Yours to personalize</h3>
-        <p>Six full app-wide themes (with OLED), custom avatar frames, profile banners, name tags, and custom statuses — your space, fully re-skinned, free for everyone.</p>
-      </div>
-      <div class="card reveal">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="14" height="10" rx="2"/><path d="M2 18h14"/><rect x="16.5" y="9" width="5.5" height="11" rx="1.5"/></svg></div>
+        <p>Markdown, replies, forwards, reactions, polls, voice messages, scheduled messages, pins, saved messages and search by person or date.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11M12 15v2"/></svg></div>
+        <h3>Encrypted DMs &amp; calls</h3>
+        <p>Switch on end-to-end encryption in a one-on-one DM with a password you both know, and its messages, files and calls are locked so not even the server can read them.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/></svg></div>
+        <h3>Private by default</h3>
+        <p>Only friends can message or call you unless you say otherwise, link previews never show your IP to other sites, and passkeys, two-factor and app lock guard your account.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="7" r="3.2"/><path d="M3.5 20a5.5 5.5 0 0 1 11 0"/><path d="M17.5 8.5l1.8 1.8L23 7"/></svg></div>
+        <h3>Parental supervision</h3>
+        <p>Sign-up is 13+, and teens can link to a parent who can limit DMs, calls and servers, approve friend and server requests and set watch-words, until supervision ends at 18.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C9 6 7 8 7 12a5 5 0 0 0 10 0c0-2-1-3-1-3-.5 1.5-1.5 2-2.5 2 .5-3-1.5-6-1.5-9z"/></svg></div>
+        <h3>Streaks, pokes &amp; achievements</h3>
+        <p>Keep a daily DM streak with a heads-up before it breaks, send pokes from a chat, a widget or your Apple&nbsp;Watch, and earn badges to show on your profile.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12.5" r="2.5"/><path d="M12 22a10 10 0 110-20"/></svg></div>
+        <h3>Make it yours</h3>
+        <p>Twelve themes (six colours, each with a pure-black OLED twin) that recolour the app icon on iPhone and desktop, and now your notifications too: unread badges, in-app banners and Android's alerts. Plus avatar frames, banners, name tags and custom statuses.</p>
+      </article>
+      <article class="card reveal">
+        <div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="14" height="10" rx="2"/><path d="M2 18h14"/><rect x="16.5" y="9" width="5.5" height="11" rx="1.5"/></svg></div>
         <h3>Everywhere you are</h3>
-        <p>Native apps for iOS, Android, and desktop (Windows, macOS &amp; Linux), an Apple&nbsp;Watch companion, and a full web app you can install to your home screen — your chats follow you everywhere.</p>
-      </div>
+        <p>iPhone and iPad (with widgets and Siri), Apple&nbsp;Watch, Android, Windows, macOS, Linux and any browser, and your status follows the device you're actually using.</p>
+      </article>
     </div>
   </div>
 </section>
 
 <!-- COMPARE -->
-<section id="compare">
+<section id="compare" aria-labelledby="compare-title">
   <div class="wrap">
     <div class="sec-head reveal">
       <div class="eyebrow">How it stacks up</div>
-      <h2>Zekktris vs. the alternatives</h2>
-      <p>The fundamentals most chat platforms gate, upsell, or skip entirely.</p>
+      <h2 id="compare-title">Zekktris vs. Discord</h2>
+      <p>The things people ask about most, side by side.</p>
     </div>
     <div class="cmp-scroll reveal">
       <table class="cmp">
+        <caption class="vh">Feature comparison between Zekktris and Discord</caption>
         <thead>
           <tr>
-            <th style="text-align:left">&nbsp;</th>
-            <th class="zk">Zekktris</th>
-            <th>Discord</th>
+            <th scope="col" style="text-align:left"><span class="vh">Feature</span></th>
+            <th scope="col" class="zk">Zekktris</th>
+            <th scope="col">Discord</th>
           </tr>
         </thead>
         <tbody>
-          <tr><th>End-to-end-encrypted DMs &amp; calls</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
-          <tr><th>No ads or promoted content</th><td class="col-zk yes">Yes</td><td class="partial">Limited</td></tr>
-          <tr><th>Friend-gated DMs &amp; calls</th><td class="col-zk yes">Yes</td><td class="partial">Limited</td></tr>
-          <tr><th>Built-in parental controls</th><td class="col-zk yes">Yes</td><td class="partial">Limited</td></tr>
-          <tr><th>Scheduled messages</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
-          <tr><th>Messaging streaks</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
-          <tr><th>App-wide custom themes</th><td class="col-zk yes">6 + OLED</td><td class="partial">Limited</td></tr>
-          <tr><th>Apple Watch app</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
-          <tr><th>Voice, video &amp; screen share</th><td class="col-zk yes">Yes</td><td class="yes">Yes</td></tr>
-          <tr><th>Cost</th><td class="col-zk yes">Free — and self-hostable</td><td>Free + paid tier</td></tr>
+          <tr><th scope="row">Every feature free, nothing for sale</th><td class="col-zk yes">Yes</td><td class="no">Paid Nitro tier</td></tr>
+          <tr><th scope="row">Run it on your own server</th><td class="col-zk yes">Yes (public code opens soon)</td><td class="no">No</td></tr>
+          <tr><th scope="row">No ads or sponsored content</th><td class="col-zk yes">Yes</td><td class="no">Sponsored Quests</td></tr>
+          <tr><th scope="row">End-to-end-encrypted text DMs</th><td class="col-zk yes">Yes, opt-in</td><td class="no">No</td></tr>
+          <tr><th scope="row">Only friends can DM or call you by default</th><td class="col-zk yes">Yes</td><td class="partial">Optional setting</td></tr>
+          <tr><th scope="row">Built-in parental controls</th><td class="col-zk yes">Yes</td><td class="partial">Limited</td></tr>
+          <tr><th scope="row">Disappearing messages</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
+          <tr><th scope="row">Scheduled messages</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
+          <tr><th scope="row">Messaging streaks &amp; a shared pet</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
+          <tr><th scope="row">Screen share in 1080p to 4K</th><td class="col-zk yes">Free perk from the zekktris.com team (or you, if you host your own)</td><td class="partial">Paid (Nitro)</td></tr>
+          <tr><th scope="row">App-wide colour themes</th><td class="col-zk yes">12, all free</td><td class="partial">Paid (Nitro)</td></tr>
+          <tr><th scope="row">Apple Watch app</th><td class="col-zk yes">Yes</td><td class="no">No</td></tr>
+          <tr><th scope="row">Voice, video &amp; screen share</th><td class="col-zk yes">Yes</td><td class="yes">Yes</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="cmp-note">Zekktris column reflects shipped features. The Discord column reflects general public positioning and may change.</p>
+    <p class="cmp-note">Zekktris column: what ships today. Encryption is switched on per one-on-one DM, and calls in an encrypted DM are encrypted too. Discord column: Discord's publicly listed features, which may change.</p>
+  </div>
+</section>
+
+<!-- SELF-HOST -->
+<section id="self-host" aria-labelledby="self-host-title">
+  <div class="wrap sh-grid">
+    <div class="sh-copy reveal">
+      <div class="eyebrow">Run it yourself</div>
+      <h2 id="self-host-title">Run your own Zekktris server</h2>
+      <p class="sh-lead">Zekktris runs on zekktris.com, and anyone can run their own server too: free, and set up with one command on a machine you control, like a spare PC, a Raspberry&nbsp;Pi&nbsp;4 or&nbsp;5, a NAS or a small VPS.</p>
+      <ul class="sh-list">
+        <li>
+          <span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+          <span><b>Your server, your data.</b> Accounts, messages and uploads live on your machine, and you decide who can sign up.</span>
+        </li>
+        <li>
+          <span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+          <span><b>One command sets it up.</b> <code>./install.sh</code> checks Docker, your network, firewall and router (NAT, carrier-grade NAT and UPnP included), writes fresh secrets, builds everything and creates your admin account.</span>
+        </li>
+        <li>
+          <span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+          <span><b>Reach it your way.</b> By your own domain with HTTPS, by just your public IP with a free Let's&nbsp;Encrypt certificate, or only on your home network.</span>
+        </li>
+        <li>
+          <span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+          <span><b>The apps connect to it.</b> The iPhone and Android apps switch servers from their sign-in screen (the desktop app too, from its next update), and the web app is served straight from your server.</span>
+        </li>
+        <li>
+          <span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+          <span><b>Calls included.</b> Voice, video and screen sharing run on a voice server that comes with the install. No outside accounts.</span>
+        </li>
+        <li>
+          <span class="tick" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+          <span><b>Safe updates and backups.</b> Updates take a backup first and roll back by themselves if the new version fails its health check. Backups, restores and health checks are one command each.</span>
+        </li>
+      </ul>
+      <div class="sh-cta">
+        <a href="self-hosting/" class="btn btn-primary">Read the self-hosting guide →</a>
+        <a href="self-hosting/#requirements" class="btn btn-ghost">What you need</a>
+      </div>
+      <p class="sh-note"><b>The public code repository opens soon.</b> Until then, only people who've been given access can download the code. Zekktris is free software under the GNU AGPL-3.0.</p>
+    </div>
+
+    <figure class="term reveal">
+      <figcaption class="vh">An example run of the installer</figcaption>
+      <div class="bar" aria-hidden="true"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span>zekktris — install.sh</span></div>
+      <pre><span class="pr">$</span> <span class="hi">./install.sh</span>
+<span class="hi">▶ How should people reach your server?</span>
+  1) Just your public IP — no domain needed, free HTTPS
+  2) A domain name you own (e.g. chat.example.com)
+  3) Home network only — nobody outside can connect
+  Choose 1, 2 or 3: <span class="hi">2</span>
+  <span class="dim">…</span>
+  <span class="ok">✓</span> chat.example.com points here
+  <span class="ok">✓</span> HTTPS is working
+
+<span class="ok">Zekktris is running.</span>
+  Open:  <span class="hi">https://chat.example.com</span></pre>
+      <div class="modes">
+        <div class="mode"><b>A domain</b><code>--domain chat.example.com</code><span>Your own name, with HTTPS.</span></div>
+        <div class="mode"><b>Just your IP</b><code>--ip</code><span>No domain needed. HTTPS is still free.</span></div>
+        <div class="mode"><b>Home network</b><code>--lan</code><span>Only people on your network.</span></div>
+      </div>
+    </figure>
   </div>
 </section>
 
 <!-- DOWNLOAD -->
-<section id="download">
+<section id="download" aria-labelledby="download-title">
   <div class="wrap">
     <div class="sec-head reveal">
       <div class="eyebrow">Get the app</div>
-      <h2>Download Zekktris</h2>
-      <p>Native apps for iOS (TestFlight beta), desktop, and Android — or use it right in your browser.</p>
+      <h2 id="download-title">Download Zekktris</h2>
+      <p>Native apps for iPhone and iPad (TestFlight beta), Android, Windows, macOS and Linux, or use it right in your browser.</p>
     </div>
     <div class="dl-groups reveal">
       <div class="dl-group">
@@ -369,11 +604,14 @@
           <!-- iOS via TestFlight (public beta). Update this href if the TestFlight
                public link changes in App Store Connect. -->
           <a class="dl" href="https://testflight.apple.com/join/a3a3jDDK" target="_blank" rel="noopener noreferrer">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.3 12.6c0-2 1.6-3 1.7-3-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7s-1.6-.7-2.6-.7c-1.3 0-2.6.8-3.2 2-1.4 2.4-.4 6 1 8 .6 1 1.4 2 2.4 2s1.3-.6 2.5-.6 1.5.6 2.6.6 1.7-.9 2.3-1.9c.7-1 1-2 1-2.1 0 0-1.9-.8-1.9-2.9zM14.4 5.9c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.4 1.3-.5.6-.9 1.5-.8 2.4.9.1 1.8-.4 2.4-1.1z"/></svg>
-            <b>iOS</b><span>TestFlight beta</span>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.3 12.6c0-2 1.6-3 1.7-3-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7s-1.6-.7-2.6-.7c-1.3 0-2.6.8-3.2 2-1.4 2.4-.4 6 1 8 .6 1 1.4 2 2.4 2s1.3-.6 2.5-.6 1.5.6 2.6.6 1.7-.9 2.3-1.9c.7-1 1-2 1-2.1 0 0-1.9-.8-1.9-2.9zM14.4 5.9c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.4 1.3-.5.6-.9 1.5-.8 2.4.9.1 1.8-.4 2.4-1.1z"/></svg>
+            <b>iOS</b><span>TestFlight beta</span><i class="vh"> (opens in a new tab)</i>
           </a>
-          <a class="dl" href="/desktop/updates/Zekktris.apk">
-            <svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd"><path d="M17.6 9.48l1.84-3.18a.64.64 0 00-.26-.85.64.64 0 00-.83.22l-1.88 3.24a11.43 11.43 0 00-8.94 0L5.65 5.67a.64.64 0 00-.87-.2.64.64 0 00-.22.83L6.4 9.48A10.78 10.78 0 001 18h22a10.78 10.78 0 00-5.4-8.52zM7 15.25a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5zm10 0a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5z"/></svg>
+          <!-- Full zekktris.com URLs on purpose: this page is also baked into
+               self-hosted servers (served at /site/), whose own
+               /desktop/updates/ folder starts out empty. -->
+          <a class="dl" href="https://zekktris.com/desktop/updates/Zekktris.apk">
+            <svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M17.6 9.48l1.84-3.18a.64.64 0 00-.26-.85.64.64 0 00-.83.22l-1.88 3.24a11.43 11.43 0 00-8.94 0L5.65 5.67a.64.64 0 00-.87-.2.64.64 0 00-.22.83L6.4 9.48A10.78 10.78 0 001 18h22a10.78 10.78 0 00-5.4-8.52zM7 15.25a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5zm10 0a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5z"/></svg>
             <b>Android</b><span>Zekktris.apk</span>
           </a>
         </div>
@@ -381,22 +619,27 @@
       <div class="dl-group">
         <div class="dl-group-label">🖥️ Desktop</div>
         <div class="dl-grid">
-          <a class="dl" href="/desktop/updates/Zekktris.exe">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 5.5L10.5 4.4V11.5H3zM11.5 4.2L21 3v8.5h-9.5zM3 12.5h7.5v7.1L3 18.5zM11.5 12.5H21V21l-9.5-1.3z"/></svg>
+          <a class="dl" href="https://zekktris.com/desktop/updates/Zekktris.exe">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.5L10.5 4.4V11.5H3zM11.5 4.2L21 3v8.5h-9.5zM3 12.5h7.5v7.1L3 18.5zM11.5 12.5H21V21l-9.5-1.3z"/></svg>
             <b>Windows</b><span>Zekktris.exe</span>
           </a>
-          <a class="dl" href="/desktop/updates/Zekktris.dmg">
-            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.3 12.6c0-2 1.6-3 1.7-3-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7s-1.6-.7-2.6-.7c-1.3 0-2.6.8-3.2 2-1.4 2.4-.4 6 1 8 .6 1 1.4 2 2.4 2s1.3-.6 2.5-.6 1.5.6 2.6.6 1.7-.9 2.3-1.9c.7-1 1-2 1-2.1 0 0-1.9-.8-1.9-2.9zM14.4 5.9c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.4 1.3-.5.6-.9 1.5-.8 2.4.9.1 1.8-.4 2.4-1.1z"/></svg>
+          <a class="dl" href="https://zekktris.com/desktop/updates/Zekktris.dmg">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.3 12.6c0-2 1.6-3 1.7-3-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7s-1.6-.7-2.6-.7c-1.3 0-2.6.8-3.2 2-1.4 2.4-.4 6 1 8 .6 1 1.4 2 2.4 2s1.3-.6 2.5-.6 1.5.6 2.6.6 1.7-.9 2.3-1.9c.7-1 1-2 1-2.1 0 0-1.9-.8-1.9-2.9zM14.4 5.9c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.4 1.3-.5.6-.9 1.5-.8 2.4.9.1 1.8-.4 2.4-1.1z"/></svg>
             <b>macOS</b><span>Zekktris.dmg</span>
           </a>
-          <a class="dl" href="/desktop/updates/Zekktris.AppImage">
+          <a class="dl" href="https://zekktris.com/desktop/updates/Zekktris.AppImage">
             <!-- Penguin (Tux): head with eye/beak cutouts, body with a belly cutout,
                  flippers, and feet — all cut-outs that show the card through. -->
-            <svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd"><path d="M12 2.3C13.71 2.3 15.1 3.69 15.1 5.4 15.1 7.11 13.71 8.5 12 8.5 10.29 8.5 8.9 7.11 8.9 5.4 8.9 3.69 10.29 2.3 12 2.3ZM10.7 4.45C10.4 4.45 10.15 4.7 10.15 5 10.15 5.3 10.4 5.55 10.7 5.55 11 5.55 11.25 5.3 11.25 5 11.25 4.7 11 4.45 10.7 4.45ZM13.3 4.45C13 4.45 12.75 4.7 12.75 5 12.75 5.3 13 5.55 13.3 5.55 13.6 5.55 13.85 5.3 13.85 5 13.85 4.7 13.6 4.45 13.3 4.45ZM11.2 6.3 12.8 6.3 12 7.7Z"/><path d="M12 7C8.5 7 6.2 10 6.2 14.8 6.2 19 8.8 22 12 22 15.2 22 17.8 19 17.8 14.8 17.8 10 15.5 7 12 7Zm0 4C10.4 11 9.3 12.7 9.3 15 9.3 17.3 10.5 19 12 19 13.5 19 14.7 17.3 14.7 15 14.7 12.7 13.6 11 12 11Z"/><path d="M6.4 11C5 11.6 4.4 13.6 5 15.6 5.9 14.6 6.3 13 6.4 11Z M17.6 11C19 11.6 19.6 13.6 19 15.6 18.1 14.6 17.7 13 17.6 11Z"/><path d="M9.6 21L7.6 23.4 11.1 22.7Z M14.4 21L16.4 23.4 12.9 22.7Z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" aria-hidden="true"><path d="M12 2.3C13.71 2.3 15.1 3.69 15.1 5.4 15.1 7.11 13.71 8.5 12 8.5 10.29 8.5 8.9 7.11 8.9 5.4 8.9 3.69 10.29 2.3 12 2.3ZM10.7 4.45C10.4 4.45 10.15 4.7 10.15 5 10.15 5.3 10.4 5.55 10.7 5.55 11 5.55 11.25 5.3 11.25 5 11.25 4.7 11 4.45 10.7 4.45ZM13.3 4.45C13 4.45 12.75 4.7 12.75 5 12.75 5.3 13 5.55 13.3 5.55 13.6 5.55 13.85 5.3 13.85 5 13.85 4.7 13.6 4.45 13.3 4.45ZM11.2 6.3 12.8 6.3 12 7.7Z"/><path d="M12 7C8.5 7 6.2 10 6.2 14.8 6.2 19 8.8 22 12 22 15.2 22 17.8 19 17.8 14.8 17.8 10 15.5 7 12 7Zm0 4C10.4 11 9.3 12.7 9.3 15 9.3 17.3 10.5 19 12 19 13.5 19 14.7 17.3 14.7 15 14.7 12.7 13.6 11 12 11Z"/><path d="M6.4 11C5 11.6 4.4 13.6 5 15.6 5.9 14.6 6.3 13 6.4 11Z M17.6 11C19 11.6 19.6 13.6 19 15.6 18.1 14.6 17.7 13 17.6 11Z"/><path d="M9.6 21L7.6 23.4 11.1 22.7Z M14.4 21L16.4 23.4 12.9 22.7Z"/></svg>
             <b>Linux</b><span>Zekktris.AppImage</span>
           </a>
         </div>
       </div>
+    </div>
+
+    <div class="dl-notes reveal">
+      <p><b>Android:</b> the APK is the native app for Android 8 or later. The first time, your phone asks you to allow installs from your browser. It doesn't update itself, so download it again for new versions.</p>
+      <p><b>Desktop:</b> the Windows and Linux apps keep themselves up to date.</p>
     </div>
 
     <!-- Browser / login option — the app SPA lives at the site root. -->
@@ -407,8 +650,8 @@
 
     <!-- Mobile "install as an app" (PWA) guide. -->
     <div class="mobile-guide reveal">
-      <h3>Install it on your phone</h3>
-      <p>Zekktris installs as a home-screen app on mobile — no app store needed. Open it in your browser, then:</p>
+      <h3>Or add it to your home screen</h3>
+      <p>Prefer not to install anything? Zekktris also works as a home-screen web app. Open it in your browser, then:</p>
       <div class="mguide-cols">
         <div>
           <b>iPhone &amp; iPad — Safari</b>
@@ -427,15 +670,27 @@
           </ol>
         </div>
       </div>
-      <p style="font-size:.8rem; color:var(--ink-3); margin-top:1rem;">The installed app runs full-screen with its own icon — and the icon &amp; theme follow whatever you pick in Settings.</p>
+      <p style="font-size:.8rem; color:var(--ink-3); margin-top:1rem;">The installed web app runs full-screen with its own icon, and the app inside follows the theme you pick in Settings.</p>
     </div>
   </div>
 </section>
 
+</main>
+
 <footer>
   <div class="wrap foot-in">
-    <a href="#" class="brand" style="font-size:1rem;">Zekktris</a>
-    <small>No ads · Private by design · No paywalled basics. © Zekktris.</small>
+    <a href="#top" class="brand" style="font-size:1rem;">Zekktris</a>
+    <nav class="foot-links" aria-label="Footer">
+      <a href="#features">Features</a>
+      <a href="self-hosting/">Self-hosting guide</a>
+      <a href="#compare">Compare</a>
+      <a href="#download">Download</a>
+      <a href="/terms">Terms</a>
+      <a href="/privacy">Privacy</a>
+    </nav>
+  </div>
+  <div class="wrap foot-meta">
+    <small>Free for everyone · No ads · Private by design. Zekktris is free software under the GNU AGPL-3.0; the public code repository opens soon. © Zekktris.</small>
   </div>
 </footer>
 
@@ -446,16 +701,24 @@
 
   // Mobile menu
   const links = document.getElementById('navLinks');
-  document.getElementById('navToggle').addEventListener('click', () => links.classList.toggle('open'));
-  links.addEventListener('click', e => { if (e.target.tagName === 'A') links.classList.remove('open'); });
+  const toggle = document.getElementById('navToggle');
+  const setMenu = (open) => { links.classList.toggle('open', open); toggle.setAttribute('aria-expanded', String(open)); };
+  toggle.addEventListener('click', () => setMenu(!links.classList.contains('open')));
+  links.addEventListener('click', e => { if (e.target.closest('a')) setMenu(false); });
+  addEventListener('keydown', e => { if (e.key === 'Escape' && links.classList.contains('open')) { setMenu(false); toggle.focus(); } });
 
   // Staggered reveal on scroll
-  const io = new IntersectionObserver((entries) => {
-    entries.forEach((en, i) => {
-      if (en.isIntersecting) { setTimeout(() => en.target.classList.add('in'), (i % 6) * 70); io.unobserve(en.target); }
-    });
-  }, { threshold:.12 });
-  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+  const reveals = document.querySelectorAll('.reveal');
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach((en, i) => {
+        if (en.isIntersecting) { setTimeout(() => en.target.classList.add('in'), (i % 6) * 70); io.unobserve(en.target); }
+      });
+    }, { threshold:.12 });
+    reveals.forEach(el => io.observe(el));
+  } else {
+    reveals.forEach(el => el.classList.add('in'));
+  }
 </script>
 </body>
 </html>
