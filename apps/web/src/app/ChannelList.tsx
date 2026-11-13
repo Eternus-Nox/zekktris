@@ -38,7 +38,17 @@ import { UserVolumePopover } from '../lib/UserVolumePopover';
 import { avatarColor } from '../lib/avatar';
 import { Portal } from '../lib/Portal';
 import { ChannelMenu } from './ChannelMenu';
-import { connectToVoice, VoiceError, subscribeSpeakers, getCurrentSpeakers, prepareVoiceAudio, claimVoiceChannel, releaseVoiceChannel } from '../lib/voice';
+import {
+  connectToVoice,
+  VoiceError,
+  subscribeSpeakers,
+  getCurrentSpeakers,
+  prepareVoiceAudio,
+  claimVoiceChannel,
+  releaseVoiceChannel,
+  isVoiceCancelled,
+  isVoiceJoinCancelled,
+} from '../lib/voice';
 import { memberIsAdmin } from '../lib/permissions';
 import { useChannelDragReorder, type DragState } from '../lib/useChannelDragReorder';
 import { useProfileCard } from '../lib/useProfileCard';
@@ -1320,6 +1330,14 @@ function VoiceChannelRow({
     claimVoiceChannel(channel.id);
     try {
       const r = await rest.joinVoice(channel.id);
+      // Hung up while this join was still out (our echo can show Leave
+      // first). Its snapshot would undo that hang-up's optimistic leave, and
+      // the join may have reached the server after the hang-up's leave:
+      // take it back instead.
+      if (isVoiceJoinCancelled(channel.id)) {
+        void rest.leaveVoice(channel.id).catch(() => {});
+        return;
+      }
       // Merge the channel's authoritative voice state snapshot into
       // our local view before connecting — defends against any
       // earlier missed VOICE_STATE_UPDATE events so the joining
@@ -1342,7 +1360,9 @@ function VoiceChannelRow({
           // ghost in the channel forever (our gateway is healthy, so the 45s
           // grace never fires). Best-effort — the gateway echoes the leave.
           void rest.leaveVoice(channel.id).catch(() => {});
-          if (e instanceof VoiceError) {
+          if (isVoiceCancelled(e)) {
+            // Cancelled by the user's own hang-up: nothing went wrong.
+          } else if (e instanceof VoiceError) {
             toasts.push(e.message, 'error');
           } else {
             toasts.push(

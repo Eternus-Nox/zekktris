@@ -40,7 +40,15 @@ import {
   hasBit,
 } from '../lib/permissions';
 import { UserPlus, UserMinus, Shield, X, Edit, Trash, Ban as BanIcon, Clock } from '../lib/icons';
-import { connectToVoice, VoiceError, prepareVoiceAudio, claimVoiceChannel, releaseVoiceChannel } from '../lib/voice';
+import {
+  connectToVoice,
+  VoiceError,
+  prepareVoiceAudio,
+  claimVoiceChannel,
+  releaseVoiceChannel,
+  isVoiceCancelled,
+  isVoiceJoinCancelled,
+} from '../lib/voice';
 import { formatCustomStatus } from './CustomStatusModal';
 
 type RelType =
@@ -552,6 +560,14 @@ export function ProfileCard({
       claimVoiceChannel(claimed);
       try {
         const r = await rest.joinVoice(dm.channel.id);
+        // Hung up while the call was still being placed (our echo can show
+        // the ring-out first). Its snapshot would undo that hang-up's
+        // optimistic leave, and the join may have reached the server after
+        // the hang-up's leave: take it back instead.
+        if (isVoiceJoinCancelled(dm.channel.id)) {
+          void rest.leaveVoice(dm.channel.id).catch(() => {});
+          return;
+        }
         mergeChannelVoiceStates(dm.channel.id, r.channelVoiceStates);
         if (r.token && r.wsUrl) {
           await connectToVoice({
@@ -575,14 +591,17 @@ export function ProfileCard({
         // leave a ghost participant. Harmless no-op if joinVoice itself
         // failed. The gateway echoes the leave. Best-effort.
         void rest.leaveVoice(dm.channel.id).catch(() => {});
-        toasts.push(
-          e instanceof VoiceError
-            ? e.message
-            : e instanceof ApiError
+        // Cancelled by the user's own hang-up: nothing went wrong.
+        if (!isVoiceCancelled(e)) {
+          toasts.push(
+            e instanceof VoiceError
               ? e.message
-              : 'Could not start the call',
-          'error',
-        );
+              : e instanceof ApiError
+                ? e.message
+                : 'Could not start the call',
+            'error',
+          );
+        }
       }
     } catch (e) {
       toasts.push(e instanceof ApiError ? e.message : 'Could not open DM', 'error');

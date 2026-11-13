@@ -16,18 +16,19 @@
  * (call becomes active, DmCallBar at the top takes over) or the
  * caller hangs up.
  *
- * Hangup: disconnectVoice + rest.leaveVoice + a "Call ended" toast.
+ * Hangup: AppState's hangUpCall (the modal goes at the click, the
+ * teardown and the server leave run behind it) + a "Call ended" toast
+ * once the server has us out.
  * The black-hole-swallow animation lives on the VoiceView side and
  * fires when the user hangs up an answered call; here the call is
  * still ringing, so we just exit cleanly.
  */
 
 import { useState, useEffect } from 'react';
-import { ApiError, type Channel } from '@zekktris/client';
+import { type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState, voiceStatesForChannel, selfVoiceState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
-import { disconnectVoice } from '../lib/voice';
 import { startRingback, stopRingback } from '../lib/sounds';
 import { PhoneOff } from '../lib/icons';
 import { AvatarImage } from '../lib/AvatarImage';
@@ -35,8 +36,8 @@ import { avatarColor } from '../lib/avatar';
 import { Portal } from '../lib/Portal';
 
 export function OutgoingCallModal({ channel }: { channel: Channel }) {
-  const { state } = useAppState();
-  const { rest, user } = useAuth();
+  const { state, hangUpCall } = useAppState();
+  const { user } = useAuth();
   const toasts = useToasts();
   const [busy, setBusy] = useState(false);
 
@@ -85,25 +86,21 @@ export function OutgoingCallModal({ channel }: { channel: Channel }) {
   async function hangup() {
     if (busy) return;
     setBusy(true);
+    // The caller pressed Cancel: the ring stops now, not once the server
+    // has agreed.
+    stopRingback();
     try {
-      await disconnectVoice();
-      let endedOk = true;
-      try {
-        await rest.leaveVoice(channel.id);
-      } catch (e) {
-        // 404 = row already gone server-side; treat as success.
-        if (e instanceof ApiError && e.status === 404) {
-          // suppress; ended
-        } else {
-          endedOk = false;
-          toasts.push(e instanceof ApiError ? e.message : 'Failed to hang up', 'error');
-        }
-      }
-      if (endedOk) toasts.push('Call ended', 'info');
+      // The modal goes at once (hangUpCall drops our row, which is what
+      // `ringing` reads) while the teardown — cancelling a connect that is
+      // still under way — and the server leave run behind it. A failed
+      // leave is toasted there (a 404 counts as ended).
+      const ended = await hangUpCall(channel.id);
+      if (ended) toasts.push('Call ended', 'info');
     } finally {
-      // Stop the ringback audio defensively: if leaveVoice() failed, the server
-      // row persists → `ringing` stays true → the effect's cleanup never fires,
-      // so the ring would play indefinitely. stopRingback() is idempotent.
+      // Belt and braces: the optimistic leave unmounts this modal, whose
+      // effect cleanup stops the ring too. (If the leave failed and the
+      // server still has our ring-out, the modal comes back — and rings —
+      // as a fresh instance, after this runs.) stopRingback() is idempotent.
       stopRingback();
       setBusy(false);
     }

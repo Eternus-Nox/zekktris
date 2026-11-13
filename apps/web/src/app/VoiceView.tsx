@@ -68,6 +68,10 @@ import {
   prepareVoiceAudio,
   claimVoiceChannel,
   releaseVoiceChannel,
+  hangUpVoice,
+  isVoiceCancelled,
+  isVoiceJoinCancelled,
+  isVoiceJoinInFlight,
   VoiceError,
   type VoiceTrackInfo,
   type VoiceConnectionState,
@@ -206,6 +210,7 @@ export function VoiceView({
   const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
   const usersById = useAppStateSelector((v) => v.state.usersById);
   const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
+  const hangUpCall = useAppStateSelector((v) => v.hangUpCall);
   const rest = useAppStateSelector((v) => v.rest);
   const { user } = useAuth();
   // Parental controls: a supervised child may be barred from video and/or
@@ -280,10 +285,11 @@ export function VoiceView({
   // an unmounted component (no observable crash in modern React but
   // wasted work + a dev warning).
   const leavingTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-  // Holds the disconnect closure while a 1:1 hangup swallow-animation is in
-  // flight. If the view unmounts mid-animation, the awaited timer below is
-  // cancelled and the post-await disconnect would never run — stranding a live
-  // call (ghost participant + open mic). The unmount cleanup runs it.
+  // Holds the rest of a 1:1 hangup (the local leave + the server leave; the
+  // media teardown already started at the click) while its swallow animation
+  // is in flight. If the view unmounts mid-animation, the awaited timer below
+  // is cancelled and the post-await step would never run — stranding the call
+  // on the server (a ghost participant). The unmount cleanup runs it.
   const pendingHangupRef = useRef<null | (() => Promise<void>)>(null);
   useEffect(() => {
     const timers = leavingTimersRef.current;
@@ -369,7 +375,13 @@ export function VoiceView({
 
   // ── Actions ─────────────────────────────────────────────────────────────
 
+  // One join at a time from this button: a double-click started two, the
+  // second racing the first onto the same channel.
+  const joiningRef = useRef(false);
+
   async function joinThis() {
+    if (joiningRef.current) return;
+    joiningRef.current = true;
     // Prime shared audio context inside the click — see voice.prepareVoiceAudio.
     prepareVoiceAudio();
     // Claim the target BEFORE the REST call — the server dispatches our
@@ -379,6 +391,15 @@ export function VoiceView({
     claimVoiceChannel(channel.id);
     try {
       const r = await rest.joinVoice(channel.id);
+      // Hung up while this join was still out (our echo can show the Leave
+      // button first). Its snapshot still lists us and would undo that
+      // hang-up's optimistic leave with no echo left to correct it, and the
+      // join may have reached the server after the hang-up's leave: take it
+      // back instead.
+      if (isVoiceJoinCancelled(channel.id)) {
+        void rest.leaveVoice(channel.id).catch(() => {});
+        return;
+      }
       mergeChannelVoiceStates(channel.id, r.channelVoiceStates);
       if (r.token && r.wsUrl) {
         try {
@@ -400,14 +421,17 @@ export function VoiceView({
           // leave us as a silent ghost in the channel (the gateway echoes the
           // leave). Best-effort.
           void rest.leaveVoice(channel.id).catch(() => {});
-          toasts.push(
-            e instanceof VoiceError
-              ? e.message
-              : e instanceof Error
-                ? `Voice connect failed: ${e.message}`
-                : 'Voice connect failed',
-            'error',
-          );
+          // Cancelled by the user's own hang-up: nothing went wrong.
+          if (!isVoiceCancelled(e)) {
+            toasts.push(
+              e instanceof VoiceError
+                ? e.message
+                : e instanceof Error
+                  ? `Voice connect failed: ${e.message}`
+                  : 'Voice connect failed',
+              'error',
+            );
+          }
         }
       } else {
         toasts.push('Voice isn’t set up on this server yet — you’ve joined the channel, but no audio will connect. Ask the server admin to enable voice.', 'info');
@@ -420,6 +444,7 @@ export function VoiceView({
       // dead claim can't make getConnectedChannelId() report a room we
       // never entered.
       releaseVoiceChannel(channel.id);
+      joiningRef.current = false;
     }
   }
 
@@ -437,48 +462,59 @@ export function VoiceView({
   const [selfHangingUp, setSelfHangingUp] = useState(false);
 
   async function leave() {
+    // The call this button ends: ours, as of the click.
+    const channelId = myVoice?.channelId;
+    if (!channelId) return;
     const isDm1to1 = channel.type === 'dm';
     const otherInThis = participants.some((p) => p.userId !== user?.id);
 
-    // The actual teardown — captured once so it can run either after the
-    // animation (normal path) OR from the unmount cleanup (if we unmount during
-    // the animation). Idempotent so it runs at most once regardless of path.
+    // A join still in flight goes the same way. The hang-up cancels it, and
+    // its join site rolls the server join back at once: that echo takes our
+    // row (and this view) within a round trip, cutting the animation short
+    // anyway — and, our row gone before the deferred leave below, the
+    // partner's would be left behind to ring as an incoming call.
+    if (!(isDm1to1 && otherInThis && user?.id) || isVoiceJoinInFlight()) {
+      // All at once: our tile and these controls go now (with a 1:1
+      // partner's row), while the teardown (cancelling a join still
+      // connecting) and the server leave run behind.
+      void hangUpCall(channelId);
+      return;
+    }
+
+    // 1:1 with the partner here, the call up: our own tile is swallowed
+    // first (1.2 s, matching .zk-blackhole-swallow). The media goes NOW —
+    // the teardown runs under the animation instead of after it — but the
+    // optimistic leave and the server leave wait for the animation to
+    // finish: our row going is what flips Shell from the call split back to
+    // the chat.
+    if (pendingHangupRef.current) return; // already hanging up
+    void hangUpVoice();
+    // Runs once, after the animation OR from the unmount cleanup if the view
+    // goes mid-animation (the awaited timer is cancelled then) — so the call
+    // can never be left up on the server.
     let ran = false;
-    const doDisconnect = async () => {
+    const finishHangup = async () => {
       if (ran) return;
       ran = true;
       pendingHangupRef.current = null;
-      await disconnectVoice();
-      if (myVoice?.channelId) {
-        try {
-          await rest.leaveVoice(myVoice.channelId);
-        } catch (e) {
-          toasts.push(e instanceof ApiError ? e.message : 'Failed to leave', 'error');
-        }
-      }
+      const ended = await hangUpCall(channelId, { teardown: false });
+      // The leave failed (hangUpCall has said why): if the server still has
+      // us, our row is back, and so is our tile.
+      if (!ended) setSelfHangingUp(false);
     };
-
-    if (isDm1to1 && otherInThis && user?.id) {
-      // Mark self as hanging up so the JSX renders the swallow overlay on the
-      // local participant's tile.
-      setSelfHangingUp(true);
-      // Register the disconnect so an unmount during the 1.2s swallow animation
-      // still tears the call down (the awaited timer gets cancelled on unmount).
-      pendingHangupRef.current = doDisconnect;
-      // Wait one keyframe (1.2s, matching .zk-blackhole-swallow), then
-      // disconnect; the Shell's MessageView re-renders once voice_state clears.
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(() => {
-          leavingTimersRef.current.delete(t);
-          resolve();
-        }, 1200);
-        leavingTimersRef.current.add(t);
-      });
-      // No-op if the unmount cleanup already ran it (the `ran` guard).
-      await doDisconnect();
-    } else {
-      await doDisconnect();
-    }
+    // Mark self as hanging up so the JSX renders the swallow overlay on the
+    // local participant's tile.
+    setSelfHangingUp(true);
+    pendingHangupRef.current = finishHangup;
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(() => {
+        leavingTimersRef.current.delete(t);
+        resolve();
+      }, 1200);
+      leavingTimersRef.current.add(t);
+    });
+    // No-op if the unmount cleanup already ran it (the `ran` guard).
+    await finishHangup();
   }
 
   async function toggleMute() {

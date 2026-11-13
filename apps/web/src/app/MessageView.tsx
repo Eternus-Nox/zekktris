@@ -67,7 +67,15 @@ const DisappearingMessagesModal = lazy(() =>
 );
 // Lazy-loaded: the Zekk Pet card (body-portaled) only mounts when opened.
 const ZekkPetModal = lazy(() => import('./ZekkPetModal').then((m) => ({ default: m.ZekkPetModal })));
-import { connectToVoice, disconnectVoice, VoiceError, prepareVoiceAudio, claimVoiceChannel, releaseVoiceChannel } from '../lib/voice';
+import {
+  connectToVoice,
+  VoiceError,
+  prepareVoiceAudio,
+  claimVoiceChannel,
+  releaseVoiceChannel,
+  isVoiceCancelled,
+  isVoiceJoinCancelled,
+} from '../lib/voice';
 import { PollComposerModal, type PollDraft } from './PollComposerModal';
 import { StickerPicker } from './StickerPicker';
 import { useVoiceRecorder } from '../lib/useVoiceRecorder';
@@ -3382,8 +3390,9 @@ function DisappearingPill({
  *   - incoming       — pulsing green phone, click to accept (same path as start)
  *
  * State derives entirely from voice state — no local optimistic
- * flags, so it stays in sync with what the gateway has actually
- * confirmed. When the call is active the split-screen layout in Shell
+ * flags of its own; a hang-up's optimistic leave (hangUpCall drops our
+ * row from that state) is what flips it back to idle at the click. When
+ * the call is active the split-screen layout in Shell
  * mounts VoiceView above MessageView with full controls (mute /
  * deafen / camera / screenshare / leave); this header button is the
  * quick-toggle affordance.
@@ -3391,6 +3400,7 @@ function DisappearingPill({
 function DmHeaderCallButton({ channel }: { channel: Channel }) {
   // Granular subscriptions (was `useAppState()`).
   const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
+  const hangUpCall = useAppStateSelector((v) => v.hangUpCall);
   const rest = useAppStateSelector((v) => v.rest);
   const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
   const supervision = useAppStateSelector((v) => v.state.supervision);
@@ -3403,7 +3413,11 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
   const otherInThis = callStates.some((v) => v.userId !== selfId);
   const incoming = !myInThis && otherInThis;
 
-  const [busy, setBusy] = useState(false);
+  // Two flags, not one: Hang up has to work WHILE a start() is still
+  // connecting (that is when a stuck join most needs cancelling), so only a
+  // hang-up already under way disables it. Start waits for both.
+  const [starting, setStarting] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   // Auto-join guard. The SW routes "Answer" taps on incoming-call
   // notifications to `?autojoin=1`; this effect picks up that hint
   // and fires start() exactly once per landing. We track the
@@ -3433,19 +3447,19 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
     void start();
     // start is stable enough for our purposes — even if its
     // closure values drift between mount and effect run, start()
-    // itself bails on the busy/myInThis checks. The channel.id
+    // itself bails on the starting/leaving/myInThis checks. The channel.id
     // gate is the only meaningful change-detection here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel.id]);
 
   async function start() {
-    if (busy || myInThis) return;
+    if (starting || leaving || myInThis) return;
     // Parental controls: a supervised child barred from voice can't call.
     if (supervision?.restrictions && !supervision.restrictions.allowVoice) {
       toasts.push('Voice calls are restricted by your parent', 'error');
       return;
     }
-    setBusy(true);
+    setStarting(true);
     // Prime shared audio context inside the click gesture's call stack
     // — see lib/voice.prepareVoiceAudio for the rationale.
     prepareVoiceAudio();
@@ -3456,6 +3470,14 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
     claimVoiceChannel(channel.id);
     try {
       const r = await rest.joinVoice(channel.id);
+      // Hung up while this join was still out (our echo can show Hang up
+      // first). Its snapshot would undo that hang-up's optimistic leave,
+      // and the join may have reached the server after the hang-up's
+      // leave: take it back instead.
+      if (isVoiceJoinCancelled(channel.id)) {
+        void rest.leaveVoice(channel.id).catch(() => {});
+        return;
+      }
       mergeChannelVoiceStates(channel.id, r.channelVoiceStates);
       if (r.token && r.wsUrl) {
         try {
@@ -3477,14 +3499,17 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
           // other party sits in dead air with someone who "answered." The
           // gateway echoes the leave. Best-effort.
           void rest.leaveVoice(channel.id).catch(() => {});
-          toasts.push(
-            e instanceof VoiceError
-              ? e.message
-              : e instanceof Error
-                ? `Voice connect failed: ${e.message}`
-                : 'Voice connect failed',
-            'error',
-          );
+          // Cancelled by the user's own Hang up: nothing went wrong.
+          if (!isVoiceCancelled(e)) {
+            toasts.push(
+              e instanceof VoiceError
+                ? e.message
+                : e instanceof Error
+                  ? `Voice connect failed: ${e.message}`
+                  : 'Voice connect failed',
+              'error',
+            );
+          }
         }
       } else {
         toasts.push('Voice isn’t set up on this server yet, so there’s no audio. Ask the server admin to enable voice.', 'info');
@@ -3496,24 +3521,19 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
       // settles, but the REST-failed / no-token paths never call it, and a
       // stranded claim would make getConnectedChannelId() lie.
       releaseVoiceChannel(channel.id);
-      setBusy(false);
+      setStarting(false);
     }
   }
 
+  // Works mid-start(): hangUpCall cancels the join still connecting (its
+  // start() then winds down quietly) as well as ending a settled call.
   async function leave() {
-    if (busy || !myInThis) return;
-    setBusy(true);
+    if (leaving || !myInThis) return;
+    setLeaving(true);
     try {
-      await disconnectVoice();
-      try {
-        await rest.leaveVoice(channel.id);
-      } catch (e) {
-        if (!(e instanceof ApiError && e.status === 404)) {
-          toasts.push(e instanceof ApiError ? e.message : 'Failed to hang up', 'error');
-        }
-      }
+      await hangUpCall(channel.id);
     } finally {
-      setBusy(false);
+      setLeaving(false);
     }
   }
 
@@ -3531,7 +3551,7 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
       <button
         type="button"
         onClick={() => void leave()}
-        disabled={busy}
+        disabled={leaving}
         className="w-8 h-8 flex items-center justify-center rounded text-red-300 hover:text-red-200 hover:bg-red-900/40 disabled:opacity-50"
         aria-label="Hang up"
         title="Hang up"
@@ -3545,7 +3565,7 @@ function DmHeaderCallButton({ channel }: { channel: Channel }) {
     <button
       type="button"
       onClick={() => void start()}
-      disabled={busy}
+      disabled={starting || leaving}
       className={`w-8 h-8 flex items-center justify-center rounded transition-colors ${
         incoming
           ? 'bg-emerald-900/40 text-emerald-300 hover:bg-emerald-900/60 animate-pulse'

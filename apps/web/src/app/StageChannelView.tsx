@@ -45,6 +45,9 @@ import {
   claimVoiceChannel,
   releaseVoiceChannel,
   getCurrentTracks,
+  getHangupGeneration,
+  isVoiceCancelled,
+  isVoiceJoinCancelled,
   VoiceError,
 } from '../lib/voice';
 
@@ -58,6 +61,7 @@ export function StageChannelView({ channel }: { channel: Channel }) {
   const rolesByGuild = useAppStateSelector((v) => v.state.rolesByGuild);
   const membersByGuild = useAppStateSelector((v) => v.state.membersByGuild);
   const usersById = useAppStateSelector((v) => v.state.usersById);
+  const hangUpCall = useAppStateSelector((v) => v.hangUpCall);
   const { user, rest } = useAuth();
   const toasts = useToasts();
   const navigate = useNavigate();
@@ -134,15 +138,30 @@ export function StageChannelView({ channel }: { channel: Channel }) {
         (t) => t.userId === user?.id && (t.kind === 'camera' || t.kind === 'screen'),
       );
       void (async () => {
+        // The teardown below is internal — a role change, not a hang-up — so
+        // it leaves the hang-up generation alone (bumping it would cancel
+        // this very rejoin). But a Leave pressed while it runs means the
+        // user wants out: don't rejoin them.
+        const gen = getHangupGeneration();
+        let claimed = false;
         try {
           await disconnectVoice();
+          if (getHangupGeneration() !== gen) return;
           // Claim the target after the teardown (a disconnect-time clear
           // would otherwise wipe it) but BEFORE the REST call — the server
           // dispatches our VOICE_STATE_UPDATE over the gateway before it
           // writes the join response, so the echo can beat connectToVoice
           // and read as a moderator move to the self-move detector.
           claimVoiceChannel(channel.id);
+          claimed = true;
           const r = await rest.joinStage(channel.id);
+          // Left while this join was still out. The Leave's leaveStage runs
+          // alongside it and may have reached the server first, and this
+          // join would then have put us back on the stage: take it back.
+          if (isVoiceJoinCancelled(channel.id)) {
+            void rest.leaveStage(channel.id).catch(() => {});
+            return;
+          }
           if (r.token && r.wsUrl) {
             await connectToVoice({
               token: r.token,
@@ -164,14 +183,20 @@ export function StageChannelView({ channel }: { channel: Channel }) {
             );
           }
         } catch (e) {
-          toasts.push(
-            e instanceof Error ? e.message : 'Stage reconnect failed',
-            'error',
-          );
+          if (isVoiceCancelled(e)) {
+            // Cancelled by the user's own Leave: nothing to report, but the
+            // server join stands, so take it back as above.
+            void rest.leaveStage(channel.id).catch(() => {});
+          } else {
+            toasts.push(
+              e instanceof Error ? e.message : 'Stage reconnect failed',
+              'error',
+            );
+          }
         } finally {
           // connectToVoice releases the claim when it settles; the
           // REST-failed / no-token paths never reach it.
-          releaseVoiceChannel(channel.id);
+          if (claimed) releaseVoiceChannel(channel.id);
         }
       })();
     }
@@ -189,6 +214,12 @@ export function StageChannelView({ channel }: { channel: Channel }) {
     claimVoiceChannel(channel.id);
     try {
       const r = await rest.joinStage(channel.id);
+      // Hung up while this join was still out: take it back, as the
+      // role-change rejoin above does.
+      if (isVoiceJoinCancelled(channel.id)) {
+        void rest.leaveStage(channel.id).catch(() => {});
+        return;
+      }
       if (r.token && r.wsUrl) {
         try {
           await connectToVoice({
@@ -200,10 +231,16 @@ export function StageChannelView({ channel }: { channel: Channel }) {
             publish: r.participant.isSpeaker,
           });
         } catch (e) {
-          toasts.push(
-            e instanceof VoiceError ? e.message : 'Voice connect failed',
-            'error',
-          );
+          if (isVoiceCancelled(e)) {
+            // Cancelled by the user's own hang-up: nothing went wrong, but
+            // the server join stands — take it back.
+            void rest.leaveStage(channel.id).catch(() => {});
+          } else {
+            toasts.push(
+              e instanceof VoiceError ? e.message : 'Voice connect failed',
+              'error',
+            );
+          }
         }
       } else {
         toasts.push('Voice isn’t set up on this server yet — you’ve joined the channel, but no audio will connect. Ask the server admin to enable voice.', 'info');
@@ -218,13 +255,12 @@ export function StageChannelView({ channel }: { channel: Channel }) {
     }
   }
 
-  async function leave() {
-    await disconnectVoice();
-    try {
-      await rest.leaveStage(channel.id);
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Failed to leave stage', 'error');
-    }
+  // Out at once: the teardown (cancelling a join still connecting) and the
+  // server leave (leaveStage — a stage has no voice row to drop locally) run
+  // in parallel behind us, through the same hangUpCall every hang-up uses;
+  // a failed leave is toasted there.
+  function leave() {
+    void hangUpCall(channel.id, { stage: true });
     if (channel.guildId) {
       navigate(`/channels/${channel.guildId}`);
     }

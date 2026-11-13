@@ -531,6 +531,20 @@ export interface LeaveVoiceResult {
 }
 
 /**
+ * Options for EVERY RoomServiceClient in this file, and for stage.ts's
+ * promote/demote. requestTimeout is in SECONDS (the SDK's ClientOptions), and
+ * the SDK aborts the fetch when it fires; left unset, livekit-server-sdk waits
+ * 60 s. These LiveKit calls run inline: a decline, kick, ban, move, AFK sweep
+ * or channel/guild delete awaits its removeParticipant before it echoes or
+ * responds, a stage promote/demote its updateParticipant, and the gateway's
+ * disconnect cleanup awaits isStillOnSfu. A stalled LiveKit HTTP API must cost
+ * those seconds, not a minute. A timeout lands in each call's existing catch,
+ * like any other LiveKit failure. 3 s is livekitLive.ts's PER_CALL_TIMEOUT_S;
+ * a healthy API answers in milliseconds.
+ */
+export const SFU_ADMIN_CLIENT_OPTIONS = { requestTimeout: 3 };
+
+/**
  * Best-effort SFU eviction for a single voice_states row — stops the
  * participant's audio/video flowing immediately instead of waiting out the
  * LiveKit token TTL (~1h). No-op when LiveKit is unconfigured. Used by every
@@ -547,7 +561,7 @@ async function sfuRemoveParticipant(row: schema.VoiceState): Promise<void> {
     );
   if (!apiKey || !apiSecret || !httpUrl) return;
   try {
-    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret, SFU_ADMIN_CLIENT_OPTIONS);
     await svc.removeParticipant(roomNameForRow(row), row.userId.toString());
   } catch (err) {
     log.warn?.('livekit removeParticipant failed (best-effort)', {
@@ -588,7 +602,7 @@ export async function isStillOnSfu(userId: bigint): Promise<boolean | null> {
     );
   if (!apiKey || !apiSecret || !httpUrl) return null;
   try {
-    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret, SFU_ADMIN_CLIENT_OPTIONS);
     await svc.getParticipant(roomNameForRow(row), userId.toString());
     return true;
   } catch (err) {
@@ -692,8 +706,25 @@ export async function leaveVoice(
     return { priorState, systemCallMessage: null, systemCallChannelId: null };
   }
 
-  const bookkeeping = await endDmCallBookkeeping(priorState.channelId, userId);
-  return { priorState, ...bookkeeping };
+  // The row delete above has already committed: the user HAS left, so every
+  // caller must still get priorState and send the VOICE_STATE_UPDATE echo. A
+  // throw from the call-record write used to escape from here, turning a
+  // completed hang-up into a 500 before the route echoed it. The call UI then
+  // stayed up ("Failed to leave"), and every retry was a silent no-op because
+  // the row was already gone. Losing the call record is the lesser failure,
+  // and endDmCallBookkeeping already accepts it: it clears the call columns
+  // before it writes the message.
+  try {
+    const bookkeeping = await endDmCallBookkeeping(priorState.channelId, userId);
+    return { priorState, ...bookkeeping };
+  } catch (err) {
+    log.error('voice leave: DM call-record bookkeeping failed; the leave still stands', {
+      err,
+      userId: userId.toString(),
+      channelId: priorState.channelId.toString(),
+    });
+    return { priorState, systemCallMessage: null, systemCallChannelId: null };
+  }
 }
 
 /**
@@ -902,7 +933,7 @@ export async function evictFromVoiceInGuild(
   );
   if (apiKey && apiSecret && httpUrl) {
     const roomName = roomNameForRow(row);
-    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret, SFU_ADMIN_CLIENT_OPTIONS);
     try {
       await svc.removeParticipant(roomName, userId.toString());
     } catch (err) {
@@ -949,7 +980,7 @@ export async function evictFromAllVoice(
   );
   if (apiKey && apiSecret && httpUrl) {
     const roomName = roomNameForRow(row);
-    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret, SFU_ADMIN_CLIENT_OPTIONS);
     try {
       await svc.removeParticipant(roomName, userId.toString());
     } catch (err) {
@@ -993,7 +1024,7 @@ export async function evictAllVoiceInGuild(
     m.toLowerCase() === 'wss:' ? 'https:' : 'http:',
   );
   if (apiKey && apiSecret && httpUrl) {
-    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret, SFU_ADMIN_CLIENT_OPTIONS);
     // Sequential rather than parallel — a bulk delete-guild with
     // many voice participants would otherwise hit LiveKit with N
     // concurrent admin calls; we'd rather pace that.
@@ -1054,7 +1085,7 @@ export async function evictAllVoiceInChannel(
     m.toLowerCase() === 'wss:' ? 'https:' : 'http:',
   );
   if (apiKey && apiSecret && httpUrl) {
-    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret, SFU_ADMIN_CLIENT_OPTIONS);
     for (const row of rows) {
       const roomName = roomNameForRow(row);
       try {
@@ -1327,7 +1358,7 @@ export async function moveVoiceMember(args: {
     );
   if (apiKey && apiSecret && httpUrl) {
     const oldRoomName = roomNameForRow(current);
-    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+    const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret, SFU_ADMIN_CLIENT_OPTIONS);
     try {
       await svc.removeParticipant(oldRoomName, targetUserId.toString());
     } catch (err) {
@@ -1445,7 +1476,7 @@ export async function sweepAfkMutedMembers(): Promise<AfkAutoMove[]> {
         );
       if (apiKey && apiSecret && httpUrl) {
         const oldRoomName = roomNameForRow(cand);
-        const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+        const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret, SFU_ADMIN_CLIENT_OPTIONS);
         try {
           await svc.removeParticipant(oldRoomName, cand.userId.toString());
         } catch (err) {

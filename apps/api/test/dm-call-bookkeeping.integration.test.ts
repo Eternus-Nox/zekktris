@@ -1,7 +1,8 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../src/db';
 import { joinVoice, leaveVoice } from '../src/services/voice';
+import * as messages from '../src/services/messages';
 import { createUser, createDmChannel, addRelationship, cleanupAll } from './seed';
 import { probeDb, closeDb } from './db-available';
 
@@ -96,5 +97,50 @@ describe.runIf(dbReady)('1:1 DM call bookkeeping', () => {
     const cleared = await callCols(dm);
     expect(cleared.started).toBeNull();
     expect(cleared.answered).toBeNull();
+  });
+
+  it('a failed call-record write still returns priorState, so the route echoes the leave', async () => {
+    const a = await createUser();
+    const b = await createUser();
+    await addRelationship(a, b, 'friend');
+    await addRelationship(b, a, 'friend');
+    const dm = await createDmChannel([a, b]);
+
+    await joinVoice(a, dm); // A rings B: the call columns are stamped
+    expect((await callCols(dm)).started).not.toBeNull();
+
+    // The last leaver's system_call write fails AFTER the voice row delete has
+    // committed. That throw used to escape leaveVoice and 500 the DELETE before
+    // the route sent the VOICE_STATE_UPDATE echo, so the hang-up never landed
+    // in the UI and every retry was a no-op.
+    const write = vi
+      .spyOn(messages, 'createSystemMessage')
+      .mockRejectedValueOnce(new Error('simulated call-record write failure'));
+    try {
+      // The DELETE /channels/:id/voice route's own options.
+      const result = await leaveVoice(a, { expectedChannelId: dm, matchMovedFrom: true });
+      expect(write).toHaveBeenCalledTimes(1);
+      // The route dispatches the echo off priorState.
+      expect(result.priorState?.userId).toBe(a);
+      expect(result.priorState?.channelId).toBe(dm);
+      expect(result.systemCallMessage).toBeNull();
+      expect(result.systemCallChannelId).toBeNull();
+    } finally {
+      write.mockRestore();
+    }
+
+    // The leave itself stands: A's voice row is gone.
+    const [row] = await db
+      .select({ userId: schema.voiceStates.userId })
+      .from(schema.voiceStates)
+      .where(eq(schema.voiceStates.userId, a))
+      .limit(1);
+    expect(row).toBeUndefined();
+    // The call columns were cleared before the write, so the next ring in this
+    // DM starts clean: the record is lost, never stranded or duplicated.
+    const cols = await callCols(dm);
+    expect(cols.started).toBeNull();
+    expect(cols.answered).toBeNull();
+    expect(cols.initiator).toBeNull();
   });
 });

@@ -31,6 +31,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
   const channelsByGuild = useAppStateSelector((v) => v.state.channelsByGuild);
   const rest = useAppStateSelector((v) => v.rest);
   const mergeChannelVoiceStates = useAppStateSelector((v) => v.mergeChannelVoiceStates);
+  const hangUpCall = useAppStateSelector((v) => v.hangUpCall);
   const { user } = useAuth();
   const toasts = useToasts();
   const my = selfVoiceState(voiceStatesByUser, user?.id);
@@ -145,14 +146,12 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
     }
   }
 
-  async function leave() {
+  // The panel goes the moment it's pressed (hangUpCall drops our row now);
+  // the teardown — cancelling a join still connecting — and the server
+  // leave run behind it.
+  function leave() {
     if (!my?.channelId) return;
-    await disconnectVoice();
-    try {
-      await rest.leaveVoice(my.channelId);
-    } catch (e) {
-      toasts.push(e instanceof ApiError ? e.message : 'Failed to leave', 'error');
-    }
+    void hangUpCall(my.channelId);
   }
 
   return (
@@ -189,7 +188,7 @@ export function VoicePanel({ activeChannelId }: { activeChannelId?: string | nul
           {deafened ? <HeadphonesOff size={14} /> : <Headphones size={14} />}
         </button>
         <button
-          onClick={() => void leave()}
+          onClick={leave}
           className="w-8 h-8 flex items-center justify-center rounded-full bg-red-500 text-white hover:brightness-110 transition-colors"
           title="Leave call"
           aria-label="Leave call"

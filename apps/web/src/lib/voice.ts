@@ -235,17 +235,65 @@ let activeChannelId: string | null = null;
     DM-only. Drives the self-move detector. */
 let connectedChannelId: string | null = null;
 
-/** Channels we are ABOUT to join, each claimed before its REST joinVoice
-    call and released when that join settles either way.
+/**
+ * Hang-up generation. Bumped by every user hang-up ([hangUpVoice]: a Leave /
+ * Hang up / Cancel button, the 1:1 auto-end, the eviction teardown, the OS
+ * media controls) and by nothing else — an internal teardown (a channel
+ * switch, a moderator-move rejoin, a session takeover, a stage role change)
+ * goes through [disconnectVoice] and leaves it alone, or a move would cancel
+ * its own rejoin.
  *
- *  A SET, not a single slot: two joins can legitimately overlap (a
- *  mis-click then a correction, or a caller racing the self-move
+ * Every join belongs to the generation current when it started (its claim,
+ * or its connectToVoice call). A join whose generation is no longer current
+ * was hung up: it unwinds with VoiceError('cancelled') at its next
+ * checkpoint instead of finishing.
+ */
+let hangupGen = 0;
+
+/**
+ * Settles on the next user hang-up. A join races its open-ended waits
+ * against it (the livekit-client chunk, and the getUserMedia probe, which
+ * sits behind the browser's mic-permission prompt for as long as the user
+ * leaves it open), so a Leave never queues behind a prompt the user no
+ * longer cares about. Replaced by every hang-up, so it always stands for the
+ * one still to come.
+ */
+let nextHangup = createHangupSignal();
+
+function createHangupSignal(): { promise: Promise<void>; fire: () => void } {
+  let fire!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    fire = resolve;
+  });
+  return { promise, fire };
+}
+
+/**
+ * The Room performConnect is building: set the moment it is constructed,
+ * cleared when that connect settles either way. Module `room` is assigned
+ * only after `r.connect` resolves, so until then this is the ONLY handle on
+ * it — and LiveKit's own cancel for a connecting Room is `Room.disconnect()`
+ * on exactly this instance: it aborts the attempt and rejects the pending
+ * connect, and during the mic publish it closes the engine under the
+ * pending publish (which the join then stops waiting for: see
+ * stopOrphanedMicCapture). [hangUpVoice] is its one caller.
+ */
+let connectingRoom: RoomLike | null = null;
+
+/** Channels we are ABOUT to join, each claimed before its REST joinVoice
+    call and released when that join settles either way — mapped to the
+    hang-up generation current at the claim, so a hang-up pressed while that
+    REST call is still out (before connectToVoice is even called) cancels
+    the join too.
+ *
+ *  Keyed by channel, not a single slot: two joins can legitimately overlap
+ *  (a mis-click then a correction, or a caller racing the self-move
  *  detector's own rejoin). With one slot, whichever join finished first
  *  cleared the other's claim, and the survivor's own echo then looked
  *  like a moderator drag — the exact failure the claim exists to
  *  prevent. Keying by channel makes releases idempotent and
  *  order-independent, so no caller can revoke another's intent. */
-const pendingChannels = new Set<string>();
+const pendingChannels = new Map<string, number>();
 
 export function getActiveVoiceSessionId(): string | null {
   return activeSessionId;
@@ -264,9 +312,35 @@ export function getActiveVoiceSessionId(): string | null {
  *
  * Callers must invoke this SYNCHRONOUSLY immediately before
  * `rest.joinVoice(...)` — any await in between reopens the race.
+ *
+ * The claim also stamps the join with the current hang-up generation: a
+ * hang-up from here on cancels it, even one pressed before the REST join
+ * returns (see [isVoiceJoinCancelled]).
  */
 export function claimVoiceChannel(channelId: string): void {
-  pendingChannels.add(channelId);
+  pendingChannels.set(channelId, hangupGen);
+}
+
+/**
+ * True when the user hung up after [channelId] was claimed, i.e. that join is
+ * void. Join sites check it before merging the snapshot from their REST join:
+ * the snapshot still lists us in the channel and would undo the hang-up's
+ * optimistic leave, with no echo left to correct it. connectToVoice rejects
+ * the join itself with VoiceError('cancelled').
+ */
+export function isVoiceJoinCancelled(channelId: string): boolean {
+  const gen = pendingChannels.get(channelId);
+  return gen !== undefined && gen !== hangupGen;
+}
+
+/**
+ * The current hang-up generation. A join flow that first tears a call down
+ * itself (the moderator-move rejoin, a stage role change) reads it before
+ * that teardown and gives up instead of re-claiming if it changed meanwhile:
+ * the user hung up, and the rejoin must not pull them back in.
+ */
+export function getHangupGeneration(): number {
+  return hangupGen;
 }
 
 /** Drop the claim made by [claimVoiceChannel]. Scoped to one channel so a
@@ -285,7 +359,12 @@ export function releaseVoiceChannel(channelId: string): void {
  *  Reports the SETTLED connection only. To ask "is this state update my
  *  own doing?", use [isSelfVoiceTarget] — collapsing intent into this
  *  getter made an in-flight join look like the current channel to every
- *  other caller too. */
+ *  other caller too.
+ *
+ *  A user hang-up ([hangUpVoice]) clears it at once, before the Room has
+ *  finished closing: from that instant the call is over for everyone who
+ *  asks (the self-move detector, the in-call roster reconcile, the
+ *  eviction watcher), not ~250 ms later when the teardown lands. */
 export function getConnectedChannelId(): string | null {
   return connectedChannelId;
 }
@@ -303,6 +382,19 @@ export function getConnectedChannelId(): string | null {
  */
 export function isSelfVoiceTarget(channelId: string): boolean {
   return pendingChannels.has(channelId) || connectedChannelId === channelId;
+}
+
+/**
+ * True while a join is still in flight on this device: claimed with its REST
+ * join out, waiting its turn on the chain, or connecting / publishing /
+ * setting up. A hang-up now CANCELS that join rather than ending a settled
+ * call — and the cancelled join's site sends its rollback leave at once, so
+ * our row can be gone within a round trip of the click whatever the hang-up
+ * itself does (VoiceView's 1:1 Leave can't hold its leave back behind the
+ * swallow animation then).
+ */
+export function isVoiceJoinInFlight(): boolean {
+  return connectingRoom !== null || pendingChannels.size > 0;
 }
 
 import { getCurrentPreset } from './voiceQuality';
@@ -957,6 +1049,10 @@ export type VoiceErrorCode =
   // distinct from `mic_denied_browser` so the screen-share UI (which
   // suppresses that code to swallow picker-cancel) still surfaces it.
   | 'screenshare_ended'
+  // The user hung up ([hangUpVoice]) while this join was still in flight.
+  // Not a failure: join sites still roll their server-side join back, but
+  // show no error for it.
+  | 'cancelled'
   | 'unknown';
 
 export class VoiceError extends Error {
@@ -966,6 +1062,12 @@ export class VoiceError extends Error {
     this.code = code;
     this.name = 'VoiceError';
   }
+}
+
+/** True for the rejection of a join the user hung up ([hangUpVoice]). Join
+    sites check it to skip their error toast; the hang-up was the point. */
+export function isVoiceCancelled(err: unknown): boolean {
+  return err instanceof VoiceError && err.code === 'cancelled';
 }
 
 // ── Asynchronous voice errors ──────────────────────────────────────────────
@@ -1098,6 +1200,103 @@ function serialized<T>(op: () => Promise<T>): Promise<T> {
   return run;
 }
 
+// ── Hang-up checkpoints ───────────────────────────────────────────────────
+//
+// A join (performConnect) runs inside the chain above, so a teardown queued
+// behind it waits for it — up to LiveKit's 15 s signal + 15 s peer-connection
+// timeouts, or for as long as a mic-permission prompt stays open. A USER
+// hang-up must not wait: [hangUpVoice] bumps the generation, and the join
+// checks it after every await below and unwinds with
+// VoiceError('cancelled') the moment it finds it moved on.
+
+function cancelledError(): VoiceError {
+  return new VoiceError('cancelled', 'The call was hung up before it connected.');
+}
+
+/** Throw 'cancelled' if the user hung up since generation [gen] began. */
+function throwIfHungUp(gen: number): void {
+  if (gen !== hangupGen) throw cancelledError();
+}
+
+const HUNG_UP: unique symbol = Symbol('hung up');
+
+/** [work], or HUNG_UP if the user hangs up first. A rejection of [work]
+    that comes first still rejects. The caller owns whatever [work] yields
+    after losing the race (e.g. a late mic stream, which it must stop). */
+function orHangUp<T>(work: Promise<T>, gen: number): Promise<Awaited<T> | typeof HUNG_UP> {
+  const hungUp = gen === hangupGen ? nextHangup.promise : Promise.resolve();
+  return Promise.race([work, hungUp.then((): typeof HUNG_UP => HUNG_UP)]);
+}
+
+function stopStream(stream: MediaStream): void {
+  stream.getTracks().forEach((t) => t.stop());
+}
+
+/** The pre-flight getUserMedia probe, raced against a hang-up: an open
+    permission prompt must not hold the chain once the user has hung up. A
+    stream granted after that is stopped the moment it arrives. */
+async function probeMic(audio: MediaTrackConstraints | boolean, gen: number): Promise<void> {
+  const request = navigator.mediaDevices.getUserMedia({ audio });
+  const stream = await orHangUp(request, gen);
+  if (stream === HUNG_UP) {
+    void request.then(stopStream, () => {});
+    throw cancelledError();
+  }
+  stopStream(stream);
+}
+
+/**
+ * Stop the mic capture a hang-up stranded inside LiveKit's publish.
+ *
+ * setMicrophoneEnabled opens LiveKit's OWN capture (createTracks, a
+ * getUserMedia of its own) before it publishes. If the hang-up closes the
+ * engine while that capture is still opening, the publish that follows finds
+ * the signal no longer connected and parks the new track until it is, which
+ * a closed engine never is: LiveKit holds it LIVE (the browser's mic
+ * indicator on) until its 15 s publish timeout, and Room.disconnect() stops
+ * only tracks already published. No public API reaches a parked track, so
+ * this reaches LiveKit's pending-publish map defensively (as pollRtt reaches
+ * the PeerConnection) and stops what is parked there: now, and again once
+ * the capture lands (LiveKit announces it, AudioStreamAcquired, a few
+ * microtasks before parking it). Without that shape (a later LiveKit), its
+ * own timeout still stops the track. A publish that still succeeds is
+ * stopped too.
+ */
+function stopOrphanedMicCapture(
+  participant: unknown,
+  publishing: Promise<unknown>,
+  acquiredEvent: string,
+): void {
+  type Stoppable = { stop?: () => void };
+  const lp = participant as {
+    pendingPublishPromises?: Map<Stoppable, unknown>;
+    on?: (event: string, fn: () => void) => unknown;
+    off?: (event: string, fn: () => void) => unknown;
+  };
+  const stopParked = () => {
+    try {
+      lp.pendingPublishPromises?.forEach((_publish, track) => track.stop?.());
+    } catch {
+      // Best effort: LiveKit's own timeout is the backstop.
+    }
+  };
+  const onAcquired = () => {
+    window.setTimeout(stopParked, 0);
+  };
+  const settled = (publication?: unknown) => {
+    try {
+      lp.off?.(acquiredEvent, onAcquired);
+      // A publish that still went through (it beat the engine's close).
+      (publication as { track?: Stoppable } | undefined)?.track?.stop?.();
+    } catch {
+      // Best effort.
+    }
+  };
+  stopParked();
+  lp.on?.(acquiredEvent, onAcquired);
+  void publishing.then(settled, () => settled());
+}
+
 /**
  * Establish a LiveKit connection and publish the local microphone
  * track. If a connection is already open, it's torn down first — voice
@@ -1106,14 +1305,28 @@ function serialized<T>(op: () => Promise<T>): Promise<T> {
  * Serialized against every other session op (see `serialized`), so an
  * overlapping join waits rather than racing this one onto a second Room.
  *
+ * A user hang-up ([hangUpVoice]) cancels it wherever it is — waiting its
+ * turn, probing the mic, connecting, publishing — and it rejects with
+ * VoiceError('cancelled'), having played neither chime. A join belongs to
+ * the hang-up generation of its claim ([claimVoiceChannel]) when the caller
+ * staked one, so a Leave pressed while the REST join was still out cancels
+ * it too.
+ *
  * Throws a `VoiceError` with a code/message pair suitable for direct
- * display in a toast.
+ * display in a toast ('cancelled' excepted: see [isVoiceCancelled]).
  */
 export function connectToVoice(args: ConnectArgs): Promise<void> {
+  // Read NOW, before this join queues: the claim may be released (or a
+  // hang-up land) while it waits its turn.
+  const claimGen = args.channelId ? pendingChannels.get(args.channelId) : undefined;
+  const gen = claimGen ?? hangupGen;
   return serialized(async () => {
     try {
-      await performConnect(args);
+      await performConnect(args, gen);
     } finally {
+      // This connect no longer has a Room under construction, whatever
+      // happened. (Connects never overlap, so it can't be anyone else's.)
+      connectingRoom = null;
       // Release only OUR claim, success or not. Another join's claim is
       // keyed by its own channel and is untouched.
       if (args.channelId) releaseVoiceChannel(args.channelId);
@@ -1121,9 +1334,15 @@ export function connectToVoice(args: ConnectArgs): Promise<void> {
   });
 }
 
-async function performConnect(args: ConnectArgs): Promise<void> {
+async function performConnect(args: ConnectArgs, gen: number): Promise<void> {
+  // Hung up while this join waited its turn on the chain (or before it was
+  // even queued: see connectToVoice).
+  throwIfHungUp(gen);
+  // The chunk can take a while on a slow first load; a hang-up doesn't wait.
+  const livekit = await orHangUp(loadLivekit(), gen);
+  if (livekit === HUNG_UP) throw cancelledError();
   const { Room, RoomEvent, ParticipantEvent, ExternalE2EEKeyProvider, isE2EESupported, ScreenSharePresets } =
-    await loadLivekit();
+    livekit;
 
   // Pre-flight: do a getUserMedia ourselves with the user's saved
   // device id (if any). This catches permission/device errors with
@@ -1142,11 +1361,11 @@ async function performConnect(args: ConnectArgs): Promise<void> {
   const wantPublish = args.publish !== false;
   if (wantPublish) {
     try {
-      const probe = await navigator.mediaDevices.getUserMedia({
-        audio: inputDeviceId ? { deviceId: { exact: inputDeviceId } } : true,
-      });
-      probe.getTracks().forEach((t) => t.stop());
+      await probeMic(inputDeviceId ? { deviceId: { exact: inputDeviceId } } : true, gen);
     } catch (err) {
+      // Hung up (mid-prompt, or a denial racing the hang-up): the join is
+      // void, not failed — no mic error for a call the user already left.
+      if (isVoiceCancelled(err) || gen !== hangupGen) throw cancelledError();
       // If the user's SAVED mic is gone (unplugged USB headset), don't
       // block the join — the Room's own audioCaptureDefaults use a
       // non-exact deviceId and would fall back to the default mic
@@ -1162,8 +1381,7 @@ async function performConnect(args: ConnectArgs): Promise<void> {
           name === 'DevicesNotFoundError');
       if (!deviceGone) throw mediaErrorToVoiceError(err);
       try {
-        const fallbackProbe = await navigator.mediaDevices.getUserMedia({ audio: true });
-        fallbackProbe.getTracks().forEach((t) => t.stop());
+        await probeMic(true, gen);
         // Drop the stale preference (storage + this join's capture
         // config) so the rest of the connect uses the default mic.
         inputDeviceId = '';
@@ -1171,10 +1389,15 @@ async function performConnect(args: ConnectArgs): Promise<void> {
           localStorage.removeItem(STORAGE_INPUT);
         } catch {}
       } catch (fallbackErr) {
+        if (isVoiceCancelled(fallbackErr) || gen !== hangupGen) throw cancelledError();
         throw mediaErrorToVoiceError(fallbackErr);
       }
     }
   }
+  // Before the channel-switch teardown below: if the user hung up, the call
+  // they are in ends through hangUpVoice's own (chiming) teardown, not this
+  // silent switch one.
+  throwIfHungUp(gen);
 
   // Tear down any prior session before opening a new one — and do it
   // through the FULL disconnect path, not a bare room.disconnect().
@@ -1195,6 +1418,7 @@ async function performConnect(args: ConnectArgs): Promise<void> {
     // Raw teardown, not disconnectVoice(): we are already inside the
     // serial chain, so re-entering it would deadlock waiting on ourselves.
     await performDisconnect({ keepAudioContext: true, silent: true });
+    throwIfHungUp(gen);
   }
 
   // Read the user's current quality preference. The preset caps audio
@@ -1239,6 +1463,7 @@ async function performConnect(args: ConnectArgs): Promise<void> {
   terminateE2eeWorker();
   if (args.e2ee) {
     e2eeKeyString = await getCallKeyString(args.e2ee.channelId, args.e2ee.verifier);
+    throwIfHungUp(gen);
     if (!e2eeKeyString) {
       throw new VoiceError(
         'e2ee_locked',
@@ -1366,6 +1591,9 @@ async function performConnect(args: ConnectArgs): Promise<void> {
     // is what LiveKit treats as "no E2EE."
     ...(e2eeRoomOpt ? { e2ee: e2eeRoomOpt } : {}),
   });
+  // From here until this connect settles, a hang-up can reach this Room
+  // (see connectingRoom); module `room` won't point at it before r.connect.
+  connectingRoom = r as unknown as RoomLike;
 
   // With the E2EE manager configured via Room options, hand it the
   // shared key and turn encryption on for all local tracks BEFORE
@@ -1385,12 +1613,19 @@ async function performConnect(args: ConnectArgs): Promise<void> {
       // call rather than fall through to an unencrypted connect that the
       // peer can't decode.
       terminateE2eeWorker();
+      if (gen !== hangupGen) throw cancelledError();
       throw new VoiceError(
         'e2ee_unsupported',
         `Couldn't enable end-to-end encryption for this call: ${
           (err as Error)?.message ?? 'unknown error'
         }`,
       );
+    }
+    // Hung up while encryption was being armed: nothing is wired to this
+    // Room yet but the worker.
+    if (gen !== hangupGen) {
+      terminateE2eeWorker();
+      throw cancelledError();
     }
   }
 
@@ -2058,8 +2293,39 @@ async function performConnect(args: ConnectArgs): Promise<void> {
     // The intent claim dies with this join — dropped by connectToVoice's
     // finally, which is the one place that knows whether a LATER join is
     // already waiting with a claim of its own.
+    //
+    // Rejected because the user hung up — hangUpVoice's Room.disconnect()
+    // ("Client initiated disconnect"), or a real failure that raced it:
+    // either way this join was cancelled, not failed.
+    if (gen !== hangupGen) {
+      // LiveKit rejects the pending connect FIRST and only then sends its
+      // leave and closes the engine. Wait for that close (this call queues
+      // behind the hang-up's on the Room's own lock) before letting the
+      // chain move on, or the next join's Room starts connecting while
+      // this one still holds our identity on the server.
+      try {
+        await r.disconnect();
+      } catch {
+        // Closing already; nothing more to wait for.
+      }
+      throw cancelledError();
+    }
     const msg = (err as Error).message ?? 'connection failed';
     throw new VoiceError('connect_failed', `Couldn't reach voice server: ${msg}`);
+  }
+  // Connected, but the user hung up as it resolved (too late for LiveKit's
+  // cancel to abort it). Undo it HERE, before the Room becomes `room`:
+  // nothing outside this function has seen it yet, so no other teardown
+  // path would ever reach it.
+  if (gen !== hangupGen) {
+    try {
+      await r.disconnect();
+    } catch {
+      // Already closing under the hang-up's own cancel.
+    }
+    releaseRoomResources(r as unknown as RoomInternals);
+    terminateE2eeWorker();
+    throw cancelledError();
   }
 
   // Claim the Room as the active session AS SOON AS connect succeeds —
@@ -2099,27 +2365,51 @@ async function performConnect(args: ConnectArgs): Promise<void> {
   // marks those listen-only joins so we skip the mic entirely (they
   // still subscribe and hear everyone).
   if (wantPublish) {
+    // Raced against a hang-up rather than awaited outright: LiveKit can park
+    // a publish the hang-up interrupted for its 15 s publish timeout (see
+    // stopOrphanedMicCapture), and the chain — the next join — must not
+    // wait that out.
+    const publishing = r.localParticipant.setMicrophoneEnabled(
+      true,
+      inputDeviceId ? { deviceId: inputDeviceId } : undefined,
+    );
+    let published: Awaited<typeof publishing> | typeof HUNG_UP;
     try {
-      await r.localParticipant.setMicrophoneEnabled(
-        true,
-        inputDeviceId ? { deviceId: inputDeviceId } : undefined,
-      );
+      published = await orHangUp(publishing, gen);
     } catch (err) {
       // Publishing failed on a token we believed could publish — tear
       // the whole connection down (now safe because `room` is set) and
       // surface a clear error rather than stranding a half-joined room.
       // Raw teardown — we're inside the serial chain (see performConnect).
       await performDisconnect();
+      // A hang-up closed the engine under the pending publish (that is
+      // what rejected it): cancelled, not a microphone failure.
+      if (gen !== hangupGen) throw cancelledError();
       throw new VoiceError(
         'connect_failed',
         `Couldn't start your microphone: ${(err as Error)?.message ?? 'unknown error'}`,
       );
+    }
+    if (published === HUNG_UP) {
+      // Hung up mid-publish: the capture LiveKit may still be opening is
+      // ours to stop, then the same silent teardown as the checkpoint below.
+      stopOrphanedMicCapture(r.localParticipant, publishing, ParticipantEvent.AudioStreamAcquired);
+      await performDisconnect();
+      throw cancelledError();
     }
     // Mic is live after the call above, so the local mute state is false.
     // Reset explicitly: mutedFlag is module-scoped and could otherwise
     // carry a stale `true` from a previous session into this join (the PTT
     // branch below re-sets it to true when appropriate).
     mutedFlag = false;
+  }
+
+  // Hung up during the publish, or as it resolved: the join never finished,
+  // so it ends without a sound — the hangup chime isn't armed yet, so this
+  // teardown is silent, and the connect chime below never plays.
+  if (gen !== hangupGen) {
+    await performDisconnect();
+    throw cancelledError();
   }
 
   // Connect chime. Placed AFTER the mic publish, not at the `connected`
@@ -2168,7 +2458,13 @@ async function performConnect(args: ConnectArgs): Promise<void> {
     // toggle on/off via the keyboard listener.
     if (getAudioMode() === 'ptt') {
       mutedFlag = true;
-      await r.localParticipant.setMicrophoneEnabled(false);
+      try {
+        await r.localParticipant.setMicrophoneEnabled(false);
+      } catch (err) {
+        // A hang-up closed the Room under us: the checkpoint at the end of
+        // this setup ends the join. Anything else fails it, as before.
+        if (gen === hangupGen) throw err;
+      }
     }
 
     // Start the local-level monitor so the user's own tile shows the
@@ -2191,7 +2487,10 @@ async function performConnect(args: ConnectArgs): Promise<void> {
     // fails (browser compat edge case, LiveKit internal change in
     // a future version) we keep the un-gained track and log; voice
     // still works, the slider just has no effect.
-    if (audioPrefs.gainMode === 'manual') {
+    //
+    // Skipped once the user has hung up: it opens a second mic capture,
+    // and the checkpoint below is about to end the call anyway.
+    if (audioPrefs.gainMode === 'manual' && gen === hangupGen) {
       for (const [, pub] of localPubs.trackPublications) {
         if (pub.kind === 'audio' && pub.track && 'replaceTrack' in pub.track) {
           try {
@@ -2225,8 +2524,9 @@ async function performConnect(args: ConnectArgs): Promise<void> {
     // user has turned suppression off (they explicitly want raw
     // mic — maybe for music or for accessibility/processing
     // downstream), we skip this chain too. Consistent with their
-    // intent rather than silently overriding it.
-    if (audioPrefs.noiseSuppression) {
+    // intent rather than silently overriding it. (Skipped after a
+    // hang-up too, like manual gain above.)
+    if (audioPrefs.noiseSuppression && gen === hangupGen) {
       for (const [, pub] of localPubs.trackPublications) {
         if (pub.kind === 'audio' && pub.track && 'setProcessor' in pub.track) {
           try {
@@ -2248,21 +2548,32 @@ async function performConnect(args: ConnectArgs): Promise<void> {
     }
   }
 
+  // Hung up during the setup above, right after the connect chime. The
+  // join did finish, so this teardown is that session's one hangup chime
+  // (armed above); nothing below — wake lock, media session, CallKit — is
+  // set up for a call that is already over.
+  if (gen !== hangupGen) {
+    await performDisconnect();
+    throw cancelledError();
+  }
+
   // Background-stay-alive setup: ask the OS not to lock the screen
   // (Wake Lock API), register the page as an active audio source
   // (Media Session API), and wire the platform Hang Up button to
-  // disconnectVoice. Without this the OS suspends mic capture as
+  // hang up. Without this the OS suspends mic capture as
   // soon as the screen locks, killing the call mid-conversation.
   // Best-effort — every API is feature-detected inside the helper.
   void enterCallBackgroundMode({
     title: args.backgroundTitle ?? 'Voice call',
     artist: 'Zekktris',
     onHangup: () => {
-      // Fire-and-forget — the user tapping Hang Up on the lock
-      // screen wants the call to end. If REST cleanup fails on
-      // disconnectVoice, the takeover watcher will eventually
-      // reconcile.
-      void disconnectVoice();
+      // The user tapped Hang Up on the lock screen / in the browser's
+      // media controls: a user hang-up like any in-app one. Through the
+      // app's hang-up helper when it has registered one, so the server
+      // hears about it too (a local-only teardown left the call row, and
+      // the call UI, up with dead media); otherwise at least end it here.
+      if (args.channelId && systemHangupHandler) systemHangupHandler(args.channelId);
+      else void hangUpVoice();
     },
   });
 
@@ -2351,6 +2662,11 @@ interface TrackPublicationLike {
  * Serialized against every other session op (see `serialized`), so it can
  * never run concurrently with a connect on the same Room. Callers already
  * inside the chain must use `performDisconnect` directly.
+ *
+ * It WAITS for a join in flight and never cancels one: this is the internal
+ * teardown (channel switch, moderator-move rejoin, session takeover, stage
+ * role change), each followed by a join of its own. A user ending the call
+ * calls [hangUpVoice] instead.
  */
 export function disconnectVoice(
   opts: { keepAudioContext?: boolean; silent?: boolean } = {},
@@ -2359,6 +2675,72 @@ export function disconnectVoice(
   // every channel switch, and the incoming join's claim must survive it.
   // Each claim is released by its own join settling, or by its caller.
   return serialized(() => performDisconnect(opts));
+}
+
+/**
+ * Hang up: the USER ended the call — a Leave / Hang up / Cancel button, the
+ * 1:1 auto-end, the eviction teardown, the OS media controls. Unlike
+ * [disconnectVoice] it does not queue behind a join still in flight; it
+ * cancels it, at once:
+ *
+ *  - the hang-up generation moves on, so every join begun before this
+ *    instant — claimed, queued or running — unwinds with
+ *    VoiceError('cancelled') at its next checkpoint, playing neither chime
+ *    (see connectToVoice);
+ *  - what a join is waiting on with no end in sight (the livekit chunk, the
+ *    getUserMedia probe behind a permission prompt) is given up on;
+ *  - the Room under construction gets LiveKit's own cancel,
+ *    Room.disconnect(): a pending connect rejects instead of running out
+ *    its 15 s + 15 s timeouts, and a pending mic publish is given up on
+ *    rather than waited out (LiveKit can park one for 15 s), with the
+ *    capture LiveKit opened for it stopped (stopOrphanedMicCapture);
+ *  - getConnectedChannelId() reads null from here on (see its doc), and so
+ *    does getActiveVoiceSessionId(): this device stops owning the session
+ *    at the click. A join whose teardown is still unwinding (LiveKit can
+ *    hold a cancelled mic publish for seconds) must not leave its stale id
+ *    for Shell's takeover watcher to compare against a REJOIN's fresh one
+ *    — it would read the rejoin as another device's and tear it down.
+ *
+ * Then the full teardown queues on the session chain like any other, so
+ * the next join still waits for the cancelled one to settle and two
+ * connects never overlap on one identity (DUPLICATE_IDENTITY). Claims are
+ * left alone, as disconnectVoice leaves them: each join releases its own.
+ *
+ * Cheap with nothing in flight. The promise settles once the local teardown
+ * is done; callers fire and forget it. It never tells the server — that is
+ * AppState's hangUpCall, which every hang-up control goes through.
+ */
+export function hangUpVoice(): Promise<void> {
+  hangupGen += 1;
+  const fired = nextHangup;
+  nextHangup = createHangupSignal();
+  fired.fire();
+  connectedChannelId = null;
+  activeSessionId = null;
+  const building = connectingRoom;
+  if (building) {
+    try {
+      void building.disconnect().catch(() => {});
+    } catch {
+      // Best effort: the queued teardown below still runs.
+    }
+  }
+  return serialized(() => performDisconnect());
+}
+
+/** What the OS / browser media controls' Hang Up runs (see the
+    enterCallBackgroundMode call in performConnect). */
+let systemHangupHandler: ((channelId: string) => void) | null = null;
+
+/**
+ * Route the OS / browser media controls' Hang Up (Android lock screen,
+ * Chrome's media hub, picture-in-picture) through the app's own hang-up
+ * helper, given the call's channel, so it ends the call on the server like
+ * the in-app buttons do. AppState registers it; null unregisters, leaving a
+ * local-only [hangUpVoice].
+ */
+export function setSystemHangupHandler(handler: ((channelId: string) => void) | null): void {
+  systemHangupHandler = handler;
 }
 
 async function performDisconnect(

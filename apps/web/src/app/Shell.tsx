@@ -134,13 +134,14 @@ function writePartnerSeen(latch: string | null): void {
 }
 
 export function Shell() {
-  const { token, user, hydrating, rest, emailVerificationRequired } = useAuth();
+  const { token, user, hydrating, emailVerificationRequired } = useAuth();
   const params = useParams<{ guildId?: string; channelId?: string; messageId?: string }>();
   // Granular subscriptions (was `useAppState()`): the top-level shell no
   // longer re-renders on every dispatch — only when one of the slices it
   // actually reads changes. This is high-leverage: a Shell re-render
   // cascades into all four columns.
   const loadChannels = useAppStateSelector((v) => v.loadChannels);
+  const hangUpCall = useAppStateSelector((v) => v.hangUpCall);
   const voiceStatesByUser = useAppStateSelector((v) => v.state.voiceStatesByUser);
   const dmChannels = useAppStateSelector((v) => v.state.dmChannels);
   const guildIds = useAppStateSelector((v) => v.state.guildIds);
@@ -264,20 +265,19 @@ export function Shell() {
   // leave voice or switch channels.
   const partnerWasHereRef = useRef<{ channelId: string; seen: boolean } | null>(null);
   // Ref that prevents the auto-end from firing multiple times while
-  // a previous leaveVoice round-trip is still in flight. State
+  // its hang-up has not reached local state yet. State
   // deps (voiceStatesByUser, dmChannels) update from any dispatch,
-  // so without this guard the effect could re-trigger the IIFE
-  // before the server-side leave's voice-state-update came back —
-  // producing duplicate "Call ended" toasts and a duplicate
-  // disconnectVoice. Cleared once the local voice state actually
-  // shows we're no longer in this channel.
+  // so without this guard the effect could re-trigger before our
+  // row is gone — producing duplicate "Call ended" toasts and a
+  // duplicate hang-up. Cleared once the local voice state actually
+  // shows we're no longer in this channel (hangUpCall drops our row
+  // at once).
   const leavingInProgressRef = useRef<string | null>(null);
   // Ref recording the channel whose end-of-call we have already announced
-  // (audio torn down + "Call ended" toast). Kept SEPARATE from
-  // leavingInProgressRef because the two have different lifetimes: the leave
-  // DELETE is retried until it succeeds, but the call only ends once. Cleared
-  // when the partner shows up again (a new call to announce the end of) and
-  // when we drop out of voice entirely.
+  // ("Call ended" toast), so it is said once per call however often this
+  // effect re-runs before the hang-up lands. Cleared when the partner shows
+  // up again (a new call to announce the end of) and when we drop out of
+  // voice entirely.
   const callEndedRef = useRef<string | null>(null);
   /**
    * Is `channelId` a STAGE room?
@@ -418,8 +418,12 @@ export function Shell() {
         // and only then reveal the room as a stage.
         if (isStageChannelRef.current(stillConnected)) return;
         // Not silent: from the user's point of view the call ended, so the
-        // hangup chime is the honest signal.
-        void disconnectVoice();
+        // hangup chime is the honest signal. A hang-up like any other
+        // (hangUpCall: it also cancels a join of this session still
+        // connecting), but with no server leave: the server already removed
+        // our row, and its leave is per user — it could end a call another of
+        // our devices has joined since (iOS skips it here for that reason).
+        void hangUpCall(stillConnected, { notifyServer: false });
       }, VOICE_TAKEOVER_GRACE_MS);
       return;
     }
@@ -468,49 +472,31 @@ export function Shell() {
     // here at some point. Otherwise this is just our ring-out
     // waiting for them to pick up — don't interrupt that.
     if (!partnerWasHereRef.current.seen) return;
-    // Partner was here and is now gone → end the call locally.
+    // Partner was here and is now gone → end the call locally. The guard
+    // keeps a re-run of this effect, before our hang-up below has reached
+    // local state, from firing a second one.
     leavingInProgressRef.current = myVoiceChannelId;
     const leaving = myVoiceChannelId;
-    // End the call on this device exactly once, latched separately from the
-    // leave below. The two have different lifetimes: a failed DELETE is
-    // retried on the next voice-state change (see the catch), but the call
-    // itself only ends once — without this latch every retry re-announced
-    // "Call ended", once per presence patch, for as long as the DELETE kept
-    // failing. Local teardown comes first here for the same reason it does at
-    // every hangup button (VoiceView, MessageView, OutgoingCallModal): the
-    // mic should die when the call ends, not when the server gets around to
-    // acknowledging it.
+    // Announce the end exactly once per call.
     if (callEndedRef.current !== leaving) {
       callEndedRef.current = leaving;
-      void disconnectVoice();
       toasts.push('Call ended', 'info');
     }
-    void (async () => {
-      try {
-        await rest.leaveVoice(leaving);
-        // Success: leave the guard latched. Our row is about to disappear and
-        // clear it, and releasing early would let a re-render fire a
-        // duplicate leave before the gateway echo lands.
-      } catch {
-        // The leave failed, so the server still has us in the call and our
-        // voice row never clears — which means the "we're out of voice"
-        // branch that normally releases this guard will never run, and the
-        // guard at the top of this effect swallows every later attempt.
-        // One dropped request would otherwise disable hangup for the rest of
-        // the session: local audio dead, still in the call for everyone else.
-        // Release it so the next voice-state change retries the DELETE; the
-        // retry is the REST call only — audio is already down and the user has
-        // already been told.
-        if (leavingInProgressRef.current === leaving) leavingInProgressRef.current = null;
-      }
-    })();
+    // The hang-up every button takes. Our row goes from local state at once,
+    // so this effect's "not in voice" branch runs next and releases the
+    // latches above; the teardown — the mic dies now, not when the server
+    // acknowledges it, and a join still in flight is cancelled — and the
+    // server leave run behind it. A leave that fails twice is toasted there
+    // and kept going in the background: the partner is gone, so our row
+    // alone, put back, would only read as a fresh ring-out ("Calling…").
+    void hangUpCall(leaving);
   }, [
     myVoiceChannelId,
     myVoiceSessionId,
     voiceStatesByUser,
     dmChannels,
     user?.id,
-    rest,
+    hangUpCall,
     toasts,
     isStageChannel,
     cancelEviction,

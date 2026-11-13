@@ -37,6 +37,7 @@ import {
   computeMemberChannelPermissions,
   hasPermission,
 } from './permissions';
+import { SFU_ADMIN_CLIENT_OPTIONS } from './voice';
 import * as supervision from './supervision';
 
 /**
@@ -256,7 +257,10 @@ export async function setSpeaker(args: {
       .limit(1);
     if (chRow?.guildId) {
       const roomName = `g${chRow.guildId.toString()}-c${args.channelId.toString()}`;
-      const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret);
+      // A 3 s cap, not the SDK's 60 s: the route answers only after this call
+      // (see SFU_ADMIN_CLIENT_OPTIONS), and a timeout is just another failure
+      // for the best-effort catch below.
+      const svc = new RoomServiceClient(httpUrl, apiKey, apiSecret, SFU_ADMIN_CLIENT_OPTIONS);
       // When promoting, re-derive the target's supervised source whitelist so a
       // moderator's promote can't lift a restricted child's audio-only/no-stream
       // clamp at the SFU. Omitting canPublishSources = "all sources allowed", so

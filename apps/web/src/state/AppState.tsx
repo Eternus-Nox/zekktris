@@ -71,6 +71,15 @@ import {
 import { useAuth } from '../auth/AuthContext';
 import { useToasts } from './Toasts';
 import { hydrateVoicePrefs, setVoicePrefsSyncer, getVoicePrefs } from '../lib/voicePrefs';
+// Static, unlike the lazy voice imports further down: hangUpCall must reach
+// voice.ts inside the click, before React re-renders. voice.ts imports
+// nothing from state/, so this is no cycle.
+import {
+  hangUpVoice,
+  isSelfVoiceTarget,
+  isVoiceJoinCancelled,
+  setSystemHangupHandler,
+} from '../lib/voice';
 import { playMessagePing } from '../lib/sounds';
 import { showDesktopNotification } from '../lib/desktopNotify';
 import { getNotifyPrefs } from '../lib/notifyPrefs';
@@ -589,6 +598,24 @@ type Action =
       type: 'VOICE_STATES_MERGE_CHANNEL';
       channelId: string;
       voiceStates: VoiceState[];
+    }
+  | {
+      /** This device hung up `channelId` (hangUpCall): drop our own row
+          now rather than when the server's echo lands. Not if that row has
+          moved on to ANOTHER channel (another of our devices joined
+          elsewhere, a moderator move): the hang-up isn't about it. With
+          `purgeChannel` (a 1:1 DM) the partner's row goes too, as on iOS:
+          left behind until their client leaves as well, it reads as an
+          incoming call. With `evenIfGone` (the user's own hang-up) that
+          purge runs even when our row is already gone — a cancelled join's
+          rollback leave can echo back before a deferred hang-up lands, and
+          the partner's row is then exactly that phantom. Eviction leaves it
+          off: the server removed us, and the partner's row is theirs. */
+      type: 'VOICE_SELF_LEFT';
+      userId: string;
+      channelId: string;
+      purgeChannel: boolean;
+      evenIfGone: boolean;
     }
   | { type: 'CHANNEL_PINS_BUMP'; channelId: string }
   | {
@@ -2260,6 +2287,24 @@ function reducer(state: State, action: Action): State {
       }
       return { ...state, voiceStatesByUser: next };
     }
+    case 'VOICE_SELF_LEFT': {
+      // Checked here, at reduce time, not by the caller: an event queued
+      // ahead of this action may have moved our row since the click.
+      const mine = state.voiceStatesByUser[action.userId];
+      if (mine ? mine.channelId !== action.channelId : !(action.purgeChannel && action.evenIfGone)) {
+        return state;
+      }
+      const next = { ...state.voiceStatesByUser };
+      let changed = false;
+      for (const [userId, v] of Object.entries(next)) {
+        if (v.channelId !== action.channelId) continue;
+        if (userId === action.userId || action.purgeChannel) {
+          delete next[userId];
+          changed = true;
+        }
+      }
+      return changed ? { ...state, voiceStatesByUser: next } : state;
+    }
     case 'CHANNEL_PINS_BUMP': {
       // CHANNEL_PINS_UPDATE — bump the timestamp so panels watching
       // this channel re-fetch the pin list. We don't store pinned
@@ -2672,6 +2717,38 @@ interface AppStateValue {
    * gateway events.
    */
   mergeChannelVoiceStates: (channelId: string, voiceStates: VoiceState[]) => void;
+  /**
+   * HANG UP — the one path every hang-up control takes (VoicePanel and
+   * VoiceView Leave, the DM header's Hang up, the outgoing-call Cancel, the
+   * stage Leave, Shell's 1:1 auto-end and eviction teardown, the OS media
+   * controls). Ends this user's call in `channelId` without waiting on
+   * anything:
+   *
+   *  1. Optimistic: our own voice row goes from local state now (for a 1:1
+   *     DM the partner's too, as iOS does, so no phantom "Incoming call"
+   *     flashes), so every call surface — all derived from that state —
+   *     changes at the click instead of when the gateway echo lands. Not for
+   *     a stage: stage participants hold no voice row.
+   *  2. hangUpVoice(): local teardown, cancelling a join still in flight.
+   *  3. The server leave (leaveStage for a stage) IN PARALLEL with that
+   *     teardown, retried once — unless the user has joined the channel
+   *     again by then (the leave is per channel: it would end the new
+   *     call). If it still fails, the channel's roster is re-read: if the
+   *     server still has us in the call it is merged so the screen shows
+   *     the truth (Leave can be pressed again), and a toast says so. When
+   *     there is nothing honest to put back (the roster can't be read, or
+   *     it is our row alone in a 1:1 DM, which would read as a fresh
+   *     ring-out) the leave keeps going in the background instead.
+   *
+   * Resolves true once the server has us out (a 404 counts: nothing left to
+   * leave), false after the failure toast. Options: `stage` overrides the
+   * stage detection (from the channel lists); `teardown: false` when the
+   * caller already ran hangUpVoice (VoiceView's 1:1 hang-up starts it at the
+   * click, under its 1.2 s swallow animation); `notifyServer: false` when
+   * the server has already removed us (eviction) — its leave is per user and
+   * could end a call another of our devices has since joined.
+   */
+  hangUpCall: (channelId: string, opts?: HangUpCallOptions) => Promise<boolean>;
   /**
    * Toggle the saved state of a message. Optimistic — flips the
    * local set immediately, then fires REST. On REST failure, the
@@ -3281,6 +3358,37 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     },
     [],
   );
+
+  // See AppStateValue.hangUpCall; the body is runHangUpCall.
+  const selfIdForVoice = user?.id ?? null;
+  const hangUpCall = useCallback(
+    (channelId: string, opts?: HangUpCallOptions): Promise<boolean> =>
+      runHangUpCall(
+        {
+          state: stateRef.current,
+          getState: () => stateRef.current,
+          selfId: selfIdForVoice,
+          dispatch,
+          rest,
+          teardown: () => void hangUpVoice(),
+          joinedAgain: (id) => isSelfVoiceTarget(id) && !isVoiceJoinCancelled(id),
+          toast: (message) => toasts.push(message, 'error'),
+          retryDelayMs: HANGUP_RETRY_MS,
+          backgroundRetryDelaysMs: HANGUP_BACKGROUND_RETRY_MS,
+        },
+        channelId,
+        opts,
+      ),
+    [rest, toasts, selfIdForVoice],
+  );
+
+  // The OS / browser media controls' Hang Up (lock screen, Chrome's media
+  // hub, picture-in-picture) is a hang-up like the in-app buttons: through
+  // hangUpCall, so the server hears about it too.
+  useEffect(() => {
+    setSystemHangupHandler((channelId) => void hangUpCall(channelId));
+    return () => setSystemHangupHandler(null);
+  }, [hangUpCall]);
 
   /**
    * IN-CALL ROSTER RECONCILE — the missing safety net.
@@ -4817,30 +4925,45 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
             // echo read as a drag to the second join's channel, and the
             // detector ping-ponged between them.
             if (voiceMod.isSelfVoiceTarget(newChannelId)) return;
+            // The teardown below is internal — a move, not a hang-up — so it
+            // leaves the hang-up generation alone (bumping it would cancel
+            // this very rejoin). But a hang-up by the USER while it runs
+            // means they want out: don't pull them back in.
+            const gen = voiceMod.getHangupGeneration();
+            let claimed = false;
             try {
               // silent: a moderator dragging us between channels is a move,
               // not a hangup. The connect chime from the rejoin below marks
               // the transition on its own.
               await voiceMod.disconnectVoice({ silent: true });
+              if (voiceMod.getHangupGeneration() !== gen) return;
               // Claim the destination after the teardown (a disconnect-time
               // clear would otherwise wipe it) and before the REST call, so
               // the server's echo of THIS join isn't read as a second drag.
               voiceMod.claimVoiceChannel(newChannelId);
+              claimed = true;
               const r = await rest.joinVoice(newChannelId);
               if (r?.token && r.wsUrl) {
-                await voiceMod.connectToVoice({
-                  token: r.token,
-                  wsUrl: r.wsUrl,
-                  sessionId: r.voiceState.sessionId,
-                  channelId: newChannelId,
-                });
+                try {
+                  await voiceMod.connectToVoice({
+                    token: r.token,
+                    wsUrl: r.wsUrl,
+                    sessionId: r.voiceState.sessionId,
+                    channelId: newChannelId,
+                  });
+                } catch (e) {
+                  // Hung up mid-rejoin. The hang-up's own leave may have
+                  // reached the server before this join did; take the join
+                  // back so it can't leave us a silent ghost there.
+                  if (voiceMod.isVoiceCancelled(e)) void rest.leaveVoice(newChannelId).catch(() => {});
+                }
               }
             } catch {
               // Toasts surfaced by inner calls.
             } finally {
               // connectToVoice releases the claim when it settles; the
               // REST-failed / no-token paths never reach it.
-              voiceMod.releaseVoiceChannel(newChannelId);
+              if (claimed) voiceMod.releaseVoiceChannel(newChannelId);
             }
           })();
         }
@@ -5063,6 +5186,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       applyRelationship,
       replaceUser,
       mergeChannelVoiceStates,
+      hangUpCall,
       toggleSavedMessage,
       hydrateSavedMembership,
       setPollLocal,
@@ -5105,6 +5229,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       applyRelationship,
       replaceUser,
       mergeChannelVoiceStates,
+      hangUpCall,
       toggleSavedMessage,
       hydrateSavedMembership,
       setPollLocal,
@@ -5277,6 +5402,173 @@ export function selfVoiceState(
 ): VoiceState | null {
   if (!selfUserId) return null;
   return voiceStatesByUser[selfUserId] ?? null;
+}
+
+/** Pause before hangUpCall's one retry of a failed server leave. */
+const HANGUP_RETRY_MS = 750;
+
+/** When hangUpCall tries again a leave it has stopped showing (see the
+    failure path in runHangUpCall): about a minute in all. After that READY,
+    a reload or a roster refresh puts the call back on screen to leave. */
+const HANGUP_BACKGROUND_RETRY_MS: readonly number[] = [5_000, 15_000, 45_000];
+
+/** Is `channelId` a stage room? Stage participants hold no voice row
+ *  (joinStage writes stage_participants only), so hangUpCall drops nothing
+ *  locally for one and leaves through leaveStage. The same two signals as
+ *  Shell's isStageChannel. */
+function isStageRoom(
+  s: Pick<State, 'stageParticipantsByChannel' | 'channelsByGuild'>,
+  channelId: string,
+): boolean {
+  if (s.stageParticipantsByChannel[channelId]) return true;
+  for (const list of Object.values(s.channelsByGuild)) {
+    const ch = list.find((c) => c.id === channelId);
+    if (ch) return ch.type === 'guild_stage';
+  }
+  return false;
+}
+
+/** hangUpCall's options — see AppStateValue.hangUpCall. */
+export type HangUpCallOptions = { stage?: boolean; teardown?: boolean; notifyServer?: boolean };
+
+/**
+ * The body of AppStateValue.hangUpCall (see there), outside the provider so
+ * it can be tested without React. `teardown` is voice.ts's hangUpVoice;
+ * `joinedAgain` asks voice.ts whether this device has started a NEW join of
+ * the channel since (claimed after the hang-up, or connected to it again).
+ */
+export async function runHangUpCall(
+  deps: {
+    /** The state at the hang-up. */
+    state: Pick<
+      State,
+      'voiceStatesByUser' | 'dmChannels' | 'channelsByGuild' | 'stageParticipantsByChannel'
+    >;
+    /** The state now, for the steps that run later. */
+    getState: () => Pick<State, 'voiceStatesByUser'>;
+    selfId: string | null;
+    dispatch: (action: Action) => void;
+    rest: Pick<RestClient, 'leaveVoice' | 'leaveStage' | 'listVoiceStates'>;
+    teardown: () => void;
+    joinedAgain: (channelId: string) => boolean;
+    toast: (message: string) => void;
+    retryDelayMs: number;
+    backgroundRetryDelaysMs: readonly number[];
+  },
+  channelId: string,
+  opts: HangUpCallOptions = {},
+): Promise<boolean> {
+  const { state: s, selfId, dispatch, rest } = deps;
+  // Our own row in the channel settles it: stage participants never have one.
+  const mine = selfId === null ? undefined : s.voiceStatesByUser[selfId];
+  const selfRowHere = mine?.channelId === channelId;
+  const stage = opts.stage ?? (!selfRowHere && isStageRoom(s, channelId));
+  const dm1to1 = s.dmChannels.some((c) => c.id === channelId && c.type === 'dm');
+  // 1. Every call surface derives from voiceStatesByUser, so this is the
+  //    hang-up the user sees, now. The reducer re-checks where our row is.
+  if (!stage && selfId !== null) {
+    dispatch({
+      type: 'VOICE_SELF_LEFT',
+      userId: selfId,
+      channelId,
+      purgeChannel: dm1to1,
+      evenIfGone: opts.notifyServer !== false,
+    });
+  }
+  // 2. Local teardown, cancelling any join still in flight. Not awaited: the
+  //    server leave below runs alongside it.
+  if (opts.teardown !== false) deps.teardown();
+  if (opts.notifyServer === false) return true;
+  // The server's leave is per channel, not per session: sent after the user
+  // has joined this channel AGAIN — on this device (voice.ts knows) or on
+  // another (our row is back with another session) — it would end that new
+  // call. Nor is there anything left for it to do then: the join's upsert
+  // replaced the session this hang-up was ending.
+  const endedSessionId = mine?.channelId === channelId ? mine.sessionId : null;
+  const rejoined = (): boolean => {
+    if (deps.joinedAgain(channelId)) return true;
+    const live = selfId === null ? undefined : deps.getState().voiceStatesByUser[selfId];
+    return live?.channelId === channelId && live.sessionId !== endedSessionId;
+  };
+  // 3. The server leave, retried once.
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, deps.retryDelayMs));
+      if (rejoined()) return true;
+    }
+    try {
+      if (stage) await rest.leaveStage(channelId);
+      else await rest.leaveVoice(channelId);
+      return true;
+    } catch (e) {
+      // Already gone server-side: that's what a leave wants.
+      if (e instanceof ApiError && e.status === 404) return true;
+      lastError = e;
+    }
+  }
+  // Both attempts failed. Ask the server where things stand rather than
+  // trust the optimistic leave.
+  if (!stage) {
+    let roster: VoiceState[] | null = null;
+    try {
+      roster = (await rest.listVoiceStates(channelId)).voiceStates;
+    } catch {
+      // Unreachable too: see below.
+    }
+    if (roster !== null && !roster.some((v) => v.userId === selfId)) {
+      // We're out after all: an attempt failed only after its leave had
+      // taken (the route can still fail after its echo). Nothing to report.
+      // Show the roster, but not a 1:1 partner's row: lingering here, it
+      // reads as an incoming call.
+      if (!dm1to1) dispatch({ type: 'VOICE_STATES_MERGE_CHANNEL', channelId, voiceStates: roster });
+      return true;
+    }
+    if (roster !== null && !(dm1to1 && roster.every((v) => v.userId === selfId))) {
+      // Still in the call: show it (our row comes back), so the user sees
+      // the call is still up and can Leave again.
+      dispatch({ type: 'VOICE_STATES_MERGE_CHANNEL', channelId, voiceStates: roster });
+    } else {
+      // Nothing worth putting back on screen. Either the server can't be
+      // reached — the optimistic leave would otherwise stand with nothing
+      // left to retry it — or all it has is our row alone in a 1:1 DM, which
+      // every call surface reads as a fresh ring-out ("Calling…", ringback)
+      // for a call that has already ended. Keep the leave going in the
+      // background instead: the server's copy of the call must still end (a
+      // ghost row keeps the partner's call from ending, and rings them on
+      // their next READY).
+      void leaveInBackground(deps, channelId, rejoined);
+    }
+  }
+  deps.toast(
+    lastError instanceof ApiError
+      ? lastError.message
+      : stage
+        ? 'Failed to leave stage'
+        : 'Failed to leave the call',
+  );
+  return false;
+}
+
+/** runHangUpCall's leave, kept going after it stopped showing the call:
+    tried again after each of `backgroundRetryDelaysMs` until the server
+    takes it (or has nothing to leave), and dropped the moment the user has
+    joined the channel again — then it would end THAT call. */
+async function leaveInBackground(
+  deps: { rest: Pick<RestClient, 'leaveVoice'>; backgroundRetryDelaysMs: readonly number[] },
+  channelId: string,
+  rejoined: () => boolean,
+): Promise<void> {
+  for (const delayMs of deps.backgroundRetryDelaysMs) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (rejoined()) return;
+    try {
+      await deps.rest.leaveVoice(channelId);
+      return;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return;
+    }
+  }
 }
 
 // ── Notification ping ──────────────────────────────────────────────────────

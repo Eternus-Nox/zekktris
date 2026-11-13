@@ -33,7 +33,15 @@ import { ApiError, type Channel } from '@zekktris/client';
 import { useAuth } from '../auth/AuthContext';
 import { useAppState, voiceStatesForChannel, selfVoiceState } from '../state/AppState';
 import { useToasts } from '../state/Toasts';
-import { connectToVoice, VoiceError, prepareVoiceAudio, claimVoiceChannel, releaseVoiceChannel } from '../lib/voice';
+import {
+  connectToVoice,
+  VoiceError,
+  prepareVoiceAudio,
+  claimVoiceChannel,
+  releaseVoiceChannel,
+  isVoiceCancelled,
+  isVoiceJoinCancelled,
+} from '../lib/voice';
 import { clearCallNotification } from '../lib/clearCallNotification';
 import { startRingtone, stopRingtone } from '../lib/sounds';
 import { showDesktopNotification } from '../lib/desktopNotify';
@@ -281,6 +289,14 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
     claimVoiceChannel(channel.id);
     try {
       const r = await rest.joinVoice(channel.id);
+      // Hung up while the answer was still out (our echo can show the call
+      // first). Its snapshot would undo that hang-up's optimistic leave, and
+      // the join may have reached the server after the hang-up's leave:
+      // take it back instead.
+      if (isVoiceJoinCancelled(channel.id)) {
+        void rest.leaveVoice(channel.id).catch(() => {});
+        return;
+      }
       mergeChannelVoiceStates(channel.id, r.channelVoiceStates);
       if (r.token && r.wsUrl) {
         try {
@@ -304,14 +320,17 @@ export function IncomingCallModal({ channel }: { channel: Channel }) {
           // leave the caller in dead air with a callee who "answered." The
           // gateway echoes the leave. Best-effort.
           void rest.leaveVoice(channel.id).catch(() => {});
-          toasts.push(
-            e instanceof VoiceError
-              ? e.message
-              : e instanceof Error
-                ? `Voice connect failed: ${e.message}`
-                : 'Voice connect failed',
-            'error',
-          );
+          // Cancelled by the user's own hang-up: nothing went wrong.
+          if (!isVoiceCancelled(e)) {
+            toasts.push(
+              e instanceof VoiceError
+                ? e.message
+                : e instanceof Error
+                  ? `Voice connect failed: ${e.message}`
+                  : 'Voice connect failed',
+              'error',
+            );
+          }
         }
       } else {
         toasts.push('Voice isn’t set up on this server yet — you’ve joined the channel, but no audio will connect. Ask the server admin to enable voice.', 'info');
