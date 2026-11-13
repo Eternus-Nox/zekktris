@@ -455,7 +455,7 @@ enum ShareSuggestions {
         // contact's name and face into every other app's share sheet, where
         // nothing removes it until some later sign-out.
         if generation != epoch || revoked.contains(conversation.channelId) {
-            INInteraction.delete(with: conversation.channelId, completion: nil)
+            try? await INInteraction.delete(with: conversation.channelId)
         }
     }
 

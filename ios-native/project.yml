@@ -352,6 +352,17 @@ targets:
       # (see ZekktrisWatchAppIntentsExtension.swift).
       - target: ZekktrisWatchAppIntents
         embed: true
+        # Into the watch app's OWN Extensions folder (Copy Files → Wrapper /
+        # Extensions). XcodeGen's default for an ExtensionKit extension is
+        # Products Directory + $(EXTENSIONS_FOLDER_PATH), i.e. relative to
+        # BUILT_PRODUCTS_DIR — but an archive builds this embedded watch app
+        # in UninstalledProducts, so Xcode warned that the .appex "is
+        # embedded in the parent app bundle's ../../../../BuildProductsPath/
+        # Release-watchos/ZekktrisWatch.app/Extensions directory". The
+        # wrapper is the bundle actually being built, in every build.
+        copy:
+          destination: wrapper
+          subpath: Extensions
     info:
       path: ZekktrisWatch/Info.plist
       properties:

@@ -198,8 +198,8 @@
 		33A0772DED038870C8C4B540 /* Embed ExtensionKit Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
-			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
-			dstSubfolderSpec = 16;
+			dstPath = Extensions;
+			dstSubfolderSpec = 1;
 			files = (
 				3F9C74F98CB98BF24E16921D /* ZekktrisWatchAppIntents.appex in Embed ExtensionKit Extensions */,
 			);
