@@ -738,12 +738,17 @@ function TextChannelRow({
           )}
         </span>
         <span className="truncate flex-1">{channel.name ?? '(unnamed)'}</span>
+        {/* Themed like iOS ChannelRowLabel: the mention pill is the
+            accent→accent-2 gradient with its count in bg-0 (white fails
+            contrast on the light accents), the unread dot solid accent.
+            Both read the theme's CSS channels, so a theme switch restyles
+            them on the spot. */}
         {mentions > 0 ? (
-          <span className="text-[0.65rem] font-bold bg-red-500 text-white rounded-full min-w-[1.1rem] h-[1.1rem] px-1 flex items-center justify-center group-hover/row:hidden">
+          <span className="text-[0.65rem] font-bold bg-gradient-to-br from-accent to-accent-2 text-bg-0 rounded-full min-w-[1.1rem] h-[1.1rem] px-1 flex items-center justify-center group-hover/row:hidden">
             {mentions > 99 ? '99+' : mentions}
           </span>
         ) : unread ? (
-          <span aria-label="unread" className="w-1.5 h-1.5 rounded-full bg-ink-1 shrink-0 group-hover/row:hidden" />
+          <span aria-label="unread" className="w-1.5 h-1.5 rounded-full bg-accent shrink-0 group-hover/row:hidden" />
         ) : null}
       </button>
       <button

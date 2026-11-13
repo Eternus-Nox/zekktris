@@ -13,9 +13,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +31,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -136,7 +140,41 @@ fun MainScreen(store: AppStore, state: AppState) {
     }
 }
 
-/** Top pill celebrating a just-unlocked achievement. Tap to dismiss. */
+/**
+ * The card both in-app banners (poke, achievement) sit on: the bg2 card with a
+ * 1dp accent→accent2 stroke at 60%, left to right, and an accent glow where a
+ * plain card would cast a black shadow (iOS PokeBannerView /
+ * AchievementBannerView; the web banners match). It reads [ZkTheme.palette]
+ * while composing, so a theme switch repaints a banner already on screen.
+ * Coloured shadows need Android 9, so Android 8 draws the glow as a plain
+ * dark shadow.
+ */
+@Composable
+private fun ThemedBanner(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable RowScope.() -> Unit,
+) {
+    val p = ZkTheme.palette
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        modifier
+            .statusBarsPadding()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .fillMaxWidth()
+            .shadow(elevation = 12.dp, shape = shape, clip = false, ambientColor = p.accent, spotColor = p.accent)
+            .clip(shape)
+            .background(p.bg2)
+            .border(1.dp, Brush.horizontalGradient(listOf(p.accent.copy(alpha = 0.6f), p.accent2.copy(alpha = 0.6f))), shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        content = content,
+    )
+}
+
+/** Top banner celebrating a just-unlocked achievement. Tap to dismiss. */
 @Composable
 private fun AchievementBannerView(
     banner: com.zekktris.AchievementBanner,
@@ -144,20 +182,8 @@ private fun AchievementBannerView(
     modifier: Modifier = Modifier,
 ) {
     val p = ZkTheme.palette
-    Row(
-        modifier
-            .statusBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(p.bg2)
-            .border(1.dp, p.accent.copy(alpha = 0.5f), RoundedCornerShape(18.dp))
-            .clickable(onClick = onDismiss)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text(banner.marker, fontSize = 26.sp)
+    ThemedBanner(onClick = onDismiss, modifier = modifier) {
+        AchievementMarkerBadge(banner.marker)
         Column(Modifier.weight(1f)) {
             Text("Achievement unlocked!", color = p.accent, fontFamily = ZkSans, fontWeight = FontWeight.Bold, fontSize = 11.sp)
             Text(banner.name, color = ZkInk.ink1, fontFamily = ZkSans, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -166,7 +192,40 @@ private fun AchievementBannerView(
     }
 }
 
-/** Top pill for an incoming poke — tap the body to open the DM, tap the emoji to poke back. */
+/**
+ * The achievement's marker in the circle its shelf badge uses (ProfileSheet
+ * AchievementBadge): accent at 35% to accent2 at 25%, top left to bottom
+ * right. iOS draws a symbol it resolves from the achievement id here; Android
+ * has no such map, so the glyph is the server's marker, as on the shelf. A
+ * text marker (a tier like "1k", a year count) draws in the accent. A colour
+ * emoji keeps its own colours, since no text colour reaches it.
+ */
+@Composable
+private fun AchievementMarkerBadge(marker: String) {
+    val p = ZkTheme.palette
+    // Tier markers run to four characters ("100k"). Step them down so they
+    // stay on one line inside the circle; emoji keep the shelf's 18sp.
+    val isText = marker.isNotEmpty() && marker.all { it.isLetterOrDigit() }
+    val glyphSize = when {
+        !isText || marker.length <= 2 -> 18.sp
+        marker.length == 3 -> 15.sp
+        else -> 12.sp
+    }
+    Box(
+        Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(Brush.linearGradient(listOf(p.accent.copy(alpha = 0.35f), p.accent2.copy(alpha = 0.25f)))),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            marker, color = p.accent, fontFamily = ZkSans, fontWeight = FontWeight.Bold, fontSize = glyphSize,
+            maxLines = 1, softWrap = false,
+        )
+    }
+}
+
+/** Top banner for an incoming poke — tap the body to open the DM, tap the emoji to poke back. */
 @Composable
 private fun PokeBannerView(
     banner: com.zekktris.PokeBanner,
@@ -175,18 +234,7 @@ private fun PokeBannerView(
     modifier: Modifier = Modifier,
 ) {
     val p = ZkTheme.palette
-    Row(
-        modifier
-            .statusBarsPadding()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(p.bg2)
-            .clickable(onClick = onOpen)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
+    ThemedBanner(onClick = onOpen, modifier = modifier) {
         Column(Modifier.weight(1f)) {
             Text(
                 "${banner.name} ${pokeBannerVerb(banner.pokeType)}",
@@ -198,12 +246,14 @@ private fun PokeBannerView(
             )
         }
         // Emoji chip — poke the same variant back without opening the DM.
+        // Accent-tinted (18% fill, 45% stroke), like the DM-row E2EE lock.
         Text(
             banner.emoji,
             fontSize = 26.sp,
             modifier = Modifier
                 .clip(CircleShape)
-                .background(p.bg3)
+                .background(p.accent.copy(alpha = 0.18f))
+                .border(1.dp, p.accent.copy(alpha = 0.45f), CircleShape)
                 .clickable(onClick = onPokeBack)
                 .padding(8.dp),
         )

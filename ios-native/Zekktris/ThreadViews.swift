@@ -149,16 +149,17 @@ private struct ThreadRow: View {
                 }
             }
             Spacer(minLength: 0)
+            // Themed like the channel and DM rows: an accent → accent2 pill
+            // with a bg0 count, or an accent dot. This row observes the store,
+            // so a theme switch re-renders it.
             if mentions > 0 {
                 Text("\(min(mentions, 99))")
                     .font(.zkSans(11, weight: .bold))
-                    .foregroundColor(.white)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
-                    .background(Theme.danger)
-                    .clipShape(Capsule())
+                    .zkCountPill()
             } else if unread {
-                Circle().fill(Theme.ink1).frame(width: 7, height: 7)
+                Circle().fill(Theme.accent).frame(width: 7, height: 7)
             }
         }
         .padding(.horizontal, 8)

@@ -440,11 +440,12 @@ function PostRow({ post, guildId }: { post: Channel; guildId: string }) {
               archived
             </span>
           )}
-          {/* Mention count — red pill on the right of the title.
-              Mirrors the channel-list mention badge styling. */}
+          {/* Mention count — themed pill on the right of the title.
+              Mirrors the channel-list mention badge styling (accent→accent-2
+              gradient, count in bg-0). */}
           {mentions > 0 && (
             <span
-              className="ml-auto shrink-0 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-red-500 text-white text-[0.65rem] font-semibold"
+              className="ml-auto shrink-0 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-gradient-to-br from-accent to-accent-2 text-bg-0 text-[0.65rem] font-semibold"
               aria-label={`${mentions} mention${mentions === 1 ? '' : 's'}`}
             >
               {mentions > 99 ? '99+' : mentions}

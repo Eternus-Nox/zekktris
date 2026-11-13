@@ -219,6 +219,7 @@ struct RootView: View {
 /// The transient incoming-poke pill (foreground phone only): the big emoji +
 /// who sent it. Tap the pill to open the sender's DM; tap the trailing emoji
 /// chip to poke them back with the same one. Auto-dismisses via showPokeBanner.
+/// Observes the store, so a theme switch re-renders its accents.
 private struct PokeBannerView: View {
     @EnvironmentObject private var store: AppStore
     let banner: PokeBanner
@@ -226,7 +227,9 @@ private struct PokeBannerView: View {
         HStack(spacing: 10) {
             Text(banner.emoji).font(.system(size: 40))
             VStack(alignment: .leading, spacing: 1) {
-                Text(banner.name).font(.system(size: 15, weight: .semibold))
+                Text(banner.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(Theme.ink1)
                 Text("Tap to open · tap the emoji to poke back")
                     .font(.system(size: 11))
                     .foregroundColor(Theme.ink2)
@@ -234,10 +237,12 @@ private struct PokeBannerView: View {
             }
             // Poke back with the SAME emoji. ZStack centers the glyph in the
             // circle (a Text + .frame + .background doesn't reliably center an
-            // emoji — its line-box metrics push it off).
+            // emoji — its line-box metrics push it off). Accent-tinted chip:
+            // 18% fill, 45% border.
             Button { store.pokeBack(banner) } label: {
                 ZStack {
-                    Circle().fill(Color.white.opacity(0.15))
+                    Circle().fill(Theme.accent.opacity(0.18))
+                    Circle().strokeBorder(Theme.accent.opacity(0.45), lineWidth: 1)
                     Text(banner.emoji)
                         .font(.system(size: 20))
                         .multilineTextAlignment(.center)
@@ -251,42 +256,73 @@ private struct PokeBannerView: View {
         .padding(.leading, 16)
         .padding(.trailing, 8)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
-        .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+        .zkInAppBannerChrome()
         .contentShape(Capsule())
         .onTapGesture { store.openPokeSender(banner) }
     }
 }
 
 /// The transient achievement-unlock celebration pill (foreground phone only):
-/// a trophy glyph + the achievement name. Tap to dismiss; auto-dismisses via
-/// showAchievementBanner.
+/// the achievement's own badge (the glyph its shelf and gallery show, on the
+/// earned badge's accent → accent2 disc) + its name. Tap to dismiss;
+/// auto-dismisses via showAchievementBanner. Observes the store, so a theme
+/// switch re-renders its accents.
 private struct AchievementBannerView: View {
     @EnvironmentObject private var store: AppStore
     let banner: AchievementBanner
     var body: some View {
         HStack(spacing: 11) {
-            Image(systemName: "trophy.fill")
-                .font(.system(size: 26))
-                .foregroundColor(Color(hex: 0xF4C95B))
+            ZStack {
+                Circle()
+                    .fill(LinearGradient(colors: [Theme.accent.opacity(0.35), Theme.accent2.opacity(0.25)],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                Image(systemName: Achievement.sfSymbol(forId: banner.achievementId))
+                    .font(.system(size: 16))
+                    .foregroundColor(Theme.accent)
+            }
+            .frame(width: 36, height: 36)
+            // Decorative: the text beside it says what happened.
+            .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Achievement unlocked")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(Theme.ink2)
                 Text(banner.name)
                     .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(Theme.ink1)
                     .lineLimit(1)
             }
         }
-        .padding(.leading, 14)
+        // 8 = the vertical padding, so the disc sits concentric in the
+        // capsule's end, as the poke banner's trailing chip does.
+        .padding(.leading, 8)
         .padding(.trailing, 20)
         .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
-        .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+        .zkInAppBannerChrome()
         .contentShape(Capsule())
         .onTapGesture { store.achievementBanner = nil }
+    }
+}
+
+private extension View {
+    /// The in-app banners' themed chrome (poke + achievement unlock): the
+    /// system blur material capsule, kept so the banner reads over any
+    /// content, with a 1pt accent → accent2 stroke at 60% and an accent glow
+    /// in place of a black drop shadow. The capsule alone casts the glow: a
+    /// .shadow on the whole banner would draw one under each thing in it
+    /// (name, hint, emoji, poke-back chip, badge), an accent halo around
+    /// every glyph. A plain function, not a ViewModifier, so it reads Theme.*
+    /// each time the banner's body runs.
+    func zkInAppBannerChrome() -> some View {
+        self
+            .background {
+                Capsule()
+                    .fill(.ultraThinMaterial)
+                    .shadow(color: Theme.accentGlow, radius: 12, y: 4)
+            }
+            .overlay(Capsule().stroke(LinearGradient(colors: [Theme.accent.opacity(0.6), Theme.accent2.opacity(0.6)],
+                                                     startPoint: .leading, endPoint: .trailing),
+                                      lineWidth: 1))
     }
 }
 

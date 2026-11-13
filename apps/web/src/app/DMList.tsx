@@ -566,22 +566,27 @@ function DMRow({ channel, active }: { channel: Channel; active: boolean }) {
         <span className="flex-1" />
         {/* The poke someone left while you weren't looking. Sits before the
             unread indicators because it is the more specific signal: an unread
-            dot says "something happened", this says what. Clears on open. */}
+            dot says "something happened", this says what. Clears on open.
+            Accent-tinted (15% fill, 45% stroke), matching iOS DMRow: it marks
+            an event, not a state with a fixed colour. */}
         {poke && (
           <span
             aria-label={`poked you ${poke}`}
             title="Poked you"
-            className="text-[0.8rem] leading-none rounded-full bg-bg-3 border border-line px-1.5 py-1 shrink-0 animate-[zk-poke-pop_220ms_ease-out]"
+            className="text-[0.8rem] leading-none rounded-full bg-accent/15 border border-accent/45 px-1.5 py-1 shrink-0 animate-[zk-poke-pop_220ms_ease-out]"
           >
             {poke}
           </span>
         )}
+        {/* Mention pill and unread dot follow the theme like the channel
+            rows (ChannelList): accent→accent-2 gradient with a bg-0 count,
+            and a solid accent dot. */}
         {mentions > 0 ? (
-          <span className="text-[0.65rem] font-bold bg-red-500 text-white rounded-full min-w-[1.1rem] h-[1.1rem] px-1 flex items-center justify-center">
+          <span className="text-[0.65rem] font-bold bg-gradient-to-br from-accent to-accent-2 text-bg-0 rounded-full min-w-[1.1rem] h-[1.1rem] px-1 flex items-center justify-center">
             {mentions > 99 ? '99+' : mentions}
           </span>
         ) : unread ? (
-          <span aria-label="unread" className="w-1.5 h-1.5 rounded-full bg-ink-1 shrink-0" />
+          <span aria-label="unread" className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />
         ) : null}
       </Link>
       {menuAnchor && (

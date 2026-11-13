@@ -298,7 +298,49 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             completionHandler([])
             return
         }
+        // A poke or an achievement unlock whose themed in-app banner
+        // (PokeBannerView / AchievementBannerView, with its own haptic) is in
+        // view: the system banner and sound would land on top of it, so keep
+        // the Notification Center entry only. Otherwise these present as
+        // before. A push naming several unlocks (thread 'achv-unlocks', from
+        // the server's achievement sync) always presents: the gateway sends
+        // one ACHIEVEMENT_UNLOCK per family, and each in-app banner replaces
+        // the one before, so only the push names them all.
+        if kind == "achievement" || info["pokeEmoji"] is String,
+           notification.request.content.threadIdentifier != "achv-unlocks",
+           Self.inAppBannerWillShow() {
+            completionHandler([.list])
+            return
+        }
         completionHandler([.banner, .list, .sound])
+    }
+
+    /// Whether the app's own banner for a poke or an achievement unlock is in
+    /// view right now:
+    /// - the app is active (not merely inactive under Notification Center or
+    ///   the app switcher, where it would go unseen);
+    /// - the gateway is READY, so the live event arrives;
+    /// - nothing is presented over the root view. The banners are an overlay
+    ///   on RootView, so every sheet, full-screen cover and alert is drawn
+    ///   above them, and many unlocks fire from inside one (a profile edit,
+    ///   2FA or a passkey in Settings, creating a server).
+    /// Reads that @MainActor state synchronously, as VoipPushHandler does: the
+    /// notification center calls this delegate on the main thread. Were it
+    /// ever called on another thread, this answers false and the system
+    /// banner shows as before.
+    private static func inAppBannerWillShow() -> Bool {
+        guard Thread.isMainThread else { return false }
+        return MainActor.assumeIsolated { () -> Bool in
+            guard UIApplication.shared.applicationState == .active,
+                  AppStore.shared?.gatewayStatus == .ready else { return false }
+            let scene = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first { $0.activationState == .foregroundActive }
+            guard let root = (scene?.keyWindow ?? scene?.windows.first)?.rootViewController else {
+                return false
+            }
+            return root.presentedViewController == nil
+        }
     }
 
     func userNotificationCenter(

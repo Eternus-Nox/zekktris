@@ -1563,7 +1563,7 @@ struct MessageListView: View {
                 DateDividerView(label: dateDividerLabel(message.createdAt))
             }
             if flags.unreadDivider {
-                UnreadDividerView()
+                UnreadDividerView(themeId: store.themeId)
             }
             // .equatable() lets SwiftUI skip a row whose MessageRowData is
             // unchanged — so per-row edits and presence/typing churn no longer
@@ -1664,7 +1664,8 @@ struct MessageListView: View {
                 : nil,
             emojiCatalogVersion: store.emojiCatalogVersion,
             mentionContextVersion: store.mentionContextVersion,
-            e2eeUnlockVersion: store.e2eeUnlockVersion
+            e2eeUnlockVersion: store.e2eeUnlockVersion,
+            themeId: store.themeId
         )
     }
 
@@ -2873,14 +2874,21 @@ struct DateDividerView: View {
     }
 }
 
-/// Red "New messages" separator marking where the user last left off.
+/// "New messages" separator marking where the user last left off: rule and
+/// label in the theme's accent (it marks a place, not an error, so not red).
 struct UnreadDividerView: View {
+    /// The Appearance theme (store.themeId). Not read in body: it's what
+    /// makes SwiftUI re-run body on a theme switch. Theme.* is a plain
+    /// static, and a view whose inputs are unchanged keeps its old body, so
+    /// without an input that changes the divider stayed in the old accent.
+    let themeId: String
+
     var body: some View {
         HStack(spacing: 8) {
-            Rectangle().fill(Theme.danger).frame(height: 1)
+            Rectangle().fill(Theme.accent).frame(height: 1)
             Text("New messages")
                 .font(.zkSans(10, weight: .bold))
-                .foregroundColor(Theme.danger)
+                .foregroundColor(Theme.accent)
                 .fixedSize()
         }
         .padding(.vertical, 3)
@@ -2934,6 +2942,12 @@ struct MessageRowData: Equatable {
     var emojiCatalogVersion: Int
     var mentionContextVersion: Int
     var e2eeUnlockVersion: Int
+    /// The Appearance theme (store.themeId). Not read by the row: it's here so
+    /// == differs on a theme switch. The row draws its mention chips, links
+    /// and other accents with Theme.*, a plain static nothing observes, so
+    /// rows on screen during a switch (the chat under the Settings sheet)
+    /// kept the old accent until their data next changed.
+    var themeId: String
 }
 
 /// follow-ups render just the content indented to align under the name.

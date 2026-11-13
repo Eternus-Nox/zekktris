@@ -1565,7 +1565,7 @@ private fun MessageList(
                 val prev = messages.getOrNull(i - 1)
                 val newDay = prev == null || !com.zekktris.ui.components.sameLocalDay(prev.createdAt, m.createdAt)
                 if (newDay) DayDivider(dayLabel(m.createdAt))
-                // Red "New messages" divider at the frozen unread boundary.
+                // "New messages" divider at the frozen unread boundary.
                 if (i == unreadIdx) UnreadDivider()
                 if (m.metadata?.kind == "poke") {
                     PokeNoticeRow(state.me, m)
@@ -1731,18 +1731,20 @@ private fun MessageList(
     }
 }
 
-/** The red "New messages" separator at the frozen unread boundary — one rule
- *  then the label, no trailing rule (iOS UnreadDividerView,
- *  MessageViews.swift:1846-1856; web matches). */
+/** The "New messages" separator at the frozen unread boundary — one rule then
+ *  the label, no trailing rule (iOS UnreadDividerView; web matches). Accent,
+ *  not red: it marks where you stopped reading, it isn't an error, so it
+ *  follows the theme. */
 @Composable
 private fun UnreadDivider() {
+    val p = ZkTheme.palette
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(Modifier.weight(1f).height(1.dp).background(ZkStatus.danger))
+        Box(Modifier.weight(1f).height(1.dp).background(p.accent))
         Text(
-            "New messages", color = ZkStatus.danger, fontFamily = ZkSans, fontWeight = FontWeight.Bold,
+            "New messages", color = p.accent, fontFamily = ZkSans, fontWeight = FontWeight.Bold,
             fontSize = 10.sp, letterSpacing = 0.sp, modifier = Modifier.padding(horizontal = 8.dp),
         )
     }

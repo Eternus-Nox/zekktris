@@ -2068,7 +2068,9 @@ function Scroller({
         <button
           type="button"
           onClick={scrollToBottom}
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-accent hover:bg-accent/90 text-white text-xs font-medium shadow-lg z-10 transition-transform hover:scale-105"
+          // Same themed fill as the mention pills (accent→accent-2, bg-0
+          // text): white on the light accents (cyan, orange) failed contrast.
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gradient-to-br from-accent to-accent-2 hover:brightness-110 text-bg-0 text-xs font-semibold shadow-lg z-10 transition-transform hover:scale-105"
           aria-label="Jump to newest messages"
         >
           <ArrowDown size={12} />
@@ -2080,11 +2082,13 @@ function Scroller({
 }
 
 /**
- * Red "New messages" separator marking where the user last left off —
- * iOS parity (MessageViews.swift UnreadDividerView): a danger-red
- * hairline with a bold 10px label at its right end. Anchored at the
- * boundary frozen when the channel was opened, so it stays put while
- * the auto-ack advances the server-side read marker.
+ * "New messages" separator marking where the user last left off —
+ * iOS parity (MessageViews.swift UnreadDividerView): an accent hairline
+ * with a bold 10px accent label at its right end. Accent, not red: it
+ * marks where you stopped reading, it isn't an error, so it follows the
+ * theme (CSS channels, so a theme switch restyles it at once). Anchored
+ * at the boundary frozen when the channel was opened, so it stays put
+ * while the auto-ack advances the server-side read marker.
  */
 function UnreadDivider() {
   return (
@@ -2093,8 +2097,8 @@ function UnreadDivider() {
       role="separator"
       aria-label="New messages"
     >
-      <div className="flex-1 h-px bg-red-400" />
-      <span className="text-[10px] font-bold text-red-400 shrink-0">New messages</span>
+      <div className="flex-1 h-px bg-accent" />
+      <span className="text-[10px] font-bold text-accent shrink-0">New messages</span>
     </div>
   );
 }

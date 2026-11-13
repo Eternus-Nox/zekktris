@@ -17,6 +17,8 @@
  * together from the same call site.
  */
 
+import { themedNotificationIcon } from './themeIcon';
+
 interface ZekktrisBridge {
   isDesktop?: boolean;
   platform?: string;
@@ -80,7 +82,10 @@ export function showDesktopNotification(
     const n = new Notification(opts.title, {
       body: opts.body,
       tag: opts.tag,
-      icon: '/icon-192.png',
+      // The current theme's app mark (a PNG data URL theme.ts rasterises on
+      // every theme switch), so the banner's image matches the theme; the
+      // static default-palette /icon-192.png until that raster is ready.
+      icon: themedNotificationIcon(),
       requireInteraction: opts.requireInteraction ?? false,
       silent: true, // we play our own sound via lib/sounds.ts
     });

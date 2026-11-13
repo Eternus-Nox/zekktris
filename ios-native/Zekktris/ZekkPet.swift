@@ -11,11 +11,11 @@ import SwiftUI
 // colour, stored with it on the server (PetDTO.color; the inviter picks the
 // egg), so both people see the same egg whatever Appearance theme each of
 // them uses: ZekkPetPalette.forPet, from the pet's colour id and channel —
-// never the viewer's theme, nor the static Theme.current, which goes stale
-// inside Equatable rows such as MessageRow. The pet card's chrome (buttons,
-// level bar, checkmarks) stays in the viewer's theme. The words and the state
-// come from ZekkPet and AppStore (Models.swift / AppStore.swift); the server
-// decides everything shown here.
+// never the viewer's theme, nor the static Theme.current (which an Equatable
+// row such as MessageRow sees change only through its data's themeId). The
+// pet card's chrome (buttons, level bar, checkmarks) stays in the viewer's
+// theme. The words and the state come from ZekkPet and AppStore (Models.swift
+// / AppStore.swift); the server decides everything shown here.
 
 // MARK: - Colours
 

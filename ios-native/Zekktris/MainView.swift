@@ -1161,7 +1161,8 @@ struct ChannelListView: View {
                                     name: channel.name ?? "channel",
                                     restricted: channel.restricted == true,
                                     unread: store.isChannelUnread(channel),
-                                    mentions: store.mentionCount(for: channel.id))
+                                    mentions: store.mentionCount(for: channel.id),
+                                    themeId: store.themeId)
                 }
                 .buttonStyle(.plain)
             } else if channel.isForum {
@@ -1170,7 +1171,8 @@ struct ChannelListView: View {
                                     name: channel.name ?? "forum",
                                     restricted: channel.restricted == true,
                                     unread: store.isChannelUnread(channel),
-                                    mentions: store.mentionCount(for: channel.id))
+                                    mentions: store.mentionCount(for: channel.id),
+                                    themeId: store.themeId)
                 }
                 .buttonStyle(.plain)
             } else if channel.isLink {
@@ -1181,7 +1183,8 @@ struct ChannelListView: View {
                 } label: {
                     ChannelRowLabel(symbol: "arrow.up.right.square", iconTint: .accent,
                                     name: channel.name ?? "link",
-                                    restricted: channel.restricted == true)
+                                    restricted: channel.restricted == true,
+                                    themeId: store.themeId)
                 }
                 .buttonStyle(.plain)
             } else if channel.isStage {
@@ -1191,7 +1194,8 @@ struct ChannelListView: View {
                     ChannelRowLabel(symbol: "dot.radiowaves.left.and.right", iconTint: .accent,
                                     name: channel.name ?? "stage",
                                     restricted: channel.restricted == true,
-                                    trailingCount: store.voiceParticipants(in: channel.id).count)
+                                    trailingCount: store.voiceParticipants(in: channel.id).count,
+                                    themeId: store.themeId)
                 }
                 .buttonStyle(.plain)
             } else if channel.isVoice {
@@ -1202,7 +1206,8 @@ struct ChannelListView: View {
                                         name: channel.name ?? "voice",
                                         restricted: channel.restricted == true,
                                         active: store.activeVoiceOrStageId == channel.id,
-                                        trailingCount: participants.count)
+                                        trailingCount: participants.count,
+                                        themeId: store.themeId)
                     }
                     .buttonStyle(.plain)
                     // Web parity: tiny live participant list nested under
@@ -1245,8 +1250,9 @@ struct ChannelListView: View {
 
 /// One channel row, matching the web's ChannelRow exactly: 14pt label,
 /// accent-tinted type icon with an optional corner padlock, ink-2 text
-/// (ink-1 + medium when unread), trailing red-500 mention pill or a 6pt
-/// ink-1 unread dot, and the `.row-active` treatment when active.
+/// (ink-1 + medium when unread), trailing themed mention pill (accent →
+/// accent2, bg0 count) or a 6pt accent unread dot, and the `.row-active`
+/// treatment when active.
 private struct ChannelRowLabel: View {
     enum IconTint { case accent, tertiary }
     let symbol: String
@@ -1258,6 +1264,12 @@ private struct ChannelRowLabel: View {
     var mentions: Int = 0
     /// Voice/stage rows: participant count shown at the trailing edge.
     var trailingCount: Int = 0
+    /// The Appearance theme (store.themeId). Not read in body: it's what
+    /// makes SwiftUI re-run body on a theme switch. The row draws with
+    /// Theme.*, a plain static, and doesn't observe the store, so with its
+    /// other inputs unchanged SwiftUI kept the old body: the icon, pill and
+    /// dot stayed in the previous accent.
+    let themeId: String
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1281,13 +1293,11 @@ private struct ChannelRowLabel: View {
             if mentions > 0 {
                 Text(mentions > 99 ? "99+" : "\(mentions)")
                     .font(.zkSans(10, weight: .bold))
-                    .foregroundColor(.white)
                     .padding(.horizontal, 4)
                     .frame(minWidth: 17, minHeight: 17)
-                    .background(Theme.danger)
-                    .clipShape(Capsule())
+                    .zkCountPill()
             } else if unread {
-                Circle().fill(Theme.ink1).frame(width: 6, height: 6)
+                Circle().fill(Theme.accent).frame(width: 6, height: 6)
             } else if trailingCount > 0 {
                 Text("\(trailingCount)")
                     .font(.zkSans(10))
@@ -1626,28 +1636,27 @@ private struct DMRow: View {
             Spacer(minLength: 0)
             // The poke someone left while you weren't looking. Ahead of the
             // unread indicators because it is the more specific signal: the dot
-            // says something happened, this says what.
+            // says something happened, this says what. Accent-tinted like the
+            // E2EE lock above (15% fill, 45% border).
             if let poke = store.pokePills[dm.id] {
                 Text(poke)
                     .font(.system(size: 13))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
-                    .background(Theme.bg3)
+                    .background(Theme.accent.opacity(0.15))
                     .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(Theme.line, lineWidth: 1))
+                    .overlay(Capsule().strokeBorder(Theme.accent.opacity(0.45), lineWidth: 1))
                     .transition(.scale.combined(with: .opacity))
                     .accessibilityLabel("Poked you")
             }
             if mentions > 0 {
                 Text("\(min(mentions, 99))")
                     .font(.zkSans(11, weight: .bold))
-                    .foregroundColor(.white)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
-                    .background(Theme.danger)
-                    .clipShape(Capsule())
+                    .zkCountPill()
             } else if unread {
-                Circle().fill(Theme.ink1).frame(width: 7, height: 7)
+                Circle().fill(Theme.accent).frame(width: 7, height: 7)
             }
         }
         .padding(.horizontal, 8)

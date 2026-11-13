@@ -53,6 +53,14 @@ interface RenderContext {
   lookupEmoji?(name: string): GuildEmoji | undefined;
 }
 
+/** Fill + text of a mention chip that pings the viewer (a mention of you,
+ *  @everyone, @here): the ordinary accent chip (bg-accent/20 + accent-soft)
+ *  one step stronger, so it stands out in every theme. The text is ink-1,
+ *  not the accent: accent on accent/30 falls under 4.5:1 for Forest,
+ *  Crimson, Blossom and Amethyst, while ink-1 keeps at least 7.8:1 (6:1
+ *  hovered) on every background in every theme. */
+const PINGS_YOU_CHIP = 'bg-accent/30 text-ink-1 ring-1 ring-inset ring-accent/40';
+
 // Inline pattern. Order matters: longer/more-specific patterns first so
 // they win the "earliest start position" tie. Each capture group
 // corresponds to one token kind; we identify which one matched by the
@@ -213,8 +221,13 @@ function RenderInline({
       const user = ctx.lookupUser(id);
       const isSelf = id === ctx.selfUserId;
       const label = user ? `@${user.displayName}` : '@unknown';
+      // Every mention chip is the theme's accent (iOS parity: MessageViews
+      // richContent draws them all accent-soft on accent/20). One that pings
+      // YOU — like @everyone / @here below — is a step stronger (denser fill,
+      // accent ring, bright ink text) so it still stands out, instead of the
+      // old fixed amber that ignored the theme.
       const userClassName = isSelf
-        ? 'inline-block bg-amber-900/40 text-amber-200 px-1 rounded font-medium'
+        ? `inline-block ${PINGS_YOU_CHIP} hover:bg-accent/40 px-1 rounded font-medium`
         : 'inline-block bg-accent/20 text-accent-soft hover:bg-accent/30 px-1 rounded font-medium';
       out.push(
         user && ctx.onUserClick ? (
@@ -264,10 +277,12 @@ function RenderInline({
         </button>,
       );
     } else if (m[9]) {
+      // @everyone / @here: pings the whole room, so the same stronger accent
+      // chip as a mention of you.
       out.push(
         <span
           key={key++}
-          className="inline-block bg-amber-900/40 text-amber-200 px-1 rounded font-medium"
+          className={`inline-block ${PINGS_YOU_CHIP} px-1 rounded font-medium`}
         >
           {m[9]}
         </span>,

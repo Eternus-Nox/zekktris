@@ -18,6 +18,7 @@ import androidx.core.content.ContextCompat
 import com.zekktris.MainActivity
 import com.zekktris.R
 import com.zekktris.share.ShareShortcuts
+import com.zekktris.ui.theme.ZkThemePrefs
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -132,6 +133,11 @@ object NotificationHelper {
 
         val builder = NotificationCompat.Builder(context, notificationChannelId(context))
             .setSmallIcon(R.drawable.ic_stat_notify)
+            // The viewer's theme accent, read at post time so it is the theme
+            // in force now. Every non-call push comes through here: DMs,
+            // mentions, pokes, friend requests, streak warnings, event
+            // reminders, achievement unlocks.
+            .setColor(ZkThemePrefs.accentArgb(context))
             .setContentTitle(title)
             .setContentText(body)
             .setAutoCancel(true)
@@ -255,7 +261,7 @@ object NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
 
-        val notification = NotificationCompat.Builder(context, RING_CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, RING_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_notify)
             .setContentTitle(callerName)
             .setContentText("Incoming call")
@@ -270,9 +276,16 @@ object NotificationHelper {
             .setFullScreenIntent(fullScreenPending, true)
             .addAction(R.drawable.ic_stat_notify, "Decline", declinePending)
             .addAction(R.drawable.ic_stat_notify, "Answer", answerPending)
-            .build()
+        // The theme accent, from Android 12 only. There it tints the ring's
+        // icon while the action labels keep the system colours. Android 8-11
+        // paints action labels in the notification colour, which would turn
+        // Decline and Answer into the theme accent, and their colours carry
+        // meaning. So on those versions the ring keeps the system colours.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setColor(ZkThemePrefs.accentArgb(context))
+        }
 
-        NotificationManagerCompat.from(context).notify("call-$channelId", CALL_NOTIFICATION_ID, notification)
+        NotificationManagerCompat.from(context).notify("call-$channelId", CALL_NOTIFICATION_ID, builder.build())
     }
 
     /** Dismiss the incoming-call ring for [channelId] (answered / declined / ended). */

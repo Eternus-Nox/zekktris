@@ -143,7 +143,7 @@ data class AppState(
     // Consumed by the composer (Composer's LaunchedEffect → consumePendingShare).
     val pendingShare: PendingShare? = null,
     // channelId → the frozen pre-ack read pointer captured when the channel was
-    // opened; drives the red "New messages" divider (iOS unreadBoundaryId).
+    // opened; drives the "New messages" divider (iOS unreadBoundaryId).
     val unreadBoundaryByChannel: Map<String, String> = emptyMap(),
     val readStates: Map<String, ReadState> = emptyMap(),
     val presence: Map<String, String> = emptyMap(),
@@ -2301,7 +2301,7 @@ class AppStore(
         if (_state.value.pokePills.containsKey(channelId)) {
             _state.update { it.copy(pokePills = it.pokePills - channelId) }
         }
-        // Freeze the pre-ack read pointer as the unread boundary for the red
+        // Freeze the pre-ack read pointer as the unread boundary for the
         // "New messages" divider (iOS unreadBoundaryId) — ack() below moves it.
         val preAckPointer = _state.value.readStates[channelId]?.lastMessageId
         val chanLastMessageId = (_state.value.dms.firstOrNull { it.id == channelId }

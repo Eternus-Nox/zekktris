@@ -400,6 +400,30 @@
             mask-composite: exclude;
   }
 
+  /* Themed 1px stroke for the in-app notification banners (the poke and
+     achievement toasts): accent → accent-2, left to right, at ~60% — the
+     web twin of the iOS PokeBannerView / AchievementBannerView capsule
+     stroke. Same mask trick as .glass-edge, so the card keeps its own
+     fill and corner radius. It reads the theme channels, so a theme
+     switch restrokes it at once. */
+  .zk-accent-edge {
+    position: relative;
+  }
+  .zk-accent-edge::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(90deg, rgb(var(--c-accent) / 0.6), rgb(var(--c-accent-2) / 0.6));
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+            mask-composite: exclude;
+  }
+
   /* Squircle clip — used by Zekktris's server-rail brand tile.
      Components opt in by class. */
   .zk-squircle {
@@ -440,35 +464,37 @@
    ZEKKTRIS — KEYFRAMES (live indicators)
    ════════════════════════════════════════════════════════════════════ */
 @layer utilities {
-  /* Alien-wavelength pulse for the "is speaking" indicator. Replaces
-   * the Discord-style flat emerald ring with a multi-layer sonar
-   * ripple in the Zekktris cyan + violet accent colors — three
-   * offset box-shadows that expand outward and fade, producing the
-   * concentric "ping" look without any extra DOM. The three layers
-   * fire at different radii so the effect reads as a continuous
-   * ripple rather than a single ring, and the alpha-to-zero fades
-   * use oklch so the color stays true through the fade (rgba fades
-   * to white-grey on the way out which looks washed). 1.4s cycle
-   * paces ~50bpm — slow enough to feel deliberate, fast enough that
-   * sustained speech produces continuous motion. */
+  /* Alien-wavelength pulse around the caller's avatar while a call
+   * rings (IncomingCallModal / OutgoingCallModal). A multi-layer sonar
+   * ripple in the THEME's accent trio — three offset box-shadows that
+   * expand outward and fade, producing the concentric "ping" look
+   * without any extra DOM. The three layers fire at different radii
+   * so the effect reads as a continuous ripple rather than a single
+   * ring. Colours come from the theme channels (--c-accent / -2 / -3
+   * at .55 / .40 / .25, exactly iOS AlienPulse: Theme.accent / accent2
+   * / accent3), so every theme rings in its own colours and a theme
+   * switch recolours it at once; they used to be the default palette's
+   * cyan / violet / magenta in every theme. Each layer fades through
+   * the SAME colour to alpha 0, so nothing washes out on the way.
+   * 1.4s cycle paces ~50bpm — slow enough to feel deliberate. */
   @keyframes zk-alien-pulse {
     0% {
       box-shadow:
-        0 0 0 0   oklch(.82 .16 215 / .55),
-        0 0 0 0   oklch(.72 .20 290 / .40),
-        0 0 0 0   oklch(.72 .22 335 / .25);
+        0 0 0 0   rgb(var(--c-accent) / .55),
+        0 0 0 0   rgb(var(--c-accent-2) / .40),
+        0 0 0 0   rgb(var(--c-accent-3) / .25);
     }
     70% {
       box-shadow:
-        0 0 0 5px  oklch(.82 .16 215 / .15),
-        0 0 0 10px oklch(.72 .20 290 / .10),
-        0 0 0 16px oklch(.72 .22 335 / 0);
+        0 0 0 5px  rgb(var(--c-accent) / .15),
+        0 0 0 10px rgb(var(--c-accent-2) / .10),
+        0 0 0 16px rgb(var(--c-accent-3) / 0);
     }
     100% {
       box-shadow:
-        0 0 0 8px  oklch(.82 .16 215 / 0),
-        0 0 0 14px oklch(.72 .20 290 / 0),
-        0 0 0 20px oklch(.72 .22 335 / 0);
+        0 0 0 8px  rgb(var(--c-accent) / 0),
+        0 0 0 14px rgb(var(--c-accent-2) / 0),
+        0 0 0 20px rgb(var(--c-accent-3) / 0);
     }
   }
   .zk-alien-pulse {

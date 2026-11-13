@@ -786,8 +786,9 @@ final class AppStore: ObservableObject {
 
     /// Switch the home-screen icon to match the theme's accent scheme. iOS
     /// shows a system alert whenever the icon actually changes; the guard
-    /// avoids redundant calls. Not called on launch — iOS persists the
-    /// chosen icon across launches on its own.
+    /// avoids redundant calls. iOS persists the chosen icon across launches
+    /// on its own; reconcileAppIcon re-checks it each time the app comes to
+    /// the front.
     private func applyAppIcon(for id: String) {
         guard UIApplication.shared.supportsAlternateIcons else { return }
         let scheme = (id == "default" || id == "oled")
@@ -804,6 +805,29 @@ final class AppStore: ObservableObject {
         if UIApplication.shared.alternateIconName == iconName { return }
         UIApplication.shared.setAlternateIconName(iconName)
     }
+
+    /// The pending icon check from the app's last trip to the front.
+    private var appIconCheck: Task<Void, Never>?
+
+    /// Put the home-screen icon back in step with the theme. The icon is the
+    /// only themed pixel in a push (banners, lock screen, Notification
+    /// Center), and setTheme sets it only at the moment of a switch, ignoring
+    /// failure: a change that didn't land then would leave pushes on the old
+    /// family's icon for good. So this runs each time the app comes to the
+    /// front, and changes the icon only on a mismatch (applyAppIcon's guard),
+    /// so iOS's "You have changed the icon" alert doesn't repeat. A second
+    /// after activation, and only if the app is still active then, so the
+    /// change and its alert land on a settled app rather than mid-transition.
+    private func reconcileAppIcon() {
+        appIconCheck?.cancel()
+        appIconCheck = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, !Task.isCancelled,
+                  UIApplication.shared.applicationState == .active else { return }
+            self.applyAppIcon(for: self.themeId)
+        }
+    }
+
     @Published var family: FamilySummary?
     @Published var loadingFamily = false
     /// Per-child restriction settings (childId → restrictions), loaded when a
@@ -1400,6 +1424,8 @@ final class AppStore: ObservableObject {
             // open conversation shows now.
             pruneExpired()
             resumeReading()
+            // Pushes show the app icon: keep it the theme family's.
+            reconcileAppIcon()
         }
         evaluateAutoPresence()
         // Re-sync the home-screen badge to true unread on every fg/bg flip (a

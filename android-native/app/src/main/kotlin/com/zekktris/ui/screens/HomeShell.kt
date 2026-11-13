@@ -661,7 +661,8 @@ private fun ChannelRow(store: AppStore, state: AppState, ch: Channel, onLongPres
             when {
                 mentions > 0 -> MentionCapsule(mentions)
                 ch.isVoice && voiceMembers.isNotEmpty() -> Text("${voiceMembers.size}", color = ZkInk.ink3, fontFamily = ZkSans, fontSize = 12.sp)
-                unread -> Box(Modifier.size(6.dp).clip(CircleShape).background(ZkInk.ink1))
+                // Solid accent: every unread signal follows the theme.
+                unread -> Box(Modifier.size(6.dp).clip(CircleShape).background(p.accent))
             }
         }
         // Joined voice participants, indented under the channel. Quiet grey
@@ -692,17 +693,22 @@ private fun voiceUser(state: AppState, userId: String): com.zekktris.data.model.
     if (userId == state.me?.id) state.me?.let { com.zekktris.data.model.PublicUser(id = it.id, username = it.username, displayName = it.displayName, avatarUrl = it.avatarUrl) }
     else state.membersByGuild.values.asSequence().flatten().firstOrNull { it.userId == userId }?.user
 
+/** The mention count on channel and DM rows: the theme's accent→accent2
+ *  gradient, top left to bottom right, with the count in bg0 (iOS and web
+ *  match). Not white: white on the accents is as low as about 1.7:1, while bg0
+ *  clears 4.8:1 on both ends of every theme's gradient (ZkThemePrefsTest). */
 @Composable
 private fun MentionCapsule(count: Int) {
+    val p = ZkTheme.palette
     Text(
         if (count > 99) "99+" else "$count",
-        color = androidx.compose.ui.graphics.Color.White,
+        color = p.bg0,
         fontFamily = ZkSans,
         fontWeight = FontWeight.Bold,
         fontSize = 10.sp,
         modifier = Modifier
             .clip(CircleShape)
-            .background(ZkStatus.danger)
+            .background(Brush.linearGradient(listOf(p.accent, p.accent2)))
             .padding(horizontal = 6.dp, vertical = 2.dp),
     )
 }
@@ -811,7 +817,8 @@ private fun DmRow(store: AppStore, state: AppState, dm: Channel) {
         Spacer(Modifier.weight(1f))
         // The poke someone left while you weren't looking. Ahead of the unread
         // indicators because it is the more specific signal: the dot says
-        // something happened, this says what.
+        // something happened, this says what. Accent-tinted (15% fill, 45%
+        // stroke, the E2EE lock idiom above) like iOS and web.
         state.pokePills[dm.id]?.let { emoji ->
             Text(
                 emoji,
@@ -819,14 +826,15 @@ private fun DmRow(store: AppStore, state: AppState, dm: Channel) {
                 modifier = Modifier
                     .padding(end = 6.dp)
                     .clip(CircleShape)
-                    .background(p.bg3)
+                    .background(p.accent.copy(alpha = 0.15f))
+                    .border(1.dp, p.accent.copy(alpha = 0.45f), CircleShape)
                     .padding(horizontal = 6.dp, vertical = 3.dp),
             )
         }
         val mentions = state.readStates[dm.id]?.mentionCount ?: 0
         when {
             mentions > 0 -> MentionCapsule(mentions)
-            unread -> Box(Modifier.size(7.dp).clip(CircleShape).background(ZkInk.ink1))
+            unread -> Box(Modifier.size(7.dp).clip(CircleShape).background(p.accent))
         }
     }
 }

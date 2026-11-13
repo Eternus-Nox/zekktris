@@ -353,7 +353,10 @@ export function useMentionAutocomplete({
                 return (
                   <li key={`mass-${s.token}`}>
                     <button type="button" onClick={() => select(s)} onMouseEnter={onEnter} className={rowCls}>
-                      <span className="w-7 h-7 shrink-0 rounded-full bg-amber-900/40 text-amber-200 flex items-center justify-center text-xs font-semibold">
+                      {/* Accent, like the @everyone / @here chip it inserts
+                          (lib/markdown) — iOS draws this bubble accent on
+                          accent/15 too. It was a fixed amber. */}
+                      <span className="w-7 h-7 shrink-0 rounded-full bg-accent/15 text-accent flex items-center justify-center text-xs font-semibold">
                         @
                       </span>
                       <span className="truncate flex-1 font-medium">@{s.token}</span>

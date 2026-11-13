@@ -46,6 +46,50 @@ const SHELL_ASSETS = [
   '/favicon-16.png',
 ];
 
+// ── Themed notification icon ──────────────────────────────────────────────
+// The theme lives in the page's localStorage, which a service worker can't
+// read, so the page posts us its themed app icon (a PNG data URL of the
+// favicon's Z mark in the theme's colours — apps/web/src/lib/themeIcon.ts)
+// on boot and on every theme switch. Push notifications use it in place of
+// the static, default-palette /icon-192.png. It is kept in its OWN cache,
+// outside the 'zekktris-shell-' prefix the activate handler purges, so a new
+// build's worker still has it. Nothing serves this cache to fetches.
+const STATIC_ICON = '/icon-192.png';
+const THEME_CACHE = 'zekktris-theme';
+const THEME_ICON_KEY = '/__zk/theme-icon';
+
+// Only a base64 PNG data URL (the page's canvas raster, ~10-30 KB) is ever
+// stored or shown, so a notification never loads anything remote.
+function isThemeIcon(v) {
+  return (
+    typeof v === 'string' &&
+    v.length <= 512 * 1024 &&
+    /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(v)
+  );
+}
+
+async function storeThemeIcon(png) {
+  const cache = await caches.open(THEME_CACHE);
+  await cache.put(
+    THEME_ICON_KEY,
+    new Response(png, { headers: { 'Content-Type': 'text/plain' } }),
+  );
+}
+
+// The stored themed icon, or null (none posted yet, or Cache Storage is
+// unavailable) — the caller then keeps the static icon.
+async function themedIcon() {
+  try {
+    const cache = await caches.open(THEME_CACHE);
+    const res = await cache.match(THEME_ICON_KEY);
+    if (!res) return null;
+    const png = await res.text();
+    return isThemeIcon(png) ? png : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 
 self.addEventListener('install', (event) => {
@@ -208,12 +252,19 @@ self.addEventListener('push', (event) => {
   // vibrate / requireInteraction / actions override the defaults
   // when present, so the API has full control of the shape.
   const isCall = payload.kind === 'call';
+  // No icon, or the static app icon (the server names /icon-192.png for
+  // friend requests and calls), both mean "the app icon" — shown below in
+  // the device's theme when the page has posted one. Any other URL is a
+  // deliberate per-notification image and is left alone.
+  const wantsAppIcon = !payload.icon || payload.icon === STATIC_ICON;
   const options = {
     body: payload.body || '',
     // Use the manifest icon so the notification looks like the app
     // rather than a generic browser bell.
-    icon: payload.icon || '/icon-192.png',
-    badge: '/icon-192.png',
+    icon: payload.icon || STATIC_ICON,
+    // The badge stays the static icon: Android draws it as an alpha-only
+    // mask in the system's own tint, so it can't carry the theme anyway.
+    badge: STATIC_ICON,
     tag: payload.tag,
     // Forward arbitrary server-provided data plus the click URL so
     // the notificationclick handler has everything it needs without
@@ -265,6 +316,10 @@ self.addEventListener('push', (event) => {
         }
       } catch {
         // matchAll failed — show the notification rather than dropping it.
+      }
+      if (wantsAppIcon) {
+        const themed = await themedIcon();
+        if (themed) options.icon = themed;
       }
       await self.registration.showNotification(title, options);
     })(),
@@ -368,6 +423,14 @@ self.addEventListener('notificationclick', (event) => {
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+  }
+  // The page's themed app icon for push notifications — see "Themed
+  // notification icon" at the top. Anything but a PNG data URL is ignored.
+  if (event.data && event.data.type === 'SET_THEME_ICON') {
+    const png = event.data.png;
+    if (isThemeIcon(png)) {
+      event.waitUntil(storeThemeIcon(png).catch(() => undefined));
+    }
   }
   // Close any open call notifications for a given channel — used when
   // the call ends (recipient answers, declines, caller hangs up, or

@@ -107,6 +107,7 @@ import {
 import { newestConfirmedId } from '../lib/readAck';
 import { isPetNotice } from '../lib/zekkPet';
 import { clearPetBannerDismissals } from '../lib/petBannerDismissals';
+import { badgeIcon } from '../lib/achievementGlyphs';
 
 // ── Shape ──────────────────────────────────────────────────────────────────
 
@@ -4627,7 +4628,12 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         // person and its toast carries the poke-back button, so it has to
         // survive a glance away from the screen. 4s was short enough that the
         // recipient routinely never saw it.
-        toasts.push(`${d.emoji}  ${d.initiator_name}`, 'info', 15_000, {
+        // The 'poke' kind is the themed in-app banner (iOS PokeBannerView):
+        // the big emoji, the sender, the hint line, and an accent-tinted
+        // poke-back chip, inside an accent stroke + glow.
+        toasts.push(d.initiator_name, 'poke', 15_000, {
+          emoji: d.emoji,
+          caption: 'Tap to open · tap the emoji to poke back',
           // Tap the toast → open the DM with the sender (the poke arrived on
           // their DM channel). Soft-nav (no full reload — keeps the gateway up).
           onClick: () => {
@@ -4637,6 +4643,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
           // Tap the emoji → poke them back with the SAME variant.
           action: {
             label: d.emoji,
+            ariaLabel: 'Poke back',
             onClick: () => {
               void (async () => {
                 try {
@@ -4652,10 +4659,16 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       // A new achievement just unlocked (sent only to this user's own
       // connections) → celebratory toast. The server already gates this on the
       // per-account notify_achievements preference, so if it arrives, show it.
+      // The 'achievement' kind is the themed banner (iOS AchievementBannerView):
+      // the badge's OWN glyph — the one its shelf tile wears — in the shelf's
+      // accent circle, not a fixed trophy in gold or the green success card.
       gateway.on<{ id: string; name: string; description: string; marker: string }>(
         GatewayEvent.ACHIEVEMENT_UNLOCK,
         (a) => {
-          toasts.push(`🏆  Achievement unlocked — ${a.name}`, 'success', 6000);
+          toasts.push(a.name, 'achievement', 6000, {
+            caption: 'Achievement unlocked',
+            icon: badgeIcon(a.id),
+          });
         },
       ),
       gateway.on<Channel>(GatewayEvent.CHANNEL_DELETE, (ch) => {

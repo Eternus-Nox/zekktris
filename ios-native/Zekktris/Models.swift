@@ -2641,7 +2641,12 @@ struct Achievement: Codable, Identifiable, Hashable {
 
     var isEarned: Bool { earned ?? true }
 
-    /// SF Symbol for this achievement, keyed by id prefix. Mirrors web's
+    /// SF Symbol for this achievement (see `sfSymbol(forId:)`).
+    var sfSymbol: String { Self.sfSymbol(forId: id) }
+
+    /// SF Symbol for an achievement id, keyed by id prefix. Static so the
+    /// unlock banner, which has only the id (AchievementBanner.achievementId),
+    /// shows the same glyph as the shelf and gallery. Mirrors web's
     /// `badgeIcon` mapping (AchievementsShelf.tsx) with native equivalents,
     /// so the same achievement reads the same on both clients. A family's
     /// rungs are `family_<goal>` (achievements.ts), so families match by
@@ -2649,8 +2654,9 @@ struct Achievement: Codable, Identifiable, Hashable {
     /// so a more specific prefix goes above any shorter one its ids also
     /// start with ('founding_member' doesn't start with 'founder', so those
     /// two are safe in either order). Symbols must exist on iOS 17.0: a
-    /// missing name draws nothing, with no compile error.
-    var sfSymbol: String {
+    /// missing name draws nothing, with no compile error. An unknown or empty
+    /// id gets the rosette.
+    static func sfSymbol(forId id: String) -> String {
         switch true {
         case id.hasPrefix("veteran"): return "calendar.badge.checkmark"
         case id.hasPrefix("chatterbox"): return "bubble.left.and.bubble.right.fill"

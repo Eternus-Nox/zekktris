@@ -347,6 +347,24 @@ extension View {
             }
             .shadow(color: active ? Theme.accentGlow : .clear, radius: 6)
     }
+
+    /// The themed count badge: the mention pill on channel, DM and thread
+    /// rows. A capsule filled with the accent → accent2 gradient (top-leading
+    /// to bottom-trailing, as on the active rail tile), the count drawn in
+    /// bg0. Not white: white on these accents is as low as 1.5:1 (Sunset's
+    /// yellow); bg0 is at least 4.8:1 on every accent and accent2. Apply it
+    /// after the pill's own padding and frame, so each row keeps its size.
+    ///
+    /// It reads Theme.current when the caller's body runs, so the caller must
+    /// re-render on a theme switch: observe the store, or take the theme id
+    /// as an input (ChannelRowLabel).
+    func zkCountPill() -> some View {
+        self
+            .foregroundColor(Theme.bg0)
+            .background(LinearGradient(colors: [Theme.accent, Theme.accent2],
+                                       startPoint: .topLeading, endPoint: .bottomTrailing))
+            .clipShape(Capsule())
+    }
 }
 
 // ── Typography (web: Space Grotesk UI / JetBrains Mono chrome) ──────────────

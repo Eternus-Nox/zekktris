@@ -59,6 +59,8 @@ const VALID = new Set<string>(THEMES.map((t) => t.id));
 // Capacitor inside functions, and imports back from here dynamically, so this
 // static import creates no eval-time cycle.
 import { applyNativeTheme } from './native';
+// Holds the rasterised mark for OS notifications (no imports of its own).
+import { setThemedIcon } from './themeIcon';
 
 export function getStoredTheme(): ThemeId {
   try {
@@ -128,20 +130,29 @@ function applyMetaThemeColor(t: ThemeOption): void {
   meta.content = t.bg;
 }
 
+// Bumped per raster request, so a slow decode for an earlier theme can't land
+// after (and overwrite) the icons of the theme the user switched to since.
+let rasterSeq = 0;
+
 /**
  * Rasterize the themed mark to PNGs and apply them where PNGs are needed:
  *   - the `apple-touch-icon` link (so a *fresh* add-to-home-screen on iOS/PWA
  *     captures the active theme — an already-installed icon is OS-cached and
  *     can't be changed at runtime);
  *   - the Electron shell's window/taskbar/dock + tray icons (if the desktop
- *     bridge is present).
- * nativeImage / apple-touch-icon can't read SVG, hence the canvas raster here.
+ *     bridge is present);
+ *   - OS notifications (lib/themeIcon): Electron's desktop notifications and,
+ *     through the service worker, Web Push ones.
+ * nativeImage / apple-touch-icon / notification icons can't read SVG, hence
+ * the canvas raster here.
  */
 function updateRasterIcons(t: ThemeOption): void {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
   const bridge = (window as unknown as { zekktris?: DesktopIconBridge }).zekktris;
+  const seq = ++rasterSeq;
   const img = new Image();
   img.onload = () => {
+    if (seq !== rasterSeq) return; // a newer theme's raster is on its way
     try {
       const rasterize = (size: number): string => {
         const canvas = document.createElement('canvas');
@@ -164,6 +175,9 @@ function updateRasterIcons(t: ThemeOption): void {
         document.head.appendChild(touch);
       }
       if (windowPng) touch.href = windowPng;
+
+      // OS notification icon (desktop notifications + Web Push via the SW).
+      if (windowPng) setThemedIcon(windowPng);
 
       // Electron native icons.
       if (bridge?.setAppIcon) {
