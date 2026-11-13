@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -15,8 +15,10 @@ import {
   type PetStage,
 } from '@zekktris/client';
 import {
+  PET_FETCH_RETRY_MS,
   appendScrollKind,
   blockSubjectId,
+  fetchPetWithRetry,
   isPetNotice,
   nextUtcMidnightRefreshAt,
   petArtProgress,
@@ -65,6 +67,7 @@ import {
   isChannelUnread,
   ownEchoReadState,
   petDmIdsWithUser,
+  reloadsPetOnReconnect,
 } from '../src/state/AppState';
 import { newestConfirmedId, planReadAck } from '../src/lib/readAck';
 import { serverNow, timeoutUntil } from '../src/lib/disappearing';
@@ -625,6 +628,104 @@ describe('clock-driven refetch', () => {
     // The same at 18:00: device 18:00:05 is server 17:59:35.
     expect(petNextRefreshAt(p, serverNow(offset, device('2026-11-11T18:00:05Z')))).toBe(
       Date.parse('2026-11-11T18:00:05Z'),
+    );
+  });
+});
+
+describe('a failed first fetch', () => {
+  // The API restarts (or the network blips) as a DM opens: the first getDmPet
+  // fails, so the DM has no pet entry, and every other refetch needs one.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // A load that fails `failures` times, then answers.
+  const flaky = (failures: number) => {
+    let calls = 0;
+    const load = vi.fn(() => (++calls <= failures ? Promise.reject(new Error('502')) : Promise.resolve()));
+    return load;
+  };
+
+  it('retries backed off (3 s, 10 s, 30 s) until one lands', async () => {
+    expect(PET_FETCH_RETRY_MS).toEqual([3_000, 10_000, 30_000]);
+    const load = flaky(2);
+    fetchPetWithRetry(load, () => true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(load).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(load).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(load).toHaveBeenCalledTimes(3);
+    // It answered: no more.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(load).toHaveBeenCalledTimes(3);
+  });
+
+  it('gives up after the last retry, and never retries a fetch that worked', async () => {
+    const down = flaky(Infinity);
+    fetchPetWithRetry(down, () => true);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(down).toHaveBeenCalledTimes(1 + PET_FETCH_RETRY_MS.length);
+    const up = flaky(0);
+    fetchPetWithRetry(up, () => true);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(up).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops once the pet loaded some other way, or the view left the DM', async () => {
+    // An event or the reconnect filled the entry meanwhile.
+    let missing = true;
+    const load = flaky(Infinity);
+    fetchPetWithRetry(load, () => missing);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(load).toHaveBeenCalledTimes(2);
+    missing = false;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(load).toHaveBeenCalledTimes(2);
+    // Switched channel (the effect's cleanup) with a retry pending…
+    const pending = flaky(Infinity);
+    const cancel = fetchPetWithRetry(pending, () => true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    cancel();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(pending).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    // …or with the fetch still in flight.
+    let reject!: (e: Error) => void;
+    const inFlight = vi.fn(() => new Promise<void>((_, r) => (reject = r)));
+    const cancelInFlight = fetchPetWithRetry(inFlight, () => true);
+    cancelInFlight();
+    reject(new Error('502'));
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(inFlight).toHaveBeenCalledTimes(1);
+  });
+
+  it('is what the DM view fetches with on open, gated on the DM having no entry', () => {
+    const view = readFileSync(new URL('../src/app/MessageView.tsx', import.meta.url), 'utf8');
+    expect(view).toMatch(/petMissingRef\.current = petState === undefined;/);
+    expect(view).toMatch(
+      /if \(!petsHere \|\| document\.visibilityState !== 'visible'\) return;[\s\S]{0,300}?return fetchPetWithRetry\(\(\) => loadDmPet\(channel\.id\), \(\) => petMissingRef\.current\);\s*\}, \[channel\.id, petsHere, loadDmPet, wake\]\);/,
+    );
+  });
+
+  it('is re-read on a reconnect for any open 1:1 DM, loaded or not', () => {
+    const dm = (id: string, type: 'dm' | 'group_dm') => ({ id, type }) as unknown as Channel;
+    const loaded: DmPetState = { pet: null, eligible: true, streak: 5, minStreak: 3, canAct: true };
+    const state = { dmChannels: [dm('9', 'dm'), dm('8', 'dm'), dm('7', 'group_dm')], dmPets: { '9': loaded } };
+    expect(reloadsPetOnReconnect(state, '9')).toBe(true);
+    // Its first fetch failed: no entry, still re-read.
+    expect(reloadsPetOnReconnect(state, '8')).toBe(true);
+    // A group DM or a guild channel has no pet.
+    expect(reloadsPetOnReconnect(state, '7')).toBe(false);
+    expect(reloadsPetOnReconnect(state, '1')).toBe(false);
+    const appState = readFileSync(new URL('../src/state/AppState.tsx', import.meta.url), 'utf8');
+    expect(appState).toMatch(
+      /openChannelId &&\s*gateway\.getFeatures\(\)\.zekk_pet === true &&\s*reloadsPetOnReconnect\(loaded, openChannelId\)\s*\) \{\s*void loadDmPet\(openChannelId\)/,
     );
   });
 });

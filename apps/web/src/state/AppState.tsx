@@ -4942,8 +4942,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         if (openChannelId && openChannelId in loaded.dmTimers) {
           void loadDmSettings(openChannelId).catch(() => undefined);
         }
-        // Likewise a DM_PET_UPDATE for the open DM's pet.
-        if (openChannelId && openChannelId in loaded.dmPets && gateway.getFeatures().zekk_pet === true) {
+        // Likewise a DM_PET_UPDATE for the open DM's pet, or a first fetch
+        // that failed while the API was away (no entry, so nothing else
+        // re-reads it).
+        if (
+          openChannelId &&
+          gateway.getFeatures().zekk_pet === true &&
+          reloadsPetOnReconnect(loaded, openChannelId)
+        ) {
           void loadDmPet(openChannelId).catch(() => undefined);
         }
       }),
@@ -5391,6 +5397,22 @@ export function petDmIdsWithUser(
       (c) => c.type === 'dm' && c.id in state.dmPets && (c.recipients ?? []).some((r) => r.id === userId),
     )
     .map((c) => c.id);
+}
+
+/**
+ * Whether a reconnect re-reads the open channel's pet: any 1:1 DM, loaded or
+ * not. A loaded pet may have missed a DM_PET_UPDATE during the drop, and a DM
+ * whose first fetch failed (the API restarting as it opened) has no entry,
+ * which every other refetch needs.
+ */
+export function reloadsPetOnReconnect(
+  state: Pick<State, 'dmChannels' | 'dmPets'>,
+  channelId: string,
+): boolean {
+  return (
+    channelId in state.dmPets ||
+    state.dmChannels.some((c) => c.id === channelId && c.type === 'dm')
+  );
 }
 
 /**

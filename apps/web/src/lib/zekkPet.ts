@@ -433,3 +433,39 @@ export function nextUtcMidnightRefreshAt(now: number): number {
   const d = new Date(now - REFRESH_SLACK_MS);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1) + REFRESH_SLACK_MS;
 }
+
+/** The waits before each retry of a failed pet fetch (fetchPetWithRetry). */
+export const PET_FETCH_RETRY_MS: readonly number[] = [3_000, 10_000, 30_000];
+
+/**
+ * Fetches a DM's pet when it opens and, if that fails, tries again after each
+ * of `delays` while `stillMissing()` holds (the DM still has no pet entry). A
+ * failed first fetch leaves no entry, and every other refetch (the pet and
+ * streak events, the clock, supervision, a block) needs one, so without this
+ * a short API outage or network blip would keep the bar and the header pet
+ * away until the tab lost and regained focus. Returns a cancel for the
+ * effect's cleanup, which also drops a pending retry: a switch to another
+ * channel never retries this one.
+ */
+export function fetchPetWithRetry(
+  load: () => Promise<unknown>,
+  stillMissing: () => boolean,
+  delays: readonly number[] = PET_FETCH_RETRY_MS,
+): () => void {
+  let cancelled = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const attempt = (tries: number) => {
+    void load().catch(() => {
+      if (cancelled || tries >= delays.length) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        if (!cancelled && stillMissing()) attempt(tries + 1);
+      }, delays[tries]);
+    });
+  };
+  attempt(0);
+  return () => {
+    cancelled = true;
+    if (timer !== undefined) clearTimeout(timer);
+  };
+}

@@ -39,7 +39,14 @@ import { avatarColor, avatarInitials } from '../lib/avatar';
 import { AvatarImage } from '../lib/AvatarImage';
 import { DmStreakPill } from './DMList';
 import { DmPetButton, PetAdoptBanner } from './ZekkPet';
-import { appendScrollKind, isPetNotice, nextUtcMidnightRefreshAt, petBanner, petNextRefreshAt } from '../lib/zekkPet';
+import {
+  appendScrollKind,
+  fetchPetWithRetry,
+  isPetNotice,
+  nextUtcMidnightRefreshAt,
+  petBanner,
+  petNextRefreshAt,
+} from '../lib/zekkPet';
 // Lazy-loaded: the DM settings/privacy panel only mounts when opened.
 const DmSettingsPanel = lazy(() =>
   import('./DmSettingsPanel').then((m) => ({ default: m.DmSettingsPanel })),
@@ -650,9 +657,14 @@ export function MessageView({
     setPetOpen(false);
   }, [channel.id]);
   const petBannerView = petsHere ? petBanner(petState, user?.id, headerLabel) : null;
+  // Read by the retries below, which outlive the render that scheduled them.
+  const petMissingRef = useRef(petState === undefined);
+  petMissingRef.current = petState === undefined;
   useEffect(() => {
     if (!petsHere || document.visibilityState !== 'visible') return;
-    void loadDmPet(channel.id).catch(() => undefined);
+    // A failed fetch with no pet loaded yet is retried (backed off): nothing
+    // else re-reads a DM that has no entry. A switch away cancels it.
+    return fetchPetWithRetry(() => loadDmPet(channel.id), () => petMissingRef.current);
   }, [channel.id, petsHere, loadDmPet, wake]);
   // The boundaries are the server's, so count in server time: a device clock
   // that runs fast would refetch before the day turned there, get the same
