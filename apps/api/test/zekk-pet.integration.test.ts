@@ -211,6 +211,8 @@ async function setStreak(
     lastCountedDay: s.lastCountedDay,
     lastDayA: s.lastDayA ?? s.lastCountedDay,
     lastDayB: s.lastDayB ?? s.lastCountedDay,
+    prevDayA: null,
+    prevDayB: null,
   };
   await db
     .insert(schema.dmStreaks)
@@ -360,6 +362,34 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     ).rejects.toThrow();
     await db.insert(schema.dmPets).values({ channelId: p.dm, userAId: p.lo, userBId: p.hi, status: 'invited' });
     expect((await petRow(p.dm))!.name).toBe('Zekk');
+  });
+
+  it("migration 0135 follows 0134 and gives dm_streaks each side's previous day", async () => {
+    const journal = JSON.parse(
+      readFileSync(new URL('../../../packages/db/migrations/meta/_journal.json', import.meta.url), 'utf8'),
+    ) as { entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }> };
+    const at0135 = journal.entries.findIndex((e) => e.tag === '0135_dm_streak_prev_days');
+    expect(at0135).toBeGreaterThan(0);
+    const prev = journal.entries[at0135 - 1]!;
+    expect(prev.tag).toBe('0134_zekk_pets');
+    expect(journal.entries[at0135]).toEqual({
+      idx: 134,
+      version: '7',
+      when: prev.when + 86_400_000,
+      tag: '0135_dm_streak_prev_days',
+      breakpoints: true,
+    });
+    const cols = (await db.execute(
+      sql.raw(
+        `SELECT column_name, data_type, is_nullable FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'dm_streaks' AND column_name LIKE 'prev_day_%'
+          ORDER BY column_name`,
+      ),
+    )) as unknown as Array<{ column_name: string; data_type: string; is_nullable: string }>;
+    expect(cols.map((c) => [c.column_name, c.data_type, c.is_nullable])).toEqual([
+      ['prev_day_a', 'text', 'YES'],
+      ['prev_day_b', 'text', 'YES'],
+    ]);
   });
 
   it('only a live streak of 3+ days is eligible; inviting otherwise is a 409 that writes nothing', async () => {
@@ -1132,6 +1162,62 @@ describe.runIf(dbReady)('Zekk Pet (integration)', () => {
     await recordActivity({ channelId: r.dm, authorId: r.lo, kind: 'poke', at: now });
     await recordActivity({ channelId: r.dm, authorId: r.lo, kind: 'message', at: late });
     expect(await petRow(r.dm)).toMatchObject({ status: 'asleep', lastFedDay: day(-1), points: 5, countA: 0 });
+  });
+
+  it('a hi from just before midnight still credits its day when a next-day send reaches the streak first', async () => {
+    // A 4-day streak credited through day -1 and an egg fed on day -1. A says
+    // hi at noon on D0; B's hi at D0 23:59:59.900 is overtaken by a send at
+    // day 1 00:00:00.100 — in p A's, in q B's own — whose streak update and
+    // pet activity both run first.
+    const [p, q] = [await adopted(), await adopted()];
+    const late = new Date(`${D0}T23:59:59.900Z`);
+    for (const s of [p, q]) {
+      await recordDmMessage({ channelId: s.dm, authorId: s.lo, recipientId: s.hi, at: now });
+      await recordActivity({ channelId: s.dm, authorId: s.lo, kind: 'message', at: now });
+    }
+    at(`${day(1)}T00:00:00.100Z`);
+    const nextDay = [
+      { s: p, first: p.lo, second: p.hi },
+      { s: q, first: q.hi, second: q.lo },
+    ];
+    for (const { s, first } of nextDay) {
+      const other = first === s.lo ? s.hi : s.lo;
+      expect(await recordDmMessage({ channelId: s.dm, authorId: first, recipientId: other, at: now })).toEqual({
+        streak: 4,
+        changed: false,
+      });
+      await recordActivity({ channelId: s.dm, authorId: first, kind: 'message', at: now });
+      // B's late hi: D0 is credited (A said hi on D0 too) and feeds the pet.
+      expect(await recordDmMessage({ channelId: s.dm, authorId: s.hi, recipientId: s.lo, at: late })).toEqual({
+        streak: 5,
+        changed: true,
+      });
+      await recordActivity({ channelId: s.dm, authorId: s.hi, kind: 'message', at: late });
+      const [streak] = await db.select().from(schema.dmStreaks).where(eq(schema.dmStreaks.channelId, s.dm));
+      expect(streak).toMatchObject({ lastCountedDay: D0, streak: 5, bestStreak: 5 });
+      expect(await petRow(s.dm)).toMatchObject({ status: 'active', lastFedDay: D0, points: 10, taskDay: day(1) });
+    }
+
+    // The day-1 sweep finds both fed yesterday: nobody falls asleep.
+    await sweepPets();
+    for (const { s } of nextDay) {
+      expect(await petRow(s.dm)).toMatchObject({ status: 'active', lastFedDay: D0 });
+      expect(await events(s.dm)).toEqual(['invited', 'adopted']);
+    }
+
+    // Both say hi on day 1: the streak goes on from D0 and the pet is fed.
+    at(`${day(1)}T09:00:00Z`);
+    for (const { s, second } of nextDay) {
+      const other = second === s.lo ? s.hi : s.lo;
+      expect(await recordDmMessage({ channelId: s.dm, authorId: second, recipientId: other, at: now })).toEqual({
+        streak: 6,
+        changed: true,
+      });
+      await recordActivity({ channelId: s.dm, authorId: second, kind: 'message', at: now });
+      const [streak] = await db.select().from(schema.dmStreaks).where(eq(schema.dmStreaks.channelId, s.dm));
+      expect(streak).toMatchObject({ lastCountedDay: day(1), streak: 6 });
+      expect(await petRow(s.dm)).toMatchObject({ status: 'active', lastFedDay: day(1), points: 20 });
+    }
   });
 
   it("a send racing the accept is counted, even when the accept's seed missed it", async () => {

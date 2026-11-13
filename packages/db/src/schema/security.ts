@@ -102,6 +102,10 @@ export const dmStreaks = pgTable(
     /** Last UTC day (YYYY-MM-DD) each side messaged. */
     lastDayA: text('last_day_a'),
     lastDayB: text('last_day_b'),
+    /** The day before lastDayA / lastDayB on which that side messaged, so a
+     *  late call for an older day can still credit it (migration 0135). */
+    prevDayA: text('prev_day_a'),
+    prevDayB: text('prev_day_b'),
     /** Last UTC day the streak was credited. */
     lastCountedDay: text('last_counted_day'),
     streak: integer('streak').notNull().default(0),
